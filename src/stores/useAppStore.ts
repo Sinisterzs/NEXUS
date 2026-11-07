@@ -186,6 +186,7 @@ interface AppState {
     displayName?: string;
     bio?: string;
     customStatus?: string;
+    avatarUrl?: string;
   }) => Promise<void>;
   updateAppearance: (appearance: Partial<AppSettings['appearance']>) => void;
   updateAudioVideo: (audioVideo: Partial<AppSettings['audioVideo']>) => void;
@@ -315,7 +316,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChannelId: prefs.activeChannelId ?? null,
         activeDmId: prefs.activeDmId ?? null,
         settings: {
-          profile: initialAppSettings.profile,
+          profile: {
+            ...initialAppSettings.profile,
+            avatarUrl: prefs.avatarUrl,
+          },
           appearance: {
             theme: prefs.theme,
             compactMode: prefs.compactMode,
@@ -1275,13 +1279,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         displayName: profileUpdate.displayName ?? state.currentUser.displayName,
         customStatus: profileUpdate.customStatus ?? state.currentUser.customStatus,
         bio: profileUpdate.bio ?? state.currentUser.bio,
+        avatarUrl: profileUpdate.avatarUrl !== undefined ? profileUpdate.avatarUrl : state.currentUser.avatarUrl,
       },
     })),
 
   saveProfile: async (updates) => {
+    if (updates.avatarUrl !== undefined) {
+      settingsRepository.savePreferences({ avatarUrl: updates.avatarUrl });
+    }
     if (get().authStatus === 'authenticated') {
       const updated = await authRepository.updateProfile(updates);
-      set((state) => createAuthenticatedState(state, updated));
+      set((state) => createAuthenticatedState(state, {
+        ...updated,
+        avatarUrl: updates.avatarUrl ?? updated.avatarUrl,
+      }));
       if (updates.customStatus !== undefined) {
         gatewayClient.sendPresence(get().currentUser.status, updates.customStatus);
       }
@@ -1294,6 +1305,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           displayName: updates.displayName ?? state.currentUser.displayName,
           bio: updates.bio ?? state.currentUser.bio,
           customStatus: updates.customStatus ?? state.currentUser.customStatus,
+          avatarUrl: updates.avatarUrl !== undefined ? updates.avatarUrl : state.currentUser.avatarUrl,
         },
         settings: {
           ...state.settings,

@@ -94,6 +94,7 @@ export const MessagesView: React.FC = () => {
   const friends = useAppStore((state) => state.friends);
   const joinCall = useAppStore((state) => state.joinCall);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
+  const compactMode = useAppStore((state) => state.settings.appearance.compactMode);
 
   // Online Real DMs State
   const conversations = useAppStore((state) => state.conversations);
@@ -606,8 +607,12 @@ export const MessagesView: React.FC = () => {
                     )}
 
                     <div
-                      className={`group relative flex items-start gap-3 hover:bg-nexus-surface/30 px-2 py-1 rounded transition-nexus ${
-                        isGroupedWithPrev ? 'mt-0.5 pl-12' : 'mt-2'
+                      className={`group relative flex items-start gap-3 hover:bg-nexus-surface/30 px-2 rounded transition-nexus ${
+                        compactMode ? 'py-0.5' : 'py-1'
+                      } ${
+                        isGroupedWithPrev
+                          ? compactMode ? 'mt-0 pl-11' : 'mt-0.5 pl-12'
+                          : compactMode ? 'mt-1' : 'mt-2'
                       }`}
                     >
                       {!isGroupedWithPrev && (
@@ -756,8 +761,12 @@ export const MessagesView: React.FC = () => {
                     )}
 
                     <div
-                      className={`group flex items-start gap-3 hover:bg-nexus-surface/30 px-2 py-1 rounded transition-nexus ${
-                        isGroupedWithPrev ? 'mt-0.5 pl-12' : 'mt-2'
+                      className={`group flex items-start gap-3 hover:bg-nexus-surface/30 px-2 rounded transition-nexus ${
+                        compactMode ? 'py-0.5' : 'py-1'
+                      } ${
+                        isGroupedWithPrev
+                          ? compactMode ? 'mt-0 pl-11' : 'mt-0.5 pl-12'
+                          : compactMode ? 'mt-1' : 'mt-2'
                       }`}
                     >
                       {!isGroupedWithPrev && (

@@ -195,6 +195,7 @@ export const Sidebar: React.FC = () => {
             >
               <Avatar
                 name={currentUser.displayName}
+                avatarUrl={currentUser.avatarUrl}
                 status={currentUser.status}
                 size={isSidebarCollapsed ? 'sm' : 'md'}
               />

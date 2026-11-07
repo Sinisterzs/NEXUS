@@ -28,6 +28,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sqlx::migrate!("./migrations").run(&pool).await?;
     tracing::info!("Migrações aplicadas com sucesso.");
 
+    // Reseta qualquer status residual no banco de execuções anteriores do servidor
+    if let Err(e) = sqlx::query("UPDATE user_profiles SET status = 'offline' WHERE status != 'offline'")
+        .execute(&pool)
+        .await
+    {
+        tracing::warn!("Aviso ao inicializar presença dos usuários: {}", e);
+    }
+
     let app = create_app(pool, config.clone());
 
     let client_id_prefix = if config.google_client_id.len() > 16 {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   User,
   Palette,
@@ -45,6 +45,7 @@ export const SettingsView: React.FC = () => {
   const logoutOnline = useAppStore((state) => state.logoutOnline);
   const linkGoogle = useAppStore((state) => state.linkGoogle);
   const unlinkGoogle = useAppStore((state) => state.unlinkGoogle);
+  const updateProfile = useAppStore((state) => state.updateProfile);
   const saveProfile = useAppStore((state) => state.saveProfile);
   const updateAppearance = useAppStore((state) => state.updateAppearance);
   const updateAudioVideo = useAppStore((state) => state.updateAudioVideo);
@@ -95,11 +96,12 @@ export const SettingsView: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  // Real-time Mic Testing with Native DSP
+  // Real-time Mic Testing with Native DSP & Audio Return Monitor
   useEffect(() => {
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
     let interval: any = null;
+    let monitorAudio: HTMLAudioElement | null = null;
 
     if (isTestingMic && activeSection === 'audioVideo') {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -118,12 +120,38 @@ export const SettingsView: React.FC = () => {
         ?.getUserMedia(constraints)
         .then((s) => {
           stream = s;
+
+          // 1. Audio return/loopback: allows user to hear their own voice through the selected output
+          try {
+            monitorAudio = new Audio();
+            monitorAudio.srcObject = s;
+            monitorAudio.volume = Math.max(0, Math.min(1, (settings.audioVideo.outputVolume ?? 100) / 100));
+            if (
+              typeof (monitorAudio as any).setSinkId === 'function' &&
+              settings.audioVideo.outputDevice &&
+              settings.audioVideo.outputDevice !== 'default'
+            ) {
+              (monitorAudio as any).setSinkId(settings.audioVideo.outputDevice).catch(() => {});
+            }
+            monitorAudio.play().catch(() => {});
+          } catch (audioErr) {
+            console.warn('[SettingsView] Falha ao iniciar retorno de áudio:', audioErr);
+          }
+
           if (!AudioCtx) return;
           audioCtx = new AudioCtx();
           const src = audioCtx.createMediaStreamSource(s);
           const analyser = audioCtx.createAnalyser();
           analyser.fftSize = 256;
           src.connect(analyser);
+
+          // Web Audio destination fallback if HTMLAudioElement fails
+          try {
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.value = Math.max(0, Math.min(1, (settings.audioVideo.outputVolume ?? 100) / 100));
+            src.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+          } catch {}
 
           const dataArray = new Uint8Array(128);
           interval = setInterval(() => {
@@ -143,6 +171,10 @@ export const SettingsView: React.FC = () => {
 
     return () => {
       if (interval) clearInterval(interval);
+      if (monitorAudio) {
+        monitorAudio.pause();
+        monitorAudio.srcObject = null;
+      }
       if (stream) stream.getTracks().forEach((t) => t.stop());
       if (audioCtx) (audioCtx as AudioContext).close().catch(() => {});
     };
@@ -150,16 +182,20 @@ export const SettingsView: React.FC = () => {
     isTestingMic,
     activeSection,
     settings.audioVideo.inputDevice,
+    settings.audioVideo.outputDevice,
+    settings.audioVideo.outputVolume,
     settings.audioVideo.noiseSuppression,
     settings.audioVideo.echoCancellation,
   ]);
 
   // Profile form local state (prevents premature unpersisted state in Zustand)
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const [profileForm, setProfileForm] = useState({
     displayName: settings.profile.displayName,
     username: settings.profile.username,
     customStatus: settings.profile.customStatus,
     bio: settings.profile.bio,
+    avatarUrl: settings.profile.avatarUrl || currentUser.avatarUrl,
   });
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [profileFeedback, setProfileFeedback] = useState<{ text: string; isError: boolean } | null>(null);
@@ -170,18 +206,49 @@ export const SettingsView: React.FC = () => {
       username: settings.profile.username,
       customStatus: settings.profile.customStatus,
       bio: settings.profile.bio,
+      avatarUrl: settings.profile.avatarUrl || currentUser.avatarUrl,
     });
-  }, [settings.profile.displayName, settings.profile.username, settings.profile.customStatus, settings.profile.bio]);
+  }, [
+    settings.profile.displayName,
+    settings.profile.username,
+    settings.profile.customStatus,
+    settings.profile.bio,
+    settings.profile.avatarUrl,
+    currentUser.avatarUrl,
+  ]);
 
   const hasProfileChanges =
     profileForm.displayName !== settings.profile.displayName ||
     profileForm.username !== settings.profile.username ||
     profileForm.customStatus !== settings.profile.customStatus ||
-    profileForm.bio !== settings.profile.bio;
+    profileForm.bio !== settings.profile.bio ||
+    profileForm.avatarUrl !== (settings.profile.avatarUrl || currentUser.avatarUrl);
 
   const showSaveSuccess = () => {
     setSaveBanner(true);
     setTimeout(() => setSaveBanner(false), 2000);
+  };
+
+  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      setProfileFeedback({ text: 'A imagem deve ter no máximo 5MB.', isError: true });
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      if (dataUrl) {
+        setProfileForm((prev) => ({ ...prev, avatarUrl: dataUrl }));
+        updateProfile({ avatarUrl: dataUrl });
+        saveProfile({ avatarUrl: dataUrl });
+        showSaveSuccess();
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleSaveProfile = async () => {
@@ -208,6 +275,7 @@ export const SettingsView: React.FC = () => {
       username: settings.profile.username,
       customStatus: settings.profile.customStatus,
       bio: settings.profile.bio,
+      avatarUrl: settings.profile.avatarUrl || currentUser.avatarUrl,
     });
     setProfileFeedback(null);
   };
@@ -377,8 +445,25 @@ export const SettingsView: React.FC = () => {
 
               <div className="flex items-start gap-4">
                 <div className="relative">
-                  <Avatar name={currentUser.displayName} status={currentUser.status} size="xl" />
-                  <button className="absolute -bottom-1 -right-1 p-1 rounded-full bg-nexus-panel border border-nexus-border text-nexus-muted hover:text-nexus-text">
+                  <Avatar
+                    name={currentUser.displayName}
+                    avatarUrl={profileForm.avatarUrl || currentUser.avatarUrl}
+                    status={currentUser.status}
+                    size="xl"
+                  />
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleAvatarFileChange}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => avatarInputRef.current?.click()}
+                    title="Alterar foto de perfil"
+                    className="absolute -bottom-1 -right-1 p-1.5 rounded-full bg-nexus-panel border border-nexus-border text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface transition-nexus cursor-pointer shadow-sm"
+                  >
                     <Camera className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -422,7 +507,7 @@ export const SettingsView: React.FC = () => {
                       <span className="text-xs font-bold text-nexus-text">Conta NEXUS Online</span>
                       {authMode === 'authenticated' && onlineUser ? (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          Autenticado (PostgreSQL)
+                          Conectado
                         </span>
                       ) : (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30">
@@ -855,7 +940,7 @@ export const SettingsView: React.FC = () => {
                   </div>
                   {isTestingMic && (
                     <p className="text-[10px] text-emerald-400 mt-1.5 font-mono animate-pulse">
-                      Fale ao microfone para verificar a captação e o cancelamento de ruído em tempo real.
+                      Retorno de áudio ativo: fale ao microfone para ouvir sua voz e testar o cancelamento de ruído em tempo real.
                     </p>
                   )}
                 </div>

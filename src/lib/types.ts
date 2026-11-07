@@ -115,6 +115,7 @@ export interface AppSettings {
     tag?: string;
     bio: string;
     customStatus: string;
+    avatarUrl?: string;
   };
   appearance: {
     theme: 'nexus-dark' | 'midnight-black' | 'cyber-slate';
@@ -187,6 +188,7 @@ export interface PersistedPreferences {
   allowDmsFrom: 'all' | 'friends' | 'none';
   showGameActivity: boolean;
   streamerMode: boolean;
+  avatarUrl?: string;
 }
 
 export interface AuthUserProfile {

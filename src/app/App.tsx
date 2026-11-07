@@ -13,21 +13,35 @@ import { CallsView } from '../features/calls/CallsView';
 import { SettingsView } from '../features/settings/SettingsView';
 import { useAppStore } from '../stores/useAppStore';
 import { callService } from '../services/CallService';
+import { gatewayClient } from '../services/GatewayClient';
 
 export const App: React.FC = () => {
   const activeTab = useAppStore((state) => state.activeTab);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const isInitialized = useAppStore((state) => state.isInitialized);
   const initializeStore = useAppStore((state) => state.initializeStore);
-  const theme = useAppStore((state) => state.settings.appearance.theme);
+  const appearance = useAppStore((state) => state.settings.appearance);
   const isAuthModalOpen = useAppStore((state) => state.isAuthModalOpen);
   const closeAuthModal = useAppStore((state) => state.closeAuthModal);
   const [rustBackendReady, setRustBackendReady] = useState(false);
 
   useEffect(() => {
-    // Apply theme attribute to document element
-    document.documentElement.setAttribute('data-theme', theme);
-  }, [theme]);
+    // Apply appearance attributes to document element in real-time
+    document.documentElement.setAttribute('data-theme', appearance.theme || 'nexus-dark');
+    document.documentElement.setAttribute('data-font-size', appearance.fontSize || 'base');
+    document.documentElement.setAttribute('data-compact', String(Boolean(appearance.compactMode)));
+  }, [appearance.theme, appearance.fontSize, appearance.compactMode]);
+
+  useEffect(() => {
+    // Clean disconnection on app window close / refresh
+    const handleBeforeUnload = () => {
+      gatewayClient.disconnect();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
 
   useEffect(() => {
     // Global voice call coordinator initialization (idempotent)

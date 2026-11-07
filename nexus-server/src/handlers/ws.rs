@@ -251,7 +251,19 @@ async fn handle_gateway_socket(
         let mut msg_count = 0u32;
         let mut last_window = tokio::time::Instant::now();
 
-        while let Some(msg_result) = ws_receiver.next().await {
+        loop {
+            // Heartbeat inactivity timeout: clients send ping every 20s. If no message in 60s, assume dropped.
+            let next_msg = tokio::time::timeout(Duration::from_secs(60), ws_receiver.next()).await;
+
+            let msg_result = match next_msg {
+                Ok(Some(res)) => res,
+                Ok(None) => break, // Socket closed
+                Err(_) => {
+                    warn!("[Gateway] Inatividade de conexão excedida (60s) para o usuário {}. Encerrando.", user_id);
+                    break;
+                }
+            };
+
             // Flood protection: max 30 msgs per second
             if last_window.elapsed() > Duration::from_secs(1) {
                 msg_count = 0;

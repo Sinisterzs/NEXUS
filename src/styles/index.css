@@ -1,21 +1,86 @@
 @import "tailwindcss";
 
+:root, [data-theme="nexus-dark"] {
+  --nexus-bg: #111318;
+  --nexus-surface: #1B1E25;
+  --nexus-panel: #262931;
+  --nexus-border: #353943;
+  --nexus-border-light: #444955;
+  --nexus-accent: #B8495A;
+  --nexus-accent-hover: #cf5668;
+  --nexus-accent-dim: rgba(184, 73, 90, 0.15);
+  --nexus-text: #F0EEF2;
+  --nexus-muted: #9699A5;
+  --nexus-muted-hover: #c4c7d4;
+  --nexus-status-online: #22c55e;
+  --nexus-status-idle: #eab308;
+  --nexus-status-dnd: #ef4444;
+  --nexus-status-offline: #64748b;
+}
+
+[data-theme="midnight-black"] {
+  --nexus-bg: #090a0e;
+  --nexus-surface: #101217;
+  --nexus-panel: #161920;
+  --nexus-border: #232732;
+  --nexus-border-light: #333847;
+  --nexus-accent: #3b82f6;
+  --nexus-accent-hover: #60a5fa;
+  --nexus-accent-dim: rgba(59, 130, 246, 0.15);
+  --nexus-text: #F8FAFC;
+  --nexus-muted: #828B9C;
+  --nexus-muted-hover: #CBD5E1;
+  --nexus-status-online: #22c55e;
+  --nexus-status-idle: #eab308;
+  --nexus-status-dnd: #ef4444;
+  --nexus-status-offline: #64748b;
+}
+
+[data-theme="cyber-slate"] {
+  --nexus-bg: #0b0f14;
+  --nexus-surface: #121820;
+  --nexus-panel: #1a232f;
+  --nexus-border: #263344;
+  --nexus-border-light: #374960;
+  --nexus-accent: #06b6d4;
+  --nexus-accent-hover: #22d3ee;
+  --nexus-accent-dim: rgba(6, 182, 212, 0.15);
+  --nexus-text: #F0FDFA;
+  --nexus-muted: #7E93A8;
+  --nexus-muted-hover: #A5F3FC;
+  --nexus-status-online: #22c55e;
+  --nexus-status-idle: #eab308;
+  --nexus-status-dnd: #ef4444;
+  --nexus-status-offline: #64748b;
+}
+
 @theme {
-  --color-nexus-bg: #111318;
-  --color-nexus-surface: #1B1E25;
-  --color-nexus-panel: #262931;
-  --color-nexus-border: #353943;
-  --color-nexus-border-light: #444955;
-  --color-nexus-accent: #B8495A;
-  --color-nexus-accent-hover: #cf5668;
-  --color-nexus-accent-dim: rgba(184, 73, 90, 0.15);
-  --color-nexus-text: #F0EEF2;
-  --color-nexus-muted: #9699A5;
-  --color-nexus-muted-hover: #c4c7d4;
-  --color-nexus-status-online: #22c55e;
-  --color-nexus-status-idle: #eab308;
-  --color-nexus-status-dnd: #ef4444;
-  --color-nexus-status-offline: #64748b;
+  --color-nexus-bg: var(--nexus-bg);
+  --color-nexus-surface: var(--nexus-surface);
+  --color-nexus-panel: var(--nexus-panel);
+  --color-nexus-border: var(--nexus-border);
+  --color-nexus-border-light: var(--nexus-border-light);
+  --color-nexus-accent: var(--nexus-accent);
+  --color-nexus-accent-hover: var(--nexus-accent-hover);
+  --color-nexus-accent-dim: var(--nexus-accent-dim);
+  --color-nexus-text: var(--nexus-text);
+  --color-nexus-muted: var(--nexus-muted);
+  --color-nexus-muted-hover: var(--nexus-muted-hover);
+  --color-nexus-status-online: var(--nexus-status-online);
+  --color-nexus-status-idle: var(--nexus-status-idle);
+  --color-nexus-status-dnd: var(--nexus-status-dnd);
+  --color-nexus-status-offline: var(--nexus-status-offline);
+}
+
+/* Dynamic typography scaling */
+html[data-font-size="sm"] {
+  font-size: 13px;
+}
+html[data-font-size="base"], html:not([data-font-size]) {
+  font-size: 14px;
+}
+html[data-font-size="lg"] {
+  font-size: 15.5px;
 }
 
 /* Discrete transitions (120-180ms) */
@@ -86,12 +151,14 @@
 
 /* Base styles */
 html, body {
-  background-color: var(--color-nexus-bg);
-  color: var(--color-nexus-text);
+  background-color: var(--nexus-bg);
+  color: var(--nexus-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   user-select: none;
   -webkit-user-select: none;
   overflow: hidden;
   margin: 0;
   padding: 0;
+  width: 100%;
+  height: 100%;
 }

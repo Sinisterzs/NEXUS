@@ -204,7 +204,16 @@ impl PresenceManager {
     /// Overlay live in-memory presence on friend list
     pub async fn enrich_friends_presence(&self, friends: &mut [FriendDto]) {
         let presences = self.live_presence.read().await;
+        let conns = self.connections.read().await;
+
         for friend in friends.iter_mut() {
+            // Se o usuário não tem nenhuma conexão WebSocket aberta ativa, ele está offline
+            let has_active_conn = conns.get(&friend.id).map(|c| !c.is_empty()).unwrap_or(false);
+            if !has_active_conn {
+                friend.status = "offline".to_string();
+                continue;
+            }
+
             if let Some(live) = presences.get(&friend.id) {
                 // If friend chose "invisible", to others they are "offline"
                 if live.preferred_status == "invisible" {
@@ -221,6 +230,8 @@ impl PresenceManager {
                         friend.last_seen_at = live.last_seen_at;
                     }
                 }
+            } else {
+                friend.status = "offline".to_string();
             }
         }
     }

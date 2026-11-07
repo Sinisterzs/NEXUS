@@ -7,6 +7,7 @@ import { gatewayClient } from './GatewayClient';
 import { WebRtcService, WebRtcConnectionState } from './WebRtcService';
 import { useAppStore } from '../stores/useAppStore';
 import { callHistoryRepository } from '../repositories/CallHistoryRepository';
+import { soundEffects } from '../lib/soundEffects';
 
 export class CallService {
   private webRtc: WebRtcService | null = null;
@@ -337,6 +338,12 @@ export class CallService {
     const nextMuted = !store.isMicMuted;
     store.toggleMic();
 
+    if (nextMuted) {
+      soundEffects.playMute();
+    } else {
+      soundEffects.playUnmute();
+    }
+
     if (this.webRtc) {
       this.webRtc.setMuted(nextMuted);
     }
@@ -352,6 +359,12 @@ export class CallService {
     const store = useAppStore.getState();
     const nextDeafened = !store.isDeafened;
     store.toggleDeafen();
+
+    if (nextDeafened) {
+      soundEffects.playMute();
+    } else {
+      soundEffects.playUnmute();
+    }
 
     if (this.webRtc) {
       this.webRtc.setDeafened(nextDeafened);

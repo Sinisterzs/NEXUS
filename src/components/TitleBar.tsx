@@ -91,7 +91,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ backendReady }) => {
           </div>
           <span className="font-semibold text-sm tracking-wide">NEXUS</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded bg-nexus-panel text-nexus-muted border border-nexus-border font-mono">
-            v0.2.1
+            v0.1.0
           </span>
         </div>
 

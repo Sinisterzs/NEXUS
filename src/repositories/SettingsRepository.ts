@@ -25,6 +25,7 @@ export const DEFAULT_PREFERENCES: PersistedPreferences = {
   allowDmsFrom: initialAppSettings.privacy.allowDmsFrom,
   showGameActivity: initialAppSettings.privacy.showGameActivity,
   streamerMode: initialAppSettings.privacy.streamerMode,
+  avatarUrl: undefined,
 };
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
