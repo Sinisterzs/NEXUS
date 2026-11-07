@@ -13,6 +13,13 @@ fn require_token() -> Result<String, String> {
         .ok_or_else(|| "Sessão não encontrada. Faça login novamente.".to_string())
 }
 
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FriendSummaryDto {
     pub id: String,
@@ -72,7 +79,7 @@ struct ApiErrorResponse {
 #[tauri::command]
 pub async fn gateway_get_ticket() -> Result<String, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/gateway/ticket", get_api_base());
 
     let resp = client
@@ -104,7 +111,7 @@ pub async fn dm_list_conversations(
     account_id: Option<String>,
 ) -> Result<Vec<DirectConversationDto>, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/dm/conversations", get_api_base());
     let act_id = account_id.unwrap_or_else(|| "offline_demo".to_string());
 
@@ -179,7 +186,7 @@ pub async fn dm_get_or_create_conversation(
     account_id: Option<String>,
 ) -> Result<DirectConversationDto, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/dm/conversations", get_api_base());
     let act_id = account_id.unwrap_or_else(|| "offline_demo".to_string());
 
@@ -237,7 +244,7 @@ pub async fn dm_get_messages(
     account_id: Option<String>,
 ) -> Result<Vec<DirectMessageDto>, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let limit_val = limit.unwrap_or(50);
     let act_id = account_id.unwrap_or_else(|| "offline_demo".to_string());
 
@@ -364,7 +371,7 @@ pub async fn dm_send_message(
         .unwrap_or_else(Uuid::new_v4);
     let act_id = account_id.unwrap_or_else(|| "offline_demo".to_string());
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!(
         "{}/v1/dm/conversations/{}/messages",
         get_api_base(),
@@ -466,7 +473,7 @@ pub async fn dm_edit_message(
     }
 
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/dm/messages/{}", get_api_base(), message_id);
 
     let payload = serde_json::json!({ "content": clean });
@@ -514,7 +521,7 @@ pub async fn dm_delete_message(
     message_id: String,
 ) -> Result<DirectMessageDto, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/dm/messages/{}", get_api_base(), message_id);
 
     let resp = client
@@ -560,7 +567,7 @@ pub async fn dm_mark_read(
     last_read_message_id: Option<String>,
 ) -> Result<(), String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!(
         "{}/v1/dm/conversations/{}/read",
         get_api_base(),

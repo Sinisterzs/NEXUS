@@ -19,15 +19,13 @@
 
 ## 📌 Última Atualização & Notas de Versão (Patch Notes)
 
-> **Versão Atual:** `v0.1.1` • **Data:** 07 de Novembro de 2026 • **Status:** Release Estável
+> **Versão Atual:** `v0.1.2` • **Data:** 07 de Novembro de 2026 • **Status:** Release Estável
 
-### 📋 Resumo das Mudanças (v0.1.1)
-- 🎨 **Temas Dinâmicos e Aparência:** Três esquemas visuais em tempo real (*NEXUS Dark*, *Midnight Steam* para OLED e *Cyber Slate* neon Opera GX), escala ajustável de tipografia e modo compacto de mensagens.
-- 📷 **Foto de Perfil Personalizada:** Suporte completo a upload de fotos de perfil locais, com pré-visualização, persistência e exibição na barra lateral e chats.
-- 👥 **Detecção Rigorosa de Amigos Offline:** Sincronização automática que marca amigos como offline assim que fecham o aplicativo, com timeout de inatividade de 60s no servidor para quedas de conexão.
-- 🎧 **Retorno de Áudio no Teste de Microfone:** O teste de microfone agora possui retorno em tempo real nos fones/alto-falantes para você ouvir exatamente como sua voz e o cancelamento de ruído soam.
-- 🔔 **Efeitos Sonoros de Mute & Unmute:** Alertas acústicos sintetizados instantaneamente via Web Audio API ao silenciar ou reativar o microfone.
-- 🏷️ **Alinhamento de Versão e Interface:** Versão do topo sincronizada com `v0.1.1` e selo de status limpo sem referências técnicas ao PostgreSQL.
+### 📋 Resumo das Mudanças (v0.1.2)
+- ⚡ **Correção de Carregamento Infinito & Deadlock de Presença:** Eliminado o deadlock cruzado de threads no servidor (`PresenceManager`) entre registros de WebSocket e listagem de conversas. As mensagens diretas e a lista de amigos agora carregam instantaneamente sem travar.
+- 👥 **Recarregamento Reativo de Amigos & DMs:** A lista de amigos é recarregada imediatamente ao autenticar e ao reconectar a rede. Clicar em um amigo na tela Início agora abre diretamente a conversa real na aba de mensagens.
+- 🛡️ **Timeouts Defensivos no Tauri:** Adicionado timeout de segurança de 8 segundos em todas as chamadas de rede do cliente nativo (`src-tauri`), prevenindo qualquer travamento permanente da interface caso a rede oscile.
+- 📦 **Auto-Updater Robusto:** Novo pacote de atualização automática para Windows configurado diretamente com instalador NSIS executável assinado (`nexus_0.1.2_x64-setup.exe`) e manifesto limpo `latest.json` (UTF-8 sem BOM).
 
 *(Para ver os detalhes técnicos completos, consulte a [Aba de Releases](https://github.com/Sinisterzs/NEXUS/releases)).*
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Gamepad2,
   Users,
@@ -35,6 +35,10 @@ export const HomeView: React.FC = () => {
   const authStatus = useAppStore((state) => state.authStatus);
   const friends = useAppStore((state) => state.friends);
   const friendRequests = useAppStore((state) => state.friendRequests);
+  const loadFriends = useAppStore((state) => state.loadFriends);
+  const loadFriendRequests = useAppStore((state) => state.loadFriendRequests);
+  const startConversationWithUser = useAppStore((state) => state.startConversationWithUser);
+  const selectConversation = useAppStore((state) => state.selectConversation);
   const openAddFriendModal = useAppStore((state) => state.openAddFriendModal);
   const removeFriend = useAppStore((state) => state.removeFriend);
   const blockUser = useAppStore((state) => state.blockUser);
@@ -48,6 +52,14 @@ export const HomeView: React.FC = () => {
 
   const isAuthenticated = authStatus === 'authenticated';
   const incomingRequestsCount = friendRequests.incoming.length;
+
+  // Carrega lista de amigos e solicitações ao montar ou autenticar
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadFriends();
+      loadFriendRequests();
+    }
+  }, [isAuthenticated, loadFriends, loadFriendRequests]);
 
   const filteredFriends = friends.filter((f) => {
     const matchesFilter =
@@ -480,8 +492,17 @@ export const HomeView: React.FC = () => {
                   >
                     <div
                       onClick={() => {
-                        setActiveDm(friend.id);
-                        setActiveTab('messages');
+                        if (isAuthenticated) {
+                          startConversationWithUser(friend.id, friend.username).then((convId) => {
+                            if (convId) {
+                              selectConversation(convId);
+                            }
+                            setActiveTab('messages');
+                          });
+                        } else {
+                          setActiveDm(friend.id);
+                          setActiveTab('messages');
+                        }
                       }}
                       className="flex items-center gap-3 min-w-0 cursor-pointer flex-1"
                     >

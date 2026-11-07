@@ -73,10 +73,17 @@ fn require_token() -> Result<String, String> {
     get_secure_token().ok_or_else(|| "Nenhuma sessão ativa encontrada.".to_string())
 }
 
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 #[tauri::command]
 pub async fn friends_get_list() -> Result<Vec<FriendDto>, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/friends", get_api_base());
 
     let resp = client
@@ -102,7 +109,7 @@ pub async fn friends_get_list() -> Result<Vec<FriendDto>, String> {
 #[tauri::command]
 pub async fn friends_get_requests() -> Result<FriendRequestsResponse, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/friends/requests", get_api_base());
 
     let resp = client
@@ -128,7 +135,7 @@ pub async fn friends_get_requests() -> Result<FriendRequestsResponse, String> {
 #[tauri::command]
 pub async fn friends_send_request(target: String) -> Result<FriendRequestDto, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/friends/requests", get_api_base());
 
     let payload = serde_json::json!({
@@ -160,7 +167,7 @@ pub async fn friends_send_request(target: String) -> Result<FriendRequestDto, St
 #[tauri::command]
 pub async fn friends_accept_request(request_id: String) -> Result<FriendDto, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!(
         "{}/v1/friends/requests/{}/accept",
         get_api_base(),
@@ -190,7 +197,7 @@ pub async fn friends_accept_request(request_id: String) -> Result<FriendDto, Str
 #[tauri::command]
 pub async fn friends_reject_request(request_id: String) -> Result<(), String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!(
         "{}/v1/friends/requests/{}/reject",
         get_api_base(),
@@ -218,7 +225,7 @@ pub async fn friends_reject_request(request_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn friends_cancel_request(request_id: String) -> Result<(), String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/friends/requests/{}", get_api_base(), request_id);
 
     let resp = client
@@ -247,7 +254,7 @@ pub async fn friends_decline_request(request_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn friends_remove(friend_id: String) -> Result<(), String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/friends/{}", get_api_base(), friend_id);
 
     let resp = client
@@ -271,7 +278,7 @@ pub async fn friends_remove(friend_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn friends_block_user(user_id: String) -> Result<(), String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/users/{}/block", get_api_base(), user_id);
 
     let resp = client
@@ -295,7 +302,7 @@ pub async fn friends_block_user(user_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn friends_unblock_user(user_id: String) -> Result<(), String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/users/{}/block", get_api_base(), user_id);
 
     let resp = client
@@ -319,7 +326,7 @@ pub async fn friends_unblock_user(user_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn friends_search_users(query: String) -> Result<Vec<UserSearchDto>, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!(
         "{}/v1/users/search?username={}",
         get_api_base(),
@@ -349,7 +356,7 @@ pub async fn friends_search_users(query: String) -> Result<Vec<UserSearchDto>, S
 #[tauri::command]
 pub async fn friends_get_presence() -> Result<PresenceResponseDto, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/users/me/presence", get_api_base());
 
     let resp = client
@@ -381,7 +388,7 @@ pub async fn friends_update_presence(
     allow_friend_requests: Option<bool>,
 ) -> Result<PresenceResponseDto, String> {
     let token = require_token()?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/users/me/presence", get_api_base());
 
     let payload = serde_json::json!({

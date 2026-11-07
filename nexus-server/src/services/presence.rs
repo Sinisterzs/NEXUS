@@ -46,18 +46,21 @@ impl PresenceManager {
         connection_id: Uuid,
         tx: mpsc::UnboundedSender<GatewayEvent>,
     ) -> Result<(bool, Vec<Uuid>, String), String> {
-        let mut conns = self.connections.write().await;
-        let user_conns = conns.entry(user_id).or_default();
+        let was_empty = {
+            let mut conns = self.connections.write().await;
+            let user_conns = conns.entry(user_id).or_default();
 
-        if user_conns.len() >= MAX_CONNECTIONS_PER_USER {
-            return Err("Limite de conexões simultâneas atingido.".to_string());
-        }
+            if user_conns.len() >= MAX_CONNECTIONS_PER_USER {
+                return Err("Limite de conexões simultâneas atingido.".to_string());
+            }
 
-        let was_empty = user_conns.is_empty();
-        user_conns.insert(connection_id, tx);
+            let was_empty = user_conns.is_empty();
+            user_conns.insert(connection_id, tx);
+            was_empty
+        };
 
         if was_empty {
-            // Retrieve preferred status from database
+            // Retrieve preferred status from database (without holding connections lock)
             let pref = self.friend_repo.get_presence(user_id).await.ok();
             let preferred_status = pref
                 .as_ref()
@@ -72,17 +75,19 @@ impl PresenceManager {
                 preferred_status.clone()
             };
 
-            let mut presences = self.live_presence.write().await;
-            presences.insert(
-                user_id,
-                LivePresence {
-                    preferred_status: preferred_status.clone(),
-                    status: effective_status.clone(),
-                    custom_status: custom_status.clone(),
-                    activity: activity.clone(),
-                    last_seen_at: Some(Utc::now()),
-                },
-            );
+            {
+                let mut presences = self.live_presence.write().await;
+                presences.insert(
+                    user_id,
+                    LivePresence {
+                        preferred_status: preferred_status.clone(),
+                        status: effective_status.clone(),
+                        custom_status: custom_status.clone(),
+                        activity: activity.clone(),
+                        last_seen_at: Some(Utc::now()),
+                    },
+                );
+            }
 
             // If user is invisible, we do NOT broadcast presence to friends
             let friend_ids = if preferred_status == "invisible" {
@@ -112,31 +117,37 @@ impl PresenceManager {
         user_id: Uuid,
         connection_id: Uuid,
     ) -> (bool, Vec<Uuid>) {
-        let mut conns = self.connections.write().await;
-        let mut is_now_offline = false;
+        let is_now_offline = {
+            let mut conns = self.connections.write().await;
+            let mut offline = false;
 
-        if let Some(user_conns) = conns.get_mut(&user_id) {
-            user_conns.remove(&connection_id);
-            if user_conns.is_empty() {
-                conns.remove(&user_id);
-                is_now_offline = true;
+            if let Some(user_conns) = conns.get_mut(&user_id) {
+                user_conns.remove(&connection_id);
+                if user_conns.is_empty() {
+                    conns.remove(&user_id);
+                    offline = true;
+                }
             }
-        }
+            offline
+        };
 
         if is_now_offline {
-            let mut presences = self.live_presence.write().await;
-            let now = Utc::now();
-            let was_invisible = presences
-                .get(&user_id)
-                .map(|p| p.preferred_status == "invisible")
-                .unwrap_or(false);
+            let was_invisible = {
+                let mut presences = self.live_presence.write().await;
+                let now = Utc::now();
+                let was_invisible = presences
+                    .get(&user_id)
+                    .map(|p| p.preferred_status == "invisible")
+                    .unwrap_or(false);
 
-            if let Some(presence) = presences.get_mut(&user_id) {
-                presence.status = "offline".to_string();
-                presence.last_seen_at = Some(now);
-            }
+                if let Some(presence) = presences.get_mut(&user_id) {
+                    presence.status = "offline".to_string();
+                    presence.last_seen_at = Some(now);
+                }
+                was_invisible
+            };
 
-            // Update persistent database status
+            // Update persistent database status without holding locks
             let _ = self
                 .friend_repo
                 .update_presence(user_id, Some("offline"), None, None, None)
@@ -203,12 +214,17 @@ impl PresenceManager {
 
     /// Overlay live in-memory presence on friend list
     pub async fn enrich_friends_presence(&self, friends: &mut [FriendDto]) {
+        // Collect active user IDs and release connections lock immediately
+        let active_user_ids: std::collections::HashSet<Uuid> = {
+            let conns = self.connections.read().await;
+            conns.keys().copied().collect()
+        };
+
         let presences = self.live_presence.read().await;
-        let conns = self.connections.read().await;
 
         for friend in friends.iter_mut() {
             // Se o usuário não tem nenhuma conexão WebSocket aberta ativa, ele está offline
-            let has_active_conn = conns.get(&friend.id).map(|c| !c.is_empty()).unwrap_or(false);
+            let has_active_conn = active_user_ids.contains(&friend.id);
             if !has_active_conn {
                 friend.status = "offline".to_string();
                 continue;
