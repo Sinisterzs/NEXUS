@@ -1,8 +1,8 @@
-# NEXUS - Gerador de Atualizações Assinadas para o GitHub Releases
+# NEXUS - Gerador e Publicador Automático de Atualizações para o GitHub Releases
 $ErrorActionPreference = "Stop"
 
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host "   NEXUS - Gerar Atualização Automática (GitHub)   " -ForegroundColor Cyan
+Write-Host "   NEXUS - Publicação Automática de Release (v2)  " -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 
 $rootDir = Split-Path -Parent $PSScriptRoot
@@ -22,20 +22,23 @@ $env:TAURI_SIGNING_PRIVATE_KEY = $privateKey
 $tauriConfPath = Join-Path $rootDir "src-tauri\tauri.conf.json"
 $tauriConf = Get-Content -Raw $tauriConfPath | ConvertFrom-Json
 $version = $tauriConf.version
+$tag = "v$version"
+$owner = "Sinisterzs"
+$repo = "NEXUS"
 
-Write-Host "[INFO] Versão do Release: v$version" -ForegroundColor Yellow
-Write-Host "[INFO] Repositório alvo: https://github.com/Sinisterzs/NEXUS" -ForegroundColor Yellow
+Write-Host "[INFO] Versão do Release: $tag" -ForegroundColor Yellow
+Write-Host "[INFO] Repositório alvo: https://github.com/$owner/$repo" -ForegroundColor Yellow
 
 # 3. Compila o frontend React + Vite
-Write-Host "[1/3] Compilando frontend..." -ForegroundColor Cyan
+Write-Host "[1/5] Compilando frontend..." -ForegroundColor Cyan
 & npm run build
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERRO] Falha no build do frontend." -ForegroundColor Red
     exit 1
 }
 
-# 4. Compila o pacote nativo e assina digitalmente os artefatos de update
-Write-Host "[2/3] Compilando e assinando artefatos de update com Tauri 2..." -ForegroundColor Cyan
+# 4. Compila o pacote nativo com Tauri 2
+Write-Host "[2/5] Compilando binário nativo do NEXUS..." -ForegroundColor Cyan
 $runningApp = Get-Process -Name "nexus" -ErrorAction SilentlyContinue
 if ($runningApp) {
     Write-Host "[INFO] Fechando instância do NEXUS para compilação..." -ForegroundColor Yellow
@@ -45,61 +48,146 @@ if ($runningApp) {
 
 & npm run tauri build
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERRO] Falha no build e assinatura do Tauri." -ForegroundColor Red
+    Write-Host "[ERRO] Falha no build do Tauri." -ForegroundColor Red
     exit 1
 }
 
-# 5. Coleta e organiza os arquivos gerados em dist-release/v<versao>
-Write-Host "[3/3] Organizando arquivos para publicação no GitHub Releases..." -ForegroundColor Cyan
-$distDir = Join-Path $rootDir "dist-release\v$version"
-if (-not (Test-Path $distDir)) {
-    New-Item -ItemType Directory -Path $distDir -Force | Out-Null
-}
-
-$bundleDir = Join-Path $rootDir "src-tauri\target\release\bundle\nsis"
+# 5. Prepara e assina pacote zip para auto-update
+Write-Host "[3/5] Compactando e assinando pacote de atualização..." -ForegroundColor Cyan
 $releaseExe = Join-Path $rootDir "src-tauri\target\release\nexus.exe"
+$zipPath = Join-Path $rootDir "nexus-windows-x64.zip"
+$sigPath = Join-Path $rootDir "nexus-windows-x64.zip.sig"
 
-# Copia instalador e arquivos de update
-if (Test-Path $bundleDir) {
-    Get-ChildItem -Path $bundleDir -Filter "*$version*" | ForEach-Object {
-        Copy-Item -Path $_.FullName -Destination $distDir -Force
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+Compress-Archive -Path $releaseExe -DestinationPath $zipPath -Force
+
+& npx tauri signer sign -f ".tauri\nexus.key" $zipPath
+$signature = (Get-Content -Raw $sigPath).Trim()
+
+# Gera latest.json do updater
+$latestJsonContent = @{
+    "version" = $version
+    "notes" = "NEXUS $tag - Atualização Automática"
+    "pub_date" = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    "platforms" = @{
+        "windows-x86_64" = @{
+            "signature" = $signature
+            "url" = "https://github.com/$owner/$repo/releases/download/$tag/nexus-windows-x64.zip"
+        }
+    }
+} | ConvertTo-Json -Depth 5
+
+$latestJsonPath = Join-Path $rootDir "latest.json"
+[System.IO.File]::WriteAllText($latestJsonPath, $latestJsonContent, [System.Text.Encoding]::UTF8)
+
+# 6. Conecta à API do GitHub usando credenciais locais
+Write-Host "[4/5] Conectando ao GitHub para criar/atualizar Release..." -ForegroundColor Cyan
+$token = $env:GITHUB_TOKEN
+if (-not $token) {
+    $gitCredInput = "protocol=https`nhost=github.com`n`n"
+    $gitCredOutput = $gitCredInput | git credential fill
+    $tokenLine = $gitCredOutput | Select-String "password=(.*)"
+    if ($tokenLine) {
+        $token = $tokenLine.Matches.Groups[1].Value.Trim()
     }
 }
 
-# Copia executável direto se disponível
-if (Test-Path $releaseExe) {
-    Copy-Item -Path $releaseExe -Destination (Join-Path $distDir "nexus.exe") -Force
+if (-not $token) {
+    Write-Host "[ERRO] Não foi possível autenticar no GitHub. Defina GITHUB_TOKEN ou configure git credentials." -ForegroundColor Red
+    exit 1
 }
 
-# Localiza latest.json gerado pelo Tauri
-$latestJsonSrc = Join-Path $rootDir "src-tauri\target\release\latest.json"
-if (-not (Test-Path $latestJsonSrc)) {
-    # Procura recursivamente
-    $found = Get-ChildItem -Path "src-tauri\target\release" -Filter "latest.json" -Recurse | Select-Object -First 1
-    if ($found) {
-        $latestJsonSrc = $found.FullName
+$headers = @{
+    "Authorization" = "Bearer $token"
+    "Accept"        = "application/vnd.github.v3+json"
+    "User-Agent"    = "NEXUS-Release-Bot"
+}
+
+# Lê patch notes se existir, senão gera padrão
+$notesPath = Join-Path $PSScriptRoot "release-notes-$tag.md"
+if (Test-Path $notesPath) {
+    $releaseBody = [System.IO.File]::ReadAllText($notesPath, [System.Text.Encoding]::UTF8)
+} else {
+    $releaseBody = "## NEXUS $tag`n`nAtualização automática de correções e melhorias.`n`n### Mudanças:`n- Correções de estabilidade e melhorias de conectividade WebRTC.`n- Atualização aplicada de forma automática pelo NEXUS."
+}
+
+$releaseName = "NEXUS $tag"
+$release = $null
+
+try {
+    $existingUri = "https://api.github.com/repos/$owner/$repo/releases/tags/$tag"
+    $release = Invoke-RestMethod -Uri $existingUri -Headers $headers -Method Get
+    Write-Host "[INFO] Release $tag já existe. Atualizando metadados..." -ForegroundColor Yellow
+    $patchPayload = @{
+        "name" = $releaseName
+        "body" = [string]$releaseBody
+        "draft" = $false
+        "prerelease" = $false
     }
+    $patchJson = [System.Text.Encoding]::UTF8.GetBytes(($patchPayload | ConvertTo-Json))
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases/$($release.id)" -Headers $headers -Method Patch -Body $patchJson -ContentType "application/json; charset=utf-8"
+} catch {
+    Write-Host "[INFO] Criando novo Release $tag no GitHub..." -ForegroundColor Cyan
+    $createPayload = @{
+        "tag_name"         = $tag
+        "target_commitish" = "main"
+        "name"             = $releaseName
+        "body"             = [string]$releaseBody
+        "draft"            = $false
+        "prerelease"       = $false
+    }
+    $createJson = [System.Text.Encoding]::UTF8.GetBytes(($createPayload | ConvertTo-Json))
+    $createUri = "https://api.github.com/repos/$owner/$repo/releases"
+    $release = Invoke-RestMethod -Uri $createUri -Headers $headers -Method Post -Body $createJson -ContentType "application/json; charset=utf-8"
 }
 
-if (Test-Path $latestJsonSrc) {
-    Copy-Item -Path $latestJsonSrc -Destination (Join-Path $distDir "latest.json") -Force
+$releaseId = $release.id
+
+# 7. Upload de artefatos
+Write-Host "[5/5] Enviando arquivos para o GitHub Releases..." -ForegroundColor Cyan
+
+function Upload-Asset {
+    param(
+        [string]$FilePath,
+        [string]$ContentType,
+        [string]$FileName
+    )
+
+    if (-not (Test-Path $FilePath)) {
+        Write-Host "[AVISO] Arquivo não encontrado: $FilePath" -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "    -> Upload de $FileName ($((Get-Item $FilePath).Length) bytes)..." -ForegroundColor Gray
+    
+    try {
+        $assets = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases/$releaseId/assets" -Headers $headers -Method Get
+        $existingAsset = $assets | Where-Object { $_.name -eq $FileName }
+        if ($existingAsset) {
+            Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases/assets/$($existingAsset.id)" -Headers $headers -Method Delete
+        }
+    } catch {}
+
+    $uploadUri = "https://uploads.github.com/repos/$owner/$repo/releases/$releaseId/assets?name=$FileName"
+    $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+
+    $uploadHeaders = @{
+        "Authorization"  = "Bearer $token"
+        "Content-Type"   = $ContentType
+        "User-Agent"     = "NEXUS-Release-Bot"
+    }
+
+    $uploaded = Invoke-RestMethod -Uri $uploadUri -Headers $uploadHeaders -Method Post -Body $fileBytes
+    Write-Host "    [OK] $FileName enviado com sucesso!" -ForegroundColor Green
 }
 
+Upload-Asset -FilePath $latestJsonPath -ContentType "application/json" -FileName "latest.json"
+Upload-Asset -FilePath $sigPath -ContentType "text/plain" -FileName "nexus-windows-x64.zip.sig"
+Upload-Asset -FilePath $zipPath -ContentType "application/zip" -FileName "nexus-windows-x64.zip"
+Upload-Asset -FilePath $releaseExe -ContentType "application/vnd.microsoft.portable-executable" -FileName "nexus.exe"
+
 Write-Host "==================================================" -ForegroundColor Green
-Write-Host "  Atualização v$version gerada e assinada com sucesso! " -ForegroundColor Green
+Write-Host "   Release $tag publicado com sucesso!            " -ForegroundColor Green
+Write-Host "   URL: $($release.html_url)                      " -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Green
-Write-Host "Arquivos prontos para o GitHub em:" -ForegroundColor White
-Write-Host "  $distDir" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "COMO PUBLICAR NO GITHUB (Passo a Passo):" -ForegroundColor Yellow
-Write-Host "1. Acesse: https://github.com/Sinisterzs/NEXUS/releases/new" -ForegroundColor White
-Write-Host "2. No campo 'Tag version', digite: v$version (e selecione 'Create new tag: v$version')" -ForegroundColor White
-Write-Host "3. No título, coloque: NEXUS v$version" -ForegroundColor White
-Write-Host "4. Arraste TODOS os arquivos da pasta '$distDir' para a área de anexos do GitHub:" -ForegroundColor White
-Write-Host "   - latest.json (Obrigatório: informa aos apps que há update)" -ForegroundColor Gray
-Write-Host "   - *.nsis.zip (Obrigatório: arquivo que o app baixa automaticamente)" -ForegroundColor Gray
-Write-Host "   - *.nsis.zip.sig (Obrigatório: assinatura criptográfica de segurança)" -ForegroundColor Gray
-Write-Host "   - *.exe (Opcional: instalador para novos usuários baixarem)" -ForegroundColor Gray
-Write-Host "5. Clique em 'Publish release'." -ForegroundColor White
-Write-Host ""
-Write-Host "Assim que você publicar, o NEXUS de todos os seus amigos vai detectar e atualizar sozinho!" -ForegroundColor Green
+Write-Host "Os clientes NEXUS em execução detectarão a atualização automaticamente via latest.json!" -ForegroundColor Cyan

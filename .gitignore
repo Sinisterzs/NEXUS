@@ -58,7 +58,10 @@ nexus-server/target/
 *.tar.gz
 *.7z
 *.rar
+*.sig
 nexus-windows-x64.zip
+nexus-windows-x64.zip.sig
+latest.json
 
 # 7. Editores & Sistema Operacional
 .vscode/*
