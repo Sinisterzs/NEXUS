@@ -1,1 +1,3 @@
 Durante o desenvolvimento, priorize Vite HMR e verificações rápidas. Não execute builds Release ou gere instaladores após alterações pequenas, a menos que seja necessário validar funcionalidades nativas ou que o usuário solicite. Agrupe alterações relacionadas e faça um build Release ao final de cada etapa.
+
+Nunca lance updates ou publique releases no GitHub sem autorização explícita do usuário.
