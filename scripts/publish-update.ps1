@@ -52,34 +52,37 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 5. Prepara e assina pacote zip para auto-update
-Write-Host "[3/5] Compactando e assinando pacote de atualização..." -ForegroundColor Cyan
+# 5. Coleta instalador NSIS e assinatura gerados pelo Tauri para o auto-update
+Write-Host "[3/5] Coletando instalador e assinatura NSIS para o auto-update..." -ForegroundColor Cyan
 $releaseExe = Join-Path $rootDir "src-tauri\target\release\nexus.exe"
-$zipPath = Join-Path $rootDir "nexus-windows-x64.zip"
-$sigPath = Join-Path $rootDir "nexus-windows-x64.zip.sig"
+$nsisDir = Join-Path $rootDir "src-tauri\target\release\bundle\nsis"
+$setupExe = Get-ChildItem -Path $nsisDir -Filter "*$version*-setup.exe" | Select-Object -First 1
+$setupSig = Get-ChildItem -Path $nsisDir -Filter "*$version*-setup.exe.sig" | Select-Object -First 1
 
-if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-Compress-Archive -Path $releaseExe -DestinationPath $zipPath -Force
+if (-not $setupExe -or -not $setupSig) {
+    Write-Host "[ERRO] Instalador NSIS ou assinatura não encontrados em $nsisDir" -ForegroundColor Red
+    exit 1
+}
 
-Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
-& npx tauri signer sign -f ".tauri\nexus.key" $zipPath
-$signature = (Get-Content -Raw $sigPath).Trim()
+$signature = (Get-Content -Raw $setupSig.FullName).Trim()
 
-# Gera latest.json do updater
-$latestJsonContent = @{
+# Gera latest.json do updater (UTF-8 sem BOM)
+$latestObj = @{
     "version" = $version
     "notes" = "NEXUS $tag - Atualização Automática"
     "pub_date" = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     "platforms" = @{
         "windows-x86_64" = @{
             "signature" = $signature
-            "url" = "https://github.com/$owner/$repo/releases/download/$tag/nexus-windows-x64.zip"
+            "url" = "https://github.com/$owner/$repo/releases/download/$tag/$($setupExe.Name)"
         }
     }
-} | ConvertTo-Json -Depth 5
+}
+$latestJsonContent = $latestObj | ConvertTo-Json -Depth 5
 
 $latestJsonPath = Join-Path $rootDir "latest.json"
-[System.IO.File]::WriteAllText($latestJsonPath, $latestJsonContent, [System.Text.Encoding]::UTF8)
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($latestJsonPath, $latestJsonContent, $utf8NoBom)
 
 # 6. Conecta à API do GitHub usando credenciais locais
 Write-Host "[4/5] Conectando ao GitHub para criar/atualizar Release..." -ForegroundColor Cyan
@@ -183,8 +186,8 @@ function Upload-Asset {
 }
 
 Upload-Asset -FilePath $latestJsonPath -ContentType "application/json" -FileName "latest.json"
-Upload-Asset -FilePath $sigPath -ContentType "text/plain" -FileName "nexus-windows-x64.zip.sig"
-Upload-Asset -FilePath $zipPath -ContentType "application/zip" -FileName "nexus-windows-x64.zip"
+Upload-Asset -FilePath $setupSig.FullName -ContentType "text/plain" -FileName $setupSig.Name
+Upload-Asset -FilePath $setupExe.FullName -ContentType "application/vnd.microsoft.portable-executable" -FileName $setupExe.Name
 Upload-Asset -FilePath $releaseExe -ContentType "application/vnd.microsoft.portable-executable" -FileName "nexus.exe"
 
 Write-Host "==================================================" -ForegroundColor Green

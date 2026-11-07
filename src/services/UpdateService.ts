@@ -174,9 +174,10 @@ class UpdateService {
       console.log('[UpdateService] Atualização aplicada. Reiniciando aplicativo...');
     } catch (err: any) {
       console.error('[UpdateService] Falha ao baixar ou aplicar atualização:', err);
+      const msg = typeof err === 'string' ? err : err?.message || (err ? JSON.stringify(err) : 'Falha ao baixar os pacotes da nova versão.');
       this.setState({
         status: 'error',
-        errorMessage: err?.message || 'Falha ao baixar os pacotes da nova versão.',
+        errorMessage: msg,
       });
       throw err;
     }
