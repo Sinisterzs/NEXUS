@@ -99,27 +99,41 @@ class DmRepository {
     });
   }
 
-  async editMessage(messageId: string, content: string): Promise<DirectMessageDto> {
+  async editMessage(
+    messageId: string,
+    content: string,
+    accountId?: string
+  ): Promise<DirectMessageDto> {
     const { invoke } = await import('@tauri-apps/api/core');
     return await invoke<DirectMessageDto>('dm_edit_message', {
       messageId,
       content,
+      accountId: accountId || null,
     });
   }
 
-  async deleteMessage(messageId: string): Promise<DirectMessageDto> {
+  async deleteMessage(
+    messageId: string,
+    accountId?: string
+  ): Promise<DirectMessageDto> {
     const { invoke } = await import('@tauri-apps/api/core');
     return await invoke<DirectMessageDto>('dm_delete_message', {
       messageId,
+      accountId: accountId || null,
     });
   }
 
-  async markRead(conversationId: string, lastReadMessageId?: string): Promise<void> {
+  async markRead(
+    conversationId: string,
+    lastReadMessageId?: string,
+    accountId?: string
+  ): Promise<void> {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('dm_mark_read', {
         conversationId,
         lastReadMessageId: lastReadMessageId || null,
+        accountId: accountId || null,
       });
     } catch (err) {
       console.warn('[DmRepository] Erro ao marcar leitura:', err);

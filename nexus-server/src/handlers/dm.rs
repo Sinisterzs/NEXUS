@@ -7,7 +7,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::errors::AppError;
-use crate::middleware::CurrentUser;
+use crate::middleware::{CurrentSessionId, CurrentUser};
 use crate::models::{
     CreateConversationRequest, DirectConversationDto, DirectMessageDto, EditMessageRequest,
     GatewayTicketResponse, MarkDeliveredRequest, MarkReadRequest, SendMessageRequest,
@@ -127,8 +127,13 @@ pub async fn mark_delivered(
 pub async fn create_gateway_ticket(
     State(dm_service): State<DmService>,
     Extension(CurrentUser(auth_user)): Extension<CurrentUser>,
+    Extension(CurrentSessionId(session_id)): Extension<CurrentSessionId>,
 ) -> Result<Json<GatewayTicketResponse>, AppError> {
     let ticket = dm_service.create_gateway_ticket(auth_user.id).await?;
+    dm_service
+        .presence_manager()
+        .bind_ticket_to_session(&ticket, session_id)
+        .await;
     Ok(Json(GatewayTicketResponse {
         ticket,
         expires_in_secs: 60,

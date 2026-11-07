@@ -36,6 +36,10 @@ impl DmService {
         &self.dm_repo
     }
 
+    pub fn presence_manager(&self) -> &PresenceManager {
+        &self.presence_mgr
+    }
+
     /// List conversations for the given user, enriched with live presence
     pub async fn list_conversations(
         &self,
@@ -239,7 +243,7 @@ impl DmService {
         Ok(msg_dto)
     }
 
-    /// Edits own message
+    /// Edits own message (requires active friendship and no blocking)
     pub async fn edit_message(
         &self,
         message_id: Uuid,
@@ -254,15 +258,43 @@ impl DmService {
             return Err(AppError::BadRequest("A mensagem não pode ter mais de 2000 caracteres.".into()));
         }
 
+        let existing = self
+            .dm_repo
+            .get_message_by_id(message_id, user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Mensagem não encontrada.".into()))?;
+
+        if existing.sender_id != user_id {
+            return Err(AppError::Forbidden(
+                "Você só pode editar mensagens de sua autoria.".into(),
+            ));
+        }
+
+        let other_id = self
+            .dm_repo
+            .get_other_participant(existing.conversation_id, user_id)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("Conversa inválida ou sem participante.".into()))?;
+
+        if self.friend_repo.is_blocked(user_id, other_id).await? {
+            return Err(AppError::Forbidden(
+                "Não é possível editar mensagens para um usuário bloqueado.".into(),
+            ));
+        }
+
+        if !self.friend_repo.is_friend(user_id, other_id).await? {
+            return Err(AppError::Forbidden(
+                "É necessário ter uma amizade ativa para editar mensagens.".into(),
+            ));
+        }
+
         let edited = self.dm_repo.edit_message(message_id, user_id, trimmed).await?;
 
         // Notify both participants
-        if let Some(other_id) = self.dm_repo.get_other_participant(edited.conversation_id, user_id).await? {
-            let mut other_msg = edited.clone();
-            other_msg.is_mine = false;
-            let other_ev = GatewayEvent::new("dm.message.updated", json!({ "message": other_msg }));
-            self.presence_mgr.send_to_user(other_id, &other_ev).await;
-        }
+        let mut other_msg = edited.clone();
+        other_msg.is_mine = false;
+        let other_ev = GatewayEvent::new("dm.message.updated", json!({ "message": other_msg }));
+        self.presence_mgr.send_to_user(other_id, &other_ev).await;
 
         let self_ev = GatewayEvent::new("dm.message.updated", json!({ "message": edited }));
         self.presence_mgr.send_to_user(user_id, &self_ev).await;

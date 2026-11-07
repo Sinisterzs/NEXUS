@@ -5,12 +5,17 @@ use axum::{
     response::Response,
 };
 
+use uuid::Uuid;
+
 use crate::errors::AppError;
 use crate::models::UserProfileResponse;
 use crate::services::AuthService;
 
 #[derive(Clone, Debug)]
 pub struct CurrentUser(pub UserProfileResponse);
+
+#[derive(Clone, Copy, Debug)]
+pub struct CurrentSessionId(pub Uuid);
 
 #[derive(Clone, Debug)]
 pub struct RawSessionToken(pub String);
@@ -40,10 +45,11 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Result<Response, AppError> {
     let token = extract_bearer_token(&request)?;
-    let user_profile = auth_service.validate_token_and_get_user(&token).await?;
+    let (session_id, user_profile) = auth_service.validate_token_and_get_session(&token).await?;
 
     request.extensions_mut().insert(user_profile.clone());
     request.extensions_mut().insert(CurrentUser(user_profile));
+    request.extensions_mut().insert(CurrentSessionId(session_id));
     request.extensions_mut().insert(RawSessionToken(token));
 
     Ok(next.run(request).await)

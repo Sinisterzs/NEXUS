@@ -17,10 +17,11 @@ use crate::services::{AuthService, DmService, FriendService, PresenceManager};
 pub fn create_app(pool: PgPool, config: AppConfig) -> Router {
     let user_repo = UserRepository::new(pool.clone());
     let session_repo = SessionRepository::new(pool.clone());
-    let auth_service = AuthService::new(user_repo.clone(), session_repo, config.clone());
-
     let friend_repo = FriendRepository::new(pool.clone());
     let presence_mgr = PresenceManager::new(friend_repo.clone());
+    let auth_service = AuthService::new(user_repo.clone(), session_repo, config.clone())
+        .with_presence_manager(presence_mgr.clone());
+
     let friend_service = FriendService::new(friend_repo.clone(), presence_mgr.clone());
 
     let dm_repo = DmRepository::new(pool);
@@ -34,6 +35,7 @@ pub fn create_app_with_auth_service(auth_service: AuthService, config: AppConfig
     let user_repo = UserRepository::new(pool.clone());
     let friend_repo = FriendRepository::new(pool.clone());
     let presence_mgr = PresenceManager::new(friend_repo.clone());
+    let auth_service = auth_service.with_presence_manager(presence_mgr.clone());
     let friend_service = FriendService::new(friend_repo.clone(), presence_mgr.clone());
 
     let dm_repo = DmRepository::new(pool);

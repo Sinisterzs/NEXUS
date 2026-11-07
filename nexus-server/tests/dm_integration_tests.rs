@@ -1477,3 +1477,63 @@ async fn test_28_cursor_pagination_ordering_and_limits() {
     let page4: Vec<DirectMessageDto> = page4_res.json().await.unwrap();
     assert!(page4.is_empty());
 }
+
+#[tokio::test]
+async fn test_29_blocked_user_cannot_edit_message_to_bypass_block() {
+    let (base_url, _pool) = setup_test_server().await;
+    let client = Client::new();
+
+    let (_user_a, token_a) = register_user(&base_url, "alice_block_edit", "alice_be@example.com").await;
+    let (user_b, token_b) = register_user(&base_url, "bob_block_edit", "bob_be@example.com").await;
+
+    make_friends(&base_url, &token_a, &token_b, "bob_block_edit").await;
+
+    // Alice starts conversation with Bob and sends a message
+    let conv: DirectConversationDto = client
+        .post(format!("{}/v1/dm/conversations", base_url))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .json(&json!({ "target_user_id": user_b }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let msg: DirectMessageDto = client
+        .post(format!("{}/v1/dm/conversations/{}/messages", base_url, conv.id))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .json(&json!({
+            "client_message_id": Uuid::new_v4(),
+            "content": "Olá Bob, mensagem amigável antes do desentendimento."
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Bob blocks Alice
+    let block_res = client
+        .post(format!("{}/v1/users/{}/block", base_url, _user_a))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(block_res.status(), StatusCode::OK);
+
+    // Alice attempts to edit her previous message to communicate with Bob who blocked her
+    let edit_res = client
+        .patch(format!("{}/v1/dm/messages/{}", base_url, msg.id))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .json(&json!({
+            "content": "Tentando contornar o bloqueio através de edição de mensagem antiga!"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Must be rejected with 403 Forbidden!
+    assert_eq!(edit_res.status(), StatusCode::FORBIDDEN);
+}

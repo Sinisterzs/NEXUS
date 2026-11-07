@@ -18,6 +18,7 @@ use crate::models::{
 };
 use crate::repositories::{SessionRepository, UserRepository};
 use crate::services::google_oauth::GoogleOAuthVerifier;
+use crate::services::presence::PresenceManager;
 
 // Dummy Argon2 hash used for constant-time mitigation when user is not found
 const DUMMY_ARGON2_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$eHVzZXJub3Rmb3VuZDEyMw$4+Xp2Xh24w1iG8v0V1u95zT2E5l5s8f6wK8j1e7o3l0";
@@ -28,6 +29,7 @@ pub struct AuthService {
     session_repo: SessionRepository,
     config: AppConfig,
     google_verifier: GoogleOAuthVerifier,
+    presence_mgr: Option<PresenceManager>,
 }
 
 impl AuthService {
@@ -38,7 +40,13 @@ impl AuthService {
             session_repo,
             config,
             google_verifier,
+            presence_mgr: None,
         }
+    }
+
+    pub fn with_presence_manager(mut self, presence_mgr: PresenceManager) -> Self {
+        self.presence_mgr = Some(presence_mgr);
+        self
     }
 
     pub fn with_google_verifier(mut self, verifier: GoogleOAuthVerifier) -> Self {
@@ -171,7 +179,7 @@ impl AuthService {
         if !password_valid {
             tracing::warn!(
                 target: "nexus_server::auth",
-                login = %login_input,
+                user_id = %user.id,
                 "Failed login attempt: invalid credentials"
             );
             return Err(AppError::InvalidCredentials);
@@ -409,11 +417,15 @@ impl AuthService {
         Ok(())
     }
 
-    /// Logs out by revoking the given session token
+    /// Logs out by revoking the given session token and immediately disconnecting its WebSocket connections
     pub async fn logout(&self, raw_token: &str) -> Result<(), AppError> {
         let token_hash = Self::hash_token(raw_token);
-        let revoked = self.session_repo.revoke_session(&token_hash).await?;
-        if !revoked {
+        let revoked_opt = self.session_repo.revoke_session_returning(&token_hash).await?;
+        if let Some((session_id, user_id)) = revoked_opt {
+            if let Some(ref pm) = self.presence_mgr {
+                pm.revoke_session_connections(user_id, session_id).await;
+            }
+        } else {
             tracing::debug!(target: "nexus_server::auth", "Session not found or already revoked");
         }
         Ok(())
@@ -430,6 +442,10 @@ impl AuthService {
 
         // Revoke old session
         self.session_repo.revoke_session(&old_token_hash).await?;
+        if let Some(ref pm) = self.presence_mgr {
+            pm.revoke_session_connections(session.user_id, session.id)
+                .await;
+        }
 
         // Issue new session
         let new_token = Self::generate_token();
@@ -452,11 +468,11 @@ impl AuthService {
         })
     }
 
-    /// Validates an active session token and returns the current user profile
-    pub async fn validate_token_and_get_user(
+    /// Validates an active session token and returns both the session ID and current user profile
+    pub async fn validate_token_and_get_session(
         &self,
         raw_token: &str,
-    ) -> Result<UserProfileResponse, AppError> {
+    ) -> Result<(Uuid, UserProfileResponse), AppError> {
         let token_hash = Self::hash_token(raw_token);
         let session = self
             .session_repo
@@ -470,7 +486,24 @@ impl AuthService {
             .await?
             .ok_or(AppError::InvalidToken)?;
 
+        Ok((session.id, user_profile))
+    }
+
+    /// Validates an active session token and returns the current user profile
+    pub async fn validate_token_and_get_user(
+        &self,
+        raw_token: &str,
+    ) -> Result<UserProfileResponse, AppError> {
+        let (_session_id, user_profile) = self.validate_token_and_get_session(raw_token).await?;
         Ok(user_profile)
+    }
+
+    /// Checks whether a session ID is still active (not revoked and not expired)
+    pub async fn is_session_active(&self, session_id: Uuid) -> bool {
+        self.session_repo
+            .is_session_active(session_id)
+            .await
+            .unwrap_or(false)
     }
 
     /// Retrieves user profile by user_id

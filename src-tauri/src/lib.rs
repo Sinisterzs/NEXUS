@@ -12,6 +12,10 @@ use tauri::Manager;
 
 static CALL_MIC_CONSENT: AtomicBool = AtomicBool::new(false);
 
+pub fn reset_mic_consent() {
+    CALL_MIC_CONSENT.store(false, Ordering::SeqCst);
+}
+
 #[tauri::command]
 fn call_set_mic_consent(granted: bool) {
     CALL_MIC_CONSENT.store(granted, Ordering::SeqCst);
@@ -26,8 +30,8 @@ fn call_get_mic_consent() -> bool {
 fn get_app_info() -> serde_json::Value {
     serde_json::json!({
         "name": "NEXUS",
-        "version": "0.2.2",
-        "phase": "2.1.1",
+        "version": env!("CARGO_PKG_VERSION"),
+        "phase": "2.5",
         "status": "ready"
     })
 }
@@ -63,11 +67,46 @@ pub fn run() {
                     tauri::webview::PermissionResponse::Deny
                 }
             }
-            _ => tauri::webview::PermissionResponse::Default,
+            tauri::webview::PermissionKind::Camera
+            | tauri::webview::PermissionKind::Geolocation
+            | tauri::webview::PermissionKind::Notifications => {
+                tauri::webview::PermissionResponse::Deny
+            }
+            _ => tauri::webview::PermissionResponse::Deny,
         })
         .setup(|app| {
             let db = DbState::init(app.handle()).expect("Failed to initialize SQLite database");
             app.manage(db);
+
+            #[cfg(desktop)]
+            {
+                let _win = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::default(),
+                )
+                .title("NEXUS")
+                .inner_size(1280.0, 800.0)
+                .min_inner_size(960.0, 600.0)
+                .resizable(true)
+                .maximizable(true)
+                .decorations(true)
+                .theme(Some(tauri::Theme::Dark))
+                .on_web_resource_request(|_request, response| {
+                    if let Some(csp_val) = response.headers_mut().get_mut("content-security-policy") {
+                        if let Ok(csp_str) = csp_val.to_str() {
+                            let api_base = crate::auth::get_api_base();
+                            let augmented = crate::network::augment_csp_for_server(csp_str, &api_base);
+                            if let Ok(new_hdr) = tauri::http::HeaderValue::from_str(&augmented) {
+                                *csp_val = new_hdr;
+                                eprintln!("[CSP] Política dinâmica de connect-src aplicada ao documento principal para: {}", api_base);
+                            }
+                        }
+                    }
+                })
+                .build()?;
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -82,6 +121,8 @@ pub fn run() {
             commands::mark_conversation_read,
             commands::get_cache_metadata,
             commands::set_cache_metadata,
+            commands::db_get_schema_version,
+            commands::db_migrate_to_v3,
             auth::auth_register,
             auth::auth_login,
             auth::auth_logout,
@@ -110,7 +151,6 @@ pub fn run() {
             friends::friends_update_presence,
             friends::friends_get_ws_url,
             friends::gateway_get_ws_url,
-            friends::gateway_get_auth_token,
             dm::gateway_get_ticket,
             dm::dm_list_conversations,
             dm::dm_get_or_create_conversation,

@@ -24,8 +24,160 @@ import { authRepository, normalizeAuthUser } from '../repositories/AuthRepositor
 import { friendRepository } from '../repositories/FriendRepository';
 import { presenceRepository } from '../repositories/PresenceRepository';
 import { dmRepository } from '../repositories/DmRepository';
+import { conversationRepository } from '../repositories/ConversationRepository';
+import { messageRepository } from '../repositories/MessageRepository';
+import { callHistoryRepository } from '../repositories/CallHistoryRepository';
 import { gatewayClient } from '../services/GatewayClient';
+import { callService } from '../services/CallService';
 import { networkManager, DEFAULT_NETWORK_STATUS } from '../services/NetworkManager';
+import { DeliveryStatus } from '../lib/types';
+
+export function syncAccountRepositories(accountId?: string | null): void {
+  const resolved = accountId?.trim() || 'offline_demo';
+  settingsRepository.setAccountId(resolved);
+  callHistoryRepository.setAccountId(resolved);
+  conversationRepository.setAccountId(resolved);
+  messageRepository.setAccountId(resolved);
+}
+
+export function deliveryStatusRank(status?: DeliveryStatus): number {
+  switch (status) {
+    case 'read':
+      return 4;
+    case 'delivered':
+      return 3;
+    case 'sent':
+    case 'local_saved':
+      return 2;
+    case 'sending':
+    case 'pending':
+      return 1;
+    case 'failed':
+      return 0;
+    default:
+      return 2;
+  }
+}
+
+export function resolveEffectiveDeliveryStatus(msg: DirectMessageDto): DeliveryStatus {
+  if (msg.read_at) return 'read';
+  if (msg.delivered_at) return 'delivered';
+  if (msg.delivery_status) return msg.delivery_status;
+  return 'sent';
+}
+
+export function mergeSingleMessage(
+  existing: DirectMessageDto,
+  incoming: DirectMessageDto
+): DirectMessageDto {
+  const existingIsOptimistic =
+    existing.id.startsWith('opt_') || existing.id.startsWith('local_');
+  const incomingIsOptimistic =
+    incoming.id.startsWith('opt_') || incoming.id.startsWith('local_');
+
+  const canonicalId =
+    existingIsOptimistic && !incomingIsOptimistic ? incoming.id : existing.id;
+
+  // Preserve authoritative creation timestamp once assigned by server
+  const createdAt =
+    existingIsOptimistic && !incomingIsOptimistic
+      ? incoming.created_at
+      : existing.created_at || incoming.created_at;
+
+  // Tombstone (`deleted_at`) is irreversible: delayed edit events cannot resurrect deleted messages
+  const deletedAt = existing.deleted_at || incoming.deleted_at || null;
+  const content = deletedAt
+    ? '[Mensagem apagada]'
+    : incoming.edited_at &&
+      (!existing.edited_at ||
+        Date.parse(incoming.edited_at) >= Date.parse(existing.edited_at))
+    ? incoming.content
+    : incoming.content || existing.content;
+
+  const editedAt = deletedAt
+    ? existing.edited_at || null
+    : incoming.edited_at || existing.edited_at || null;
+
+  const deliveredAt = existing.delivered_at || incoming.delivered_at || null;
+  const readAt = existing.read_at || incoming.read_at || null;
+
+  const existingStatus = resolveEffectiveDeliveryStatus(existing);
+  const incomingStatus = resolveEffectiveDeliveryStatus(incoming);
+
+  let finalStatus: DeliveryStatus;
+  if (incomingStatus === 'failed' && existingStatus === 'sending') {
+    finalStatus = 'failed';
+  } else {
+    finalStatus =
+      deliveryStatusRank(incomingStatus) >= deliveryStatusRank(existingStatus)
+        ? incomingStatus
+        : existingStatus;
+  }
+
+  return {
+    ...existing,
+    ...incoming,
+    id: canonicalId,
+    client_message_id: incoming.client_message_id || existing.client_message_id,
+    created_at: createdAt,
+    content,
+    edited_at: editedAt,
+    deleted_at: deletedAt,
+    delivered_at: deliveredAt,
+    read_at: readAt,
+    delivery_status: finalStatus,
+  };
+}
+
+export function mergeAndSortMessages(
+  existingList: DirectMessageDto[],
+  incomingList: DirectMessageDto[]
+): DirectMessageDto[] {
+  const result: DirectMessageDto[] = [];
+  const byId = new Map<string, number>();
+  const byClientId = new Map<string, number>();
+
+  const upsert = (msg: DirectMessageDto) => {
+    const normMsg: DirectMessageDto = {
+      ...msg,
+      delivery_status: resolveEffectiveDeliveryStatus(msg),
+    };
+    const cid = normMsg.client_message_id?.trim();
+
+    let matchIdx: number | undefined = byId.get(normMsg.id);
+    if (matchIdx === undefined && cid) {
+      matchIdx = byClientId.get(cid);
+    }
+
+    if (matchIdx !== undefined) {
+      const merged = mergeSingleMessage(result[matchIdx], normMsg);
+      result[matchIdx] = merged;
+      byId.set(merged.id, matchIdx);
+      if (merged.client_message_id?.trim()) {
+        byClientId.set(merged.client_message_id.trim(), matchIdx);
+      }
+    } else {
+      const idx = result.length;
+      result.push(normMsg);
+      byId.set(normMsg.id, idx);
+      if (cid) {
+        byClientId.set(cid, idx);
+      }
+    }
+  };
+
+  for (const m of existingList) upsert(m);
+  for (const m of incomingList) upsert(m);
+
+  result.sort((a, b) => {
+    const ta = Date.parse(a.created_at) || 0;
+    const tb = Date.parse(b.created_at) || 0;
+    if (ta !== tb) return ta - tb;
+    return a.id.localeCompare(b.id);
+  });
+
+  return result;
+}
 
 let wsUnsubscribe: (() => void) | null = null;
 
@@ -204,19 +356,41 @@ const getInitialTab = (): MainTab => {
   return 'home';
 };
 
-function createAuthenticatedState(state: AppState, user: AuthUserProfile) {
+function createAuthenticatedState(
+  state: AppState,
+  user: AuthUserProfile,
+  accountAvatarUrl?: string
+) {
   const normUser = normalizeAuthUser(user);
+  const previousAccountId = state.onlineUser?.id;
+  const isDifferentAccount = previousAccountId !== normUser.id;
+  const resolvedAvatar = normUser.avatarUrl || accountAvatarUrl;
+
+  syncAccountRepositories(normUser.id);
+
   return {
     authStatus: 'authenticated' as const,
     authMode: 'authenticated' as const,
     onlineUser: normUser,
     backendAvailable: true,
+    // Reset DM/friend state if switching from another account or offline demo
+    ...(isDifferentAccount
+      ? {
+          conversations: [],
+          activeConversationId: null,
+          activeConversationMessages: [],
+          friends: [],
+          friendRequests: { incoming: [], outgoing: [] },
+          userSearchResults: [],
+          dmError: null,
+        }
+      : {}),
     currentUser: {
       id: normUser.id,
       username: normUser.username,
       displayName: normUser.displayName || normUser.username,
       tag: undefined,
-      avatarUrl: normUser.avatarUrl,
+      avatarUrl: resolvedAvatar,
       bio: normUser.bio || '',
       status: (normUser.status as UserStatus) || 'online',
       customStatus: normUser.customStatus || '',
@@ -232,6 +406,7 @@ function createAuthenticatedState(state: AppState, user: AuthUserProfile) {
         tag: undefined,
         bio: normUser.bio || '',
         customStatus: normUser.customStatus || '',
+        avatarUrl: resolvedAvatar,
       },
     },
     isAuthModalOpen: false,
@@ -429,7 +604,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { user, isOffline, hasStoredToken } = await authRepository.restoreSession();
 
       if (user) {
-        set((state) => createAuthenticatedState(state, user));
+        await settingsRepository.flushSave();
+        const accPrefs = await settingsRepository.loadPreferences(user.id);
+        set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl));
 
         // Initialize social friends & real-time presence
         get().loadFriends();
@@ -448,17 +625,28 @@ export const useAppStore = create<AppState>((set, get) => ({
         get().loadConversations();
       } else {
         // No session stored in Keyring or session was revoked (401)
+        syncAccountRepositories('offline_demo');
+        const demoPrefs = await settingsRepository.loadPreferences('offline_demo');
         set({
           authStatus: 'unauthenticated',
           authMode: 'offline_demo',
           onlineUser: null,
-          currentUser: mockCurrentUser,
+          currentUser: {
+            ...mockCurrentUser,
+            avatarUrl: demoPrefs.avatarUrl || mockCurrentUser.avatarUrl,
+          },
           friends: [],
           friendRequests: { incoming: [], outgoing: [] },
+          conversations: [],
+          activeConversationId: null,
+          activeConversationMessages: [],
           isAuthModalOpen: false,
           settings: {
             ...get().settings,
-            profile: initialAppSettings.profile,
+            profile: {
+              ...initialAppSettings.profile,
+              avatarUrl: demoPrefs.avatarUrl,
+            },
           },
         });
       }
@@ -491,8 +679,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   loginOnline: async (login, password) => {
     set({ authError: null });
     try {
+      await settingsRepository.flushSave();
       const user = await authRepository.login(login, password);
-      set((state) => createAuthenticatedState(state, user));
+      const accPrefs = await settingsRepository.loadPreferences(user.id);
+      set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl));
 
       // Initialize friends & real-time presence
       get().loadFriends();
@@ -511,8 +701,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   registerOnline: async (username, email, password, displayName) => {
     set({ authError: null });
     try {
+      await settingsRepository.flushSave();
       const user = await authRepository.register(username, email, password, displayName);
-      set((state) => createAuthenticatedState(state, user));
+      const accPrefs = await settingsRepository.loadPreferences(user.id);
+      set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl));
 
       // Initialize friends & real-time presence
       get().loadFriends();
@@ -531,9 +723,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   loginGoogle: async () => {
     set({ isGoogleLoading: true, authError: null });
     try {
+      await settingsRepository.flushSave();
       const user = await authRepository.loginGoogle();
+      const accPrefs = await settingsRepository.loadPreferences(user.id);
       set((state) => ({
-        ...createAuthenticatedState(state, user),
+        ...createAuthenticatedState(state, user, accPrefs.avatarUrl),
         isGoogleLoading: false,
       }));
 
@@ -586,28 +780,42 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   logoutOnline: async () => {
+    await settingsRepository.flushSave();
+    callService.terminateOnLogout();
     get().closeWebSocket();
     await authRepository.logout();
+    syncAccountRepositories('offline_demo');
+    const demoPrefs = await settingsRepository.loadPreferences('offline_demo');
     set({
       authStatus: 'unauthenticated',
       authMode: 'offline_demo',
       onlineUser: null,
-      currentUser: mockCurrentUser,
+      currentUser: {
+        ...mockCurrentUser,
+        avatarUrl: demoPrefs.avatarUrl || mockCurrentUser.avatarUrl,
+      },
       friends: [],
       friendRequests: { incoming: [], outgoing: [] },
+      userSearchResults: [],
       conversations: [],
       activeConversationId: null,
       activeConversationMessages: [],
+      dmError: null,
       isAuthModalOpen: false,
       settings: {
         ...get().settings,
-        profile: initialAppSettings.profile,
+        profile: {
+          ...initialAppSettings.profile,
+          avatarUrl: demoPrefs.avatarUrl,
+        },
       },
     });
   },
 
   setOfflineDemoMode: () => {
+    callService.terminateOnLogout();
     get().closeWebSocket();
+    syncAccountRepositories('offline_demo');
     set({
       authStatus: 'unauthenticated',
       authMode: 'offline_demo',
@@ -615,9 +823,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentUser: mockCurrentUser,
       friends: [],
       friendRequests: { incoming: [], outgoing: [] },
+      userSearchResults: [],
       conversations: [],
       activeConversationId: null,
       activeConversationMessages: [],
+      dmError: null,
       authError: null,
       isAuthModalOpen: false,
     });
@@ -837,22 +1047,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
       onDmMessageCreated: (msg) => {
         const state = get();
-        // Cache locally in SQLite
+        // Cache locally in SQLite scoped to active account
         dmRepository.cacheIncomingMessage(msg, state.onlineUser?.id);
 
         if (state.activeConversationId === msg.conversation_id) {
-          set((curr) => {
-            const exists = curr.activeConversationMessages.some(
-              (m) => m.id === msg.id || m.client_message_id === msg.client_message_id
-            );
-            const updated = exists
-              ? curr.activeConversationMessages.map((m) =>
-                  m.id === msg.id || m.client_message_id === msg.client_message_id ? msg : m
-                )
-              : [...curr.activeConversationMessages, msg];
-
-            return { activeConversationMessages: updated };
-          });
+          set((curr) => ({
+            activeConversationMessages: mergeAndSortMessages(
+              curr.activeConversationMessages,
+              [msg]
+            ),
+          }));
           get().markActiveConversationRead();
         }
 
@@ -860,33 +1064,49 @@ export const useAppStore = create<AppState>((set, get) => ({
           const convExists = curr.conversations.some((c) => c.id === msg.conversation_id);
           let convs = curr.conversations;
           if (convExists) {
-            convs = curr.conversations.map((c) =>
-              c.id === msg.conversation_id
-                ? {
-                    ...c,
-                    last_message: msg,
-                    unread_count:
-                      curr.activeConversationId === msg.conversation_id
-                        ? 0
-                        : c.unread_count + (msg.is_mine ? 0 : 1),
-                    updated_at: msg.created_at,
-                  }
-                : c
-            );
+            convs = curr.conversations.map((c) => {
+              if (c.id !== msg.conversation_id) return c;
+              const mergedLast = c.last_message
+                ? c.last_message.id === msg.id ||
+                  (msg.client_message_id &&
+                    c.last_message.client_message_id === msg.client_message_id)
+                  ? mergeSingleMessage(c.last_message, msg)
+                  : Date.parse(msg.created_at) >= Date.parse(c.last_message.created_at)
+                  ? msg
+                  : c.last_message
+                : msg;
+              const isNewUnread =
+                curr.activeConversationId !== msg.conversation_id &&
+                !msg.is_mine &&
+                c.last_message?.id !== msg.id;
+              return {
+                ...c,
+                last_message: mergedLast,
+                unread_count:
+                  curr.activeConversationId === msg.conversation_id
+                    ? 0
+                    : c.unread_count + (isNewUnread ? 1 : 0),
+                updated_at: mergedLast.created_at || c.updated_at,
+              };
+            });
           } else {
             get().loadConversations();
           }
-          convs.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+          convs = [...convs].sort(
+            (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+          );
           return { conversations: convs };
         });
       },
       onDmMessageUpdated: (msg) => {
         set((state) => ({
           activeConversationMessages: state.activeConversationMessages.map((m) =>
-            m.id === msg.id ? msg : m
+            m.id === msg.id ? mergeSingleMessage(m, msg) : m
           ),
           conversations: state.conversations.map((c) =>
-            c.last_message?.id === msg.id ? { ...c, last_message: msg } : c
+            c.last_message?.id === msg.id
+              ? { ...c, last_message: mergeSingleMessage(c.last_message, msg) }
+              : c
           ),
         }));
       },
@@ -913,15 +1133,37 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
       onDmMessageDelivered: (data) => {
         set((state) => ({
-          activeConversationMessages: state.activeConversationMessages.map((m) =>
-            data.message_ids.includes(m.id)
-              ? {
-                  ...m,
-                  delivered_at: data.delivered_at,
-                  delivery_status: m.delivery_status === 'sent' ? 'delivered' : m.delivery_status,
-                }
-              : m
-          ),
+          activeConversationMessages: state.activeConversationMessages.map((m) => {
+            if (!data.message_ids.includes(m.id)) return m;
+            const currentRank = deliveryStatusRank(resolveEffectiveDeliveryStatus(m));
+            const nextStatus: DeliveryStatus =
+              currentRank >= deliveryStatusRank('delivered')
+                ? resolveEffectiveDeliveryStatus(m)
+                : 'delivered';
+            return {
+              ...m,
+              delivered_at: m.delivered_at || data.delivered_at,
+              delivery_status: nextStatus,
+            };
+          }),
+          conversations: state.conversations.map((c) => {
+            if (!c.last_message || !data.message_ids.includes(c.last_message.id)) return c;
+            const currentRank = deliveryStatusRank(
+              resolveEffectiveDeliveryStatus(c.last_message)
+            );
+            const nextStatus: DeliveryStatus =
+              currentRank >= deliveryStatusRank('delivered')
+                ? resolveEffectiveDeliveryStatus(c.last_message)
+                : 'delivered';
+            return {
+              ...c,
+              last_message: {
+                ...c.last_message,
+                delivered_at: c.last_message.delivered_at || data.delivered_at,
+                delivery_status: nextStatus,
+              },
+            };
+          }),
         }));
       },
       onDmMessageRead: (data) => {
@@ -930,20 +1172,40 @@ export const useAppStore = create<AppState>((set, get) => ({
             m.conversation_id === data.conversation_id && m.is_mine
               ? {
                   ...m,
-                  read_at: data.read_at,
+                  delivered_at: m.delivered_at || data.read_at,
+                  read_at: m.read_at || data.read_at,
                   delivery_status: 'read',
                 }
               : m
+          ),
+          conversations: state.conversations.map((c) =>
+            c.id === data.conversation_id && c.last_message && c.last_message.is_mine
+              ? {
+                  ...c,
+                  last_message: {
+                    ...c.last_message,
+                    delivered_at: c.last_message.delivered_at || data.read_at,
+                    read_at: c.last_message.read_at || data.read_at,
+                    delivery_status: 'read',
+                  },
+                }
+              : c
           ),
         }));
       },
       onDmConversationUpdated: (data) => {
         set((state) => ({
-          conversations: state.conversations.map((c) =>
-            c.id === data.conversation_id
-              ? { ...c, last_message: data.last_message, updated_at: data.last_message.created_at }
-              : c
-          ),
+          conversations: state.conversations.map((c) => {
+            if (c.id !== data.conversation_id) return c;
+            const nextLast = c.last_message && c.last_message.id === data.last_message.id
+              ? mergeSingleMessage(c.last_message, data.last_message)
+              : data.last_message;
+            return {
+              ...c,
+              last_message: nextLast,
+              updated_at: nextLast.created_at || c.updated_at,
+            };
+          }),
         }));
       },
       onReconnected: () => {
@@ -974,29 +1236,62 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Phase 2.3: DM Actions
   loadConversations: async () => {
-    if (get().authStatus !== 'authenticated') {
+    const status = get().authStatus;
+    if (status !== 'authenticated' && status !== 'offline') {
+      return;
+    }
+    const expectedUserId = get().onlineUser?.id;
+    if (!expectedUserId) {
       return;
     }
     set({ isLoadingConversations: true });
     try {
-      const user = get().onlineUser;
-      const convs = await dmRepository.listConversations(user?.id);
+      const convs = await dmRepository.listConversations(expectedUserId);
+      // Guard against stale response if user logged out or switched account during await
+      if (get().onlineUser?.id !== expectedUserId) {
+        return;
+      }
       set({ conversations: convs, isLoadingConversations: false });
     } catch (err) {
       console.warn('[useAppStore] loadConversations failed:', err);
-      set({ isLoadingConversations: false });
+      if (get().onlineUser?.id === expectedUserId) {
+        set({ isLoadingConversations: false });
+      }
     }
   },
 
   selectConversation: async (conversationId: string) => {
-    set({ activeConversationId: conversationId, isLoadingMessages: true, dmError: null });
+    const expectedUserId = get().onlineUser?.id;
+    set((state) => ({
+      activeConversationId: conversationId,
+      // Keep only already-loaded messages belonging to this conversation while fetching
+      activeConversationMessages:
+        state.activeConversationId === conversationId ? state.activeConversationMessages : [],
+      isLoadingMessages: true,
+      dmError: null,
+    }));
     try {
-      const user = get().onlineUser;
-      const messages = await dmRepository.getMessages(conversationId, 50, undefined, user?.id);
-      set({ activeConversationMessages: messages, isLoadingMessages: false });
-      if (messages.length > 0) {
-        const lastMsg = messages[messages.length - 1];
-        await dmRepository.markRead(conversationId, lastMsg.id);
+      const messages = await dmRepository.getMessages(
+        conversationId,
+        50,
+        undefined,
+        expectedUserId
+      );
+      // Race guard: discard stale HTTP response if user switched conversation or account while waiting
+      if (
+        get().activeConversationId !== conversationId ||
+        get().onlineUser?.id !== expectedUserId
+      ) {
+        return;
+      }
+      const merged = mergeAndSortMessages(
+        get().activeConversationMessages.filter((m) => m.conversation_id === conversationId),
+        messages
+      );
+      set({ activeConversationMessages: merged, isLoadingMessages: false });
+      if (merged.length > 0) {
+        const lastMsg = merged[merged.length - 1];
+        await dmRepository.markRead(conversationId, lastMsg.id, expectedUserId);
         gatewayClient.sendReadAck(conversationId, lastMsg.id);
         set((state) => ({
           conversations: state.conversations.map((c) =>
@@ -1005,7 +1300,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         }));
       }
     } catch (err: any) {
-      set({ isLoadingMessages: false, dmError: err?.message || String(err) });
+      if (
+        get().activeConversationId === conversationId &&
+        get().onlineUser?.id === expectedUserId
+      ) {
+        set({ isLoadingMessages: false, dmError: err?.message || String(err) });
+      }
     }
   },
 
@@ -1013,6 +1313,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const user = get().onlineUser;
       const conv = await dmRepository.getOrCreateConversation(targetUserId, username, user?.id);
+      if (get().onlineUser?.id !== user?.id) {
+        return null;
+      }
       set((state) => ({
         conversations: [conv, ...state.conversations.filter((c) => c.id !== conv.id)],
       }));
@@ -1034,6 +1337,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? crypto.randomUUID()
         : `local_${Date.now()}`;
     const user = get().onlineUser;
+    const expectedUserId = user?.id;
 
     const optimisticMsg: DirectMessageDto = {
       id: `opt_${clientMsgId}`,
@@ -1051,41 +1355,67 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
 
     set((state) => ({
-      activeConversationMessages: [...state.activeConversationMessages, optimisticMsg],
+      activeConversationMessages: mergeAndSortMessages(state.activeConversationMessages, [
+        optimisticMsg,
+      ]),
     }));
 
     try {
-      const sent = await dmRepository.sendMessage(convId, content.trim(), clientMsgId, user?.id);
+      const sent = await dmRepository.sendMessage(
+        convId,
+        content.trim(),
+        clientMsgId,
+        expectedUserId
+      );
+      if (get().onlineUser?.id !== expectedUserId) {
+        return false;
+      }
       set((state) => ({
         isSendingDm: false,
-        activeConversationMessages: state.activeConversationMessages.map((m) =>
-          m.client_message_id === clientMsgId
-            ? { ...sent, delivery_status: sent.delivered_at ? 'delivered' : 'sent' }
-            : m
-        ),
-        conversations: state.conversations.map((c) =>
-          c.id === convId ? { ...c, last_message: sent, updated_at: sent.created_at } : c
-        ),
+        activeConversationMessages:
+          state.activeConversationId === convId
+            ? mergeAndSortMessages(state.activeConversationMessages, [sent])
+            : state.activeConversationMessages,
+        conversations: state.conversations.map((c) => {
+          if (c.id !== convId) return c;
+          const mergedLast =
+            c.last_message &&
+            (c.last_message.id === sent.id ||
+              c.last_message.client_message_id === sent.client_message_id)
+              ? mergeSingleMessage(c.last_message, sent)
+              : sent;
+          return { ...c, last_message: mergedLast, updated_at: mergedLast.created_at };
+        }),
       }));
       return true;
     } catch (err: any) {
-      set((state) => ({
-        isSendingDm: false,
-        dmError: err?.message || String(err),
-        activeConversationMessages: state.activeConversationMessages.map((m) =>
-          m.client_message_id === clientMsgId ? { ...m, delivery_status: 'failed' } : m
-        ),
-      }));
+      if (get().onlineUser?.id === expectedUserId) {
+        set((state) => ({
+          isSendingDm: false,
+          dmError: err?.message || String(err),
+          activeConversationMessages: state.activeConversationMessages.map((m) =>
+            m.client_message_id === clientMsgId && m.delivery_status === 'sending'
+              ? { ...m, delivery_status: 'failed' }
+              : m
+          ),
+        }));
+      }
       return false;
     }
   },
 
   editDirectMessage: async (messageId: string, content: string) => {
     try {
-      const edited = await dmRepository.editMessage(messageId, content);
+      const user = get().onlineUser;
+      const edited = await dmRepository.editMessage(messageId, content, user?.id);
       set((state) => ({
         activeConversationMessages: state.activeConversationMessages.map((m) =>
-          m.id === messageId ? edited : m
+          m.id === messageId ? mergeSingleMessage(m, edited) : m
+        ),
+        conversations: state.conversations.map((c) =>
+          c.last_message?.id === messageId
+            ? { ...c, last_message: mergeSingleMessage(c.last_message, edited) }
+            : c
         ),
       }));
       return true;
@@ -1097,10 +1427,30 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   deleteDirectMessage: async (messageId: string) => {
     try {
-      const deleted = await dmRepository.deleteMessage(messageId);
+      const user = get().onlineUser;
+      const deleted = await dmRepository.deleteMessage(messageId, user?.id);
       set((state) => ({
         activeConversationMessages: state.activeConversationMessages.map((m) =>
-          m.id === messageId ? deleted : m
+          m.id === messageId
+            ? {
+                ...m,
+                ...deleted,
+                content: '[Mensagem apagada]',
+                deleted_at: deleted.deleted_at || new Date().toISOString(),
+              }
+            : m
+        ),
+        conversations: state.conversations.map((c) =>
+          c.last_message?.id === messageId
+            ? {
+                ...c,
+                last_message: {
+                  ...c.last_message,
+                  content: '[Mensagem apagada]',
+                  deleted_at: deleted.deleted_at || new Date().toISOString(),
+                },
+              }
+            : c
         ),
       }));
       return true;
@@ -1113,9 +1463,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   markActiveConversationRead: async () => {
     const convId = get().activeConversationId;
     const messages = get().activeConversationMessages;
+    const user = get().onlineUser;
     if (!convId || messages.length === 0) return;
     const lastMsg = messages[messages.length - 1];
-    await dmRepository.markRead(convId, lastMsg.id);
+    await dmRepository.markRead(convId, lastMsg.id, user?.id);
     gatewayClient.sendReadAck(convId, lastMsg.id);
     set((state) => ({
       conversations: state.conversations.map((c) =>
@@ -1129,16 +1480,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     const messages = get().activeConversationMessages;
     if (!convId || messages.length === 0) return;
     const oldestId = messages[0].id;
-    const user = get().onlineUser;
+    const expectedUserId = get().onlineUser?.id;
 
     try {
-      const older = await dmRepository.getMessages(convId, 30, oldestId, user?.id);
+      const older = await dmRepository.getMessages(convId, 30, oldestId, expectedUserId);
+      if (
+        get().activeConversationId !== convId ||
+        get().onlineUser?.id !== expectedUserId
+      ) {
+        return;
+      }
       if (older.length > 0) {
         set((state) => ({
-          activeConversationMessages: [
-            ...older.filter((o) => !state.activeConversationMessages.some((m) => m.id === o.id)),
-            ...state.activeConversationMessages,
-          ],
+          activeConversationMessages: mergeAndSortMessages(
+            older,
+            state.activeConversationMessages
+          ),
         }));
       }
     } catch (err) {

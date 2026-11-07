@@ -1,9 +1,91 @@
 use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::sync::{Mutex, OnceLock};
+
+static ACTIVE_USER_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+pub fn set_active_user_id(user_id: Option<String>) {
+    let lock = ACTIVE_USER_ID.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock.lock() {
+        *guard = user_id;
+    }
+}
+
+pub fn get_active_user_id() -> Option<String> {
+    let lock = ACTIVE_USER_ID.get_or_init(|| Mutex::new(None));
+    lock.lock().ok().and_then(|g| g.clone())
+}
+
+/// Validates and resolves `account_id` safely.
+/// - If an authenticated session is active in memory (`ACTIVE_USER_ID`), any provided `account_id`
+///   must match the active session's user ID (preventing cross-account spoofing), and if omitted
+///   it is derived directly from `ACTIVE_USER_ID`.
+/// - If no authenticated session is active, `provided` is validated against safe identifier rules
+///   (and `'legacy_unassigned'` is always rejected for direct queries).
+pub fn resolve_and_validate_account_id(
+    provided: Option<&str>,
+    allow_offline_demo: bool,
+) -> Result<String, String> {
+    let clean_provided = provided.map(|s| s.trim()).filter(|s| !s.is_empty());
+
+    if let Some( provided_str ) = clean_provided {
+        if provided_str == "legacy_unassigned" {
+            return Err("Acesso negado: registros em quarentena (legacy_unassigned) não podem ser acessados diretamente.".to_string());
+        }
+        if !allow_offline_demo && provided_str == "offline_demo" {
+            return Err("Acesso negado: conta offline_demo não permitida em operação autenticada.".to_string());
+        }
+        if provided_str.len() > 64
+            || !provided_str
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err("Formato de account_id inválido.".to_string());
+        }
+    }
+
+    if let Some(active_uid) = get_active_user_id() {
+        if let Some(provided_str) = clean_provided {
+            if provided_str != active_uid {
+                return Err(
+                    "Acesso negado: account_id incompatível com a sessão autenticada ativa."
+                        .to_string(),
+                );
+            }
+        }
+        return Ok(active_uid);
+    }
+
+    match clean_provided {
+        Some(p) => Ok(p.to_string()),
+        None => {
+            if allow_offline_demo {
+                Ok("offline_demo".to_string())
+            } else {
+                Err("Nenhuma conta autenticada ativa ou identificada para a operação.".to_string())
+            }
+        }
+    }
+}
 
 const SERVICE_NAME: &str = "nexus_desktop";
-const SESSION_USER_KEY: &str = "session_token";
+
+pub fn get_session_user_key() -> &'static str {
+    if let Ok(key) = std::env::var("NEXUS_KEYRING_KEY") {
+        if key == "test_homologation" {
+            return "session_token_homologation_rc1";
+        }
+    }
+    #[cfg(not(test))]
+    {
+        "session_token"
+    }
+    #[cfg(test)]
+    {
+        "session_token_test_b0_isolated"
+    }
+}
 const DEFAULT_API_BASE: &str = "http://127.0.0.1:3001";
 const DEFAULT_GOOGLE_CLIENT_ID: &str =
     "964906993797-r3v176v8d8b88fo0r9bethub6dr4cre2.apps.googleusercontent.com";
@@ -27,25 +109,32 @@ pub fn get_google_client_id() -> String {
     DEFAULT_GOOGLE_CLIENT_ID.to_string()
 }
 
+pub fn get_default_api_base() -> String {
+    if let Some(val) = option_env!("NEXUS_DEFAULT_API_URL") {
+        if let Ok(valid) = crate::network::validate_server_url(val) {
+            return valid;
+        }
+    }
+    DEFAULT_API_BASE.to_string()
+}
+
 pub fn get_api_base() -> String {
-    // 0. Dynamic runtime override (set by NetworkManager)
+    // 0. Dynamic runtime override (set by NetworkManager, already validated)
     if let Some(dyn_url) = crate::network::get_dynamic_api_base() {
-        if !dyn_url.is_empty() {
-            return dyn_url;
+        if let Ok(valid) = crate::network::validate_server_url(&dyn_url) {
+            return valid;
         }
     }
     // 1. Runtime override via NEXUS_API_URL or NEXUS_API_BASE
     if let Ok(val) = std::env::var("NEXUS_API_URL").or_else(|_| std::env::var("NEXUS_API_BASE")) {
-        let trimmed = val.trim();
-        if !trimmed.is_empty() {
-            return trimmed.trim_end_matches('/').to_string();
+        if let Ok(valid) = crate::network::validate_server_url(&val) {
+            return valid;
         }
     }
     // 2. Compile-time embedded default from build.rs
     if let Some(val) = option_env!("NEXUS_DEFAULT_API_URL") {
-        let trimmed = val.trim();
-        if !trimmed.is_empty() {
-            return trimmed.trim_end_matches('/').to_string();
+        if let Ok(valid) = crate::network::validate_server_url(val) {
+            return valid;
         }
     }
     // 3. Default fallback
@@ -101,31 +190,128 @@ struct ApiErrorResponse {
     pub error: ApiErrorDetail,
 }
 
+static AUTHENTICATED_SERVER_ORIGIN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredSessionCredential {
+    pub token: String,
+    pub server_origin: String,
+}
+
+pub fn record_authenticated_server_origin(origin: &str) {
+    if let Ok(mut lock) = AUTHENTICATED_SERVER_ORIGIN.lock() {
+        *lock = Some(origin.trim().trim_end_matches('/').to_lowercase());
+    }
+}
+
+pub fn clear_authenticated_server_origin() {
+    if let Ok(mut lock) = AUTHENTICATED_SERVER_ORIGIN.lock() {
+        *lock = None;
+    }
+}
+
+pub fn get_authenticated_server_origin() -> Option<String> {
+    AUTHENTICATED_SERVER_ORIGIN.lock().ok()?.clone()
+}
+
 /// Securely stores session token in the OS Keyring (Windows Credential Manager / DPAPI)
+/// bound to the current server origin
 pub fn save_secure_token(token: &str) -> Result<(), String> {
-    let entry = Entry::new(SERVICE_NAME, SESSION_USER_KEY)
+    let current_origin = get_api_base().trim().trim_end_matches('/').to_lowercase();
+    save_secure_token_for_origin(token, &current_origin)
+}
+
+/// Securely stores session token in the OS Keyring explicitly bound to a target server origin
+pub fn save_secure_token_for_origin(token: &str, origin: &str) -> Result<(), String> {
+    let norm_origin = origin.trim().trim_end_matches('/').to_lowercase();
+    record_authenticated_server_origin(&norm_origin);
+
+    let cred = StoredSessionCredential {
+        token: token.trim().to_string(),
+        server_origin: norm_origin,
+    };
+    let payload = serde_json::to_string(&cred)
+        .map_err(|e| format!("Falha ao serializar credencial de sessão: {}", e))?;
+
+    let entry = Entry::new(SERVICE_NAME, get_session_user_key())
         .map_err(|e| format!("Falha ao acessar Windows Credential Manager: {}", e))?;
     entry
-        .set_password(token)
+        .set_password(&payload)
         .map_err(|e| format!("Falha ao salvar no Windows Credential Manager: {}", e))?;
     Ok(())
 }
 
-/// Retrieves stored session token from OS Keyring
+/// Retrieves stored session token from OS Keyring, enforcing persistent origin binding to prevent token leakage
 pub fn get_secure_token() -> Option<String> {
-    let entry = Entry::new(SERVICE_NAME, SESSION_USER_KEY).ok()?;
-    let pw = entry.get_password().ok()?;
-    let trimmed = pw.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+    let current_origin = get_api_base().trim().trim_end_matches('/').to_lowercase();
+
+    // Fast in-memory origin check
+    if let Ok(lock) = AUTHENTICATED_SERVER_ORIGIN.lock() {
+        if let Some(ref auth_origin) = *lock {
+            if auth_origin != &current_origin {
+                eprintln!(
+                    "[Auth] Token retido por segurança: servidor atual ({}) difere do servidor autenticado em memória ({}).",
+                    current_origin, auth_origin
+                );
+                return None;
+            }
+        }
     }
+
+    let entry = Entry::new(SERVICE_NAME, get_session_user_key()).ok()?;
+    let raw_payload = entry.get_password().ok()?;
+    let trimmed = raw_payload.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Try parsing as structured credential with persisted server origin
+    if let Ok(cred) = serde_json::from_str::<StoredSessionCredential>(trimmed) {
+        let stored_origin = cred.server_origin.trim().trim_end_matches('/').to_lowercase();
+        if stored_origin != current_origin {
+            eprintln!(
+                "[Auth] Token retido por segurança: servidor atual ({}) difere do servidor de origem autenticado ({}).",
+                current_origin, stored_origin
+            );
+            return None;
+        }
+        record_authenticated_server_origin(&stored_origin);
+        return Some(cred.token);
+    }
+
+    // Backwards compatibility for legacy unformatted tokens:
+    // A legacy token has no stored origin. It can ONLY be accepted if the current origin matches
+    // either the in-memory recorded origin OR the compile-time default server origin.
+    // It must NEVER be delivered to an arbitrary new or changed dynamic address on cold start!
+    let default_origin = get_default_api_base().trim().trim_end_matches('/').to_lowercase();
+    if let Ok(lock) = AUTHENTICATED_SERVER_ORIGIN.lock() {
+        if let Some(ref auth_origin) = *lock {
+            if auth_origin != &current_origin {
+                eprintln!(
+                    "[Auth] Token legado retido por segurança: servidor atual ({}) difere do servidor autenticado em memória ({}).",
+                    current_origin, auth_origin
+                );
+                return None;
+            }
+        } else if current_origin != default_origin {
+            eprintln!(
+                "[Auth] Token legado retido por segurança: servidor atual ({}) difere da origem padrão confiável ({}) após cold start. Reautentique-se neste servidor.",
+                current_origin, default_origin
+            );
+            return None;
+        }
+    }
+
+    record_authenticated_server_origin(&current_origin);
+    // Automatically migrate legacy token to structured format for future runs
+    let _ = save_secure_token_for_origin(trimmed, &current_origin);
+    Some(trimmed.to_string())
 }
 
 /// Deletes stored session token from OS Keyring
 pub fn delete_secure_token() -> Result<(), String> {
-    if let Ok(entry) = Entry::new(SERVICE_NAME, SESSION_USER_KEY) {
+    clear_authenticated_server_origin();
+    if let Ok(entry) = Entry::new(SERVICE_NAME, get_session_user_key()) {
         let _ = entry.delete_credential();
     }
     Ok(())
@@ -168,6 +354,8 @@ pub async fn auth_register(
 
         // Securely persist token into Windows Credential Manager
         save_secure_token(&auth_res.session_token)?;
+        record_authenticated_server_origin(&get_api_base());
+        set_active_user_id(Some(auth_res.user.id.clone()));
 
         Ok(auth_res.user)
     } else {
@@ -203,6 +391,8 @@ pub async fn auth_login(login: String, password: String) -> Result<AuthUserProfi
 
         // Securely persist token into Windows Credential Manager
         save_secure_token(&auth_res.session_token)?;
+        record_authenticated_server_origin(&get_api_base());
+        set_active_user_id(Some(auth_res.user.id.clone()));
 
         Ok(auth_res.user)
     } else {
@@ -216,20 +406,27 @@ pub async fn auth_login(login: String, password: String) -> Result<AuthUserProfi
 
 #[tauri::command]
 pub async fn auth_logout() -> Result<(), String> {
-    if let Some(token) = get_secure_token() {
-        let client = reqwest::Client::new();
-        let url = format!("{}/v1/auth/logout", get_api_base());
+    // 1. Immediately revoke microphone consent, active user context, and purge local keyring credential first
+    crate::reset_mic_consent();
+    set_active_user_id(None);
+    let token_opt = get_secure_token();
+    delete_secure_token()?;
 
-        // Attempt remote revocation (best effort)
-        let _ = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await;
+    // 2. Attempt remote session revocation with bounded timeout (best effort)
+    if let Some(token) = token_opt {
+        if let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+        {
+            let url = format!("{}/v1/auth/logout", get_api_base());
+            let _ = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .send()
+                .await;
+        }
     }
 
-    // Always purge local keyring credential
-    delete_secure_token()?;
     Ok(())
 }
 
@@ -274,9 +471,12 @@ pub async fn auth_restore_session() -> Result<Option<AuthUserProfile>, String> {
             .json()
             .await
             .map_err(|e| format!("Falha ao decodificar perfil retornado: {}", e))?;
+        record_authenticated_server_origin(&get_api_base());
+        set_active_user_id(Some(user.id.clone()));
         Ok(Some(user))
     } else if status == StatusCode::UNAUTHORIZED {
         // Token confirmed expired or revoked by backend -> delete from keyring
+        set_active_user_id(None);
         let _ = delete_secure_token();
         Ok(None)
     } else {
@@ -332,6 +532,8 @@ pub async fn auth_login_google() -> Result<AuthUserProfile, String> {
 
         // Securely persist token into Windows Credential Manager
         save_secure_token(&auth_data.session_token)?;
+        record_authenticated_server_origin(&get_api_base());
+        set_active_user_id(Some(auth_data.user.id.clone()));
 
         Ok(auth_data.user)
     } else {
@@ -460,6 +662,7 @@ pub async fn auth_update_profile(
             .json()
             .await
             .map_err(|e| format!("Falha ao decodificar perfil retornado: {}", e))?;
+        set_active_user_id(Some(user.id.clone()));
         Ok(user)
     } else {
         let err: ApiErrorResponse = resp
@@ -494,7 +697,12 @@ mod tests {
     fn test_api_base_loaded_without_manual_env_var() {
         let api_base = get_api_base();
         assert!(!api_base.is_empty());
-        assert_eq!(api_base, "http://127.0.0.1:3001");
+        assert!(crate::network::validate_server_url(&api_base).is_ok());
+        assert!(
+            api_base == "http://127.0.0.1:3001" || api_base == "http://nexus-server:3001",
+            "Unexpected default api_base: {}",
+            api_base
+        );
     }
 
     #[test]

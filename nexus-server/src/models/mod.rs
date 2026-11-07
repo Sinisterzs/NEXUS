@@ -130,9 +130,15 @@ pub struct MessageResponse {
     pub message: String,
 }
 
+fn default_service_name() -> String {
+    "nexus-server".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
+    #[serde(default = "default_service_name")]
+    pub service: String,
     pub timestamp: DateTime<Utc>,
     pub version: String,
 }

@@ -18,6 +18,29 @@ const sizeClasses = {
   xl: 'w-14 h-14 text-lg font-semibold',
 };
 
+export function sanitizeAvatarUrl(url?: string | null): string | undefined {
+  if (!url || typeof url !== 'string') return undefined;
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return undefined;
+
+  // Strict rejection of script / dangerous protocols or control characters
+  if (/[\x00-\x1f\x7f<>"'`]/.test(trimmed)) return undefined;
+  if (/^javascript:/i.test(trimmed) || /^vbscript:/i.test(trimmed)) return undefined;
+
+  // Permitted schemes: HTTPS, local dev HTTP, image data URLs, or relative paths
+  if (
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('http://localhost') ||
+    trimmed.startsWith('http://127.0.0.1') ||
+    /^\/(?!\/)/.test(trimmed) ||
+    /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(trimmed)
+  ) {
+    return trimmed;
+  }
+
+  return undefined;
+}
+
 export const Avatar: React.FC<AvatarProps> = ({
   name,
   avatarUrl,
@@ -25,6 +48,7 @@ export const Avatar: React.FC<AvatarProps> = ({
   size = 'md',
   className,
 }) => {
+  const safeAvatarUrl = sanitizeAvatarUrl(avatarUrl);
   const initials = name
     .split(' ')
     .slice(0, 2)
@@ -40,8 +64,8 @@ export const Avatar: React.FC<AvatarProps> = ({
           sizeClasses[size]
         )}
       >
-        {avatarUrl ? (
-          <img src={avatarUrl} alt={name} className="w-full h-full object-cover" />
+        {safeAvatarUrl ? (
+          <img src={safeAvatarUrl} alt={name} className="w-full h-full object-cover" />
         ) : (
           <span>{initials}</span>
         )}

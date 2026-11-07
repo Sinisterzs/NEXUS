@@ -35,6 +35,8 @@ export const HomeView: React.FC = () => {
   const authStatus = useAppStore((state) => state.authStatus);
   const friends = useAppStore((state) => state.friends);
   const friendRequests = useAppStore((state) => state.friendRequests);
+  const conversations = useAppStore((state) => state.conversations);
+  const loadConversations = useAppStore((state) => state.loadConversations);
   const loadFriends = useAppStore((state) => state.loadFriends);
   const loadFriendRequests = useAppStore((state) => state.loadFriendRequests);
   const startConversationWithUser = useAppStore((state) => state.startConversationWithUser);
@@ -53,13 +55,14 @@ export const HomeView: React.FC = () => {
   const isAuthenticated = authStatus === 'authenticated';
   const incomingRequestsCount = friendRequests.incoming.length;
 
-  // Carrega lista de amigos e solicitações ao montar ou autenticar
+  // Carrega lista de amigos, solicitações e conversas ao montar ou autenticar
   useEffect(() => {
     if (isAuthenticated) {
       loadFriends();
       loadFriendRequests();
+      loadConversations();
     }
-  }, [isAuthenticated, loadFriends, loadFriendRequests]);
+  }, [isAuthenticated, loadFriends, loadFriendRequests, loadConversations]);
 
   const filteredFriends = friends.filter((f) => {
     const matchesFilter =
@@ -227,7 +230,72 @@ export const HomeView: React.FC = () => {
             </div>
 
             <div className="space-y-1.5">
-              {mockDirectMessages.length === 0 ? (
+              {isAuthenticated ? (
+                conversations.length === 0 ? (
+                  <div className="text-center py-6 px-4 text-nexus-muted">
+                    <MessageSquare className="w-5 h-5 mx-auto mb-1.5 opacity-40" />
+                    <p className="text-xs font-medium">Nenhuma mensagem recente</p>
+                    <p className="text-[10px] mt-0.5">Suas conversas diretas aparecerão aqui.</p>
+                  </div>
+                ) : (
+                  conversations.slice(0, 4).map((conv) => {
+                    const other = conv.other_user;
+                    const lastMsgContent = conv.last_message?.content || 'Nenhuma mensagem ainda';
+                    const timeStr = conv.last_message?.created_at
+                      ? new Date(conv.last_message.created_at).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : '';
+
+                    return (
+                      <div
+                        key={conv.id}
+                        onClick={async () => {
+                          await selectConversation(conv.id);
+                          setActiveTab('messages');
+                        }}
+                        className="flex items-center justify-between p-2.5 rounded-lg hover:bg-nexus-panel transition-nexus cursor-pointer group"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <Avatar
+                            name={other.name}
+                            avatarUrl={other.avatarUrl}
+                            status={other.status}
+                            size="md"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold text-nexus-text group-hover:text-white truncate">
+                                {other.name}
+                              </span>
+                              <span className="text-[10px] text-nexus-muted font-mono">
+                                @{other.username || other.tag}
+                              </span>
+                            </div>
+                            <p className="text-xs text-nexus-muted truncate max-w-sm mt-0.5">
+                              {lastMsgContent}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 shrink-0 ml-2">
+                          {timeStr ? (
+                            <span className="text-[11px] text-nexus-muted font-mono">
+                              {timeStr}
+                            </span>
+                          ) : null}
+                          {conv.unread_count > 0 ? (
+                            <Badge count={conv.unread_count} />
+                          ) : (
+                            <MessageSquare className="w-3.5 h-3.5 text-nexus-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )
+              ) : mockDirectMessages.length === 0 ? (
                 <div className="text-center py-6 px-4 text-nexus-muted">
                   <MessageSquare className="w-5 h-5 mx-auto mb-1.5 opacity-40" />
                   <p className="text-xs font-medium">Nenhuma mensagem recente</p>
@@ -547,9 +615,14 @@ export const HomeView: React.FC = () => {
 
                       <Tooltip content="Enviar Mensagem" position="left">
                         <button
-                          onClick={() => {
-                            setActiveDm(friend.id);
-                            setActiveTab('messages');
+                          onClick={async () => {
+                            if (isAuthenticated) {
+                              await startConversationWithUser(friend.id, friend.username);
+                              setActiveTab('messages');
+                            } else {
+                              setActiveDm(friend.id);
+                              setActiveTab('messages');
+                            }
                           }}
                           className="p-1.5 rounded-md hover:bg-nexus-surface text-nexus-muted hover:text-nexus-text transition-nexus"
                         >
@@ -578,10 +651,15 @@ export const HomeView: React.FC = () => {
                             onMouseLeave={() => setOpenFriendMenuId(null)}
                           >
                             <button
-                              onClick={() => {
-                                setActiveDm(friend.id);
-                                setActiveTab('messages');
+                              onClick={async () => {
                                 setOpenFriendMenuId(null);
+                                if (isAuthenticated) {
+                                  await startConversationWithUser(friend.id, friend.username);
+                                  setActiveTab('messages');
+                                } else {
+                                  setActiveDm(friend.id);
+                                  setActiveTab('messages');
+                                }
                               }}
                               className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-nexus-text hover:bg-nexus-panel transition-nexus text-left"
                             >

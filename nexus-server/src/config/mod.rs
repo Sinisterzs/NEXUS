@@ -213,6 +213,33 @@ pub fn is_valid_tailscale_ip(ip_str: &str) -> bool {
     }
 }
 
+/// Redacts credentials/passwords from a database connection URL before logging.
+pub fn redact_database_url(raw_url: &str) -> String {
+    let trimmed = raw_url.trim();
+    if let Some(scheme_end) = trimmed.find("://") {
+        let scheme = &trimmed[..scheme_end];
+        let rest = &trimmed[scheme_end + 3..];
+        let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+        let authority = &rest[..authority_end];
+        let path_and_query_raw = &rest[authority_end..];
+        // Also strip any query parameters that might contain password=...
+        let safe_path = path_and_query_raw
+            .split('?')
+            .next()
+            .unwrap_or(path_and_query_raw);
+
+        if let Some(at_pos) = authority.rfind('@') {
+            let userinfo = &authority[..at_pos];
+            let host_port = &authority[at_pos + 1..];
+            let user = userinfo.split(':').next().unwrap_or("user");
+            return format!("{}://{}:***@{}", scheme, user, host_port) + safe_path;
+        } else {
+            return format!("{}://{}{}", scheme, authority, safe_path);
+        }
+    }
+    "<redacted-database-url>".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +253,25 @@ mod tests {
         assert!(!is_valid_tailscale_ip("100.63.255.255"));
         assert!(!is_valid_tailscale_ip("192.168.1.1"));
         assert!(!is_valid_tailscale_ip("127.0.0.1"));
+    }
+
+    #[test]
+    fn test_redact_database_url_never_leaks_password() {
+        let with_pw = "postgres://postgres:SuperSecret123!@#@127.0.0.1:5432/nexus_db?sslmode=disable&password=Leak";
+        let redacted = redact_database_url(with_pw);
+        assert_eq!(redacted, "postgres://postgres:***@127.0.0.1:5432/nexus_db");
+        assert!(!redacted.contains("SuperSecret123"));
+        assert!(!redacted.contains("Leak"));
+
+        let without_pw = "postgres://postgres@localhost:5432/nexus_db";
+        assert_eq!(
+            redact_database_url(without_pw),
+            "postgres://postgres:***@localhost:5432/nexus_db"
+        );
+
+        let malformed = "user=postgres password=secret host=localhost";
+        let redacted_malformed = redact_database_url(malformed);
+        assert_eq!(redacted_malformed, "<redacted-database-url>");
+        assert!(!redacted_malformed.contains("secret"));
     }
 }

@@ -2,6 +2,7 @@ import { PersistedPreferences, MainTab } from '../lib/types';
 import { initialAppSettings } from '../mocks';
 
 const STORE_FILENAME = 'nexus_settings.json';
+const MAX_AVATAR_STORAGE_CHARS = 262_144; // 256 KB cap for local preference storage
 
 export const DEFAULT_PREFERENCES: PersistedPreferences = {
   theme: initialAppSettings.appearance.theme,
@@ -28,12 +29,36 @@ export const DEFAULT_PREFERENCES: PersistedPreferences = {
   avatarUrl: undefined,
 };
 
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingPreferences: Partial<PersistedPreferences> = {};
-
 class SettingsRepository {
   private storeInstance: any = null;
   private isTauri: boolean = false;
+  private currentAccountId: string = 'offline_demo';
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingByAccount: Record<string, Partial<PersistedPreferences>> = {};
+
+  setAccountId(accountId?: string | null): void {
+    const clean = accountId?.trim();
+    this.currentAccountId = clean ? clean : 'offline_demo';
+  }
+
+  getAccountId(): string {
+    return this.currentAccountId;
+  }
+
+  private resolveAccount(accountId?: string): string {
+    const clean = accountId?.trim() || this.currentAccountId || 'offline_demo';
+    return clean;
+  }
+
+  private getStoreKey(accountId?: string): string {
+    const acc = this.resolveAccount(accountId);
+    return `preferences:${acc}`;
+  }
+
+  private getLocalStorageKey(accountId?: string): string {
+    const acc = this.resolveAccount(accountId);
+    return `nexus_preferences:${acc}`;
+  }
 
   private async getStore() {
     if (this.storeInstance) return this.storeInstance;
@@ -50,22 +75,38 @@ class SettingsRepository {
   }
 
   /**
-   * Loads persisted preferences with safe default validation
+   * Loads persisted preferences scoped by accountId with safe default validation
    */
-  async loadPreferences(): Promise<PersistedPreferences> {
+  async loadPreferences(accountId?: string): Promise<PersistedPreferences> {
+    const acc = this.resolveAccount(accountId);
+    const storeKey = this.getStoreKey(acc);
+    const localKey = this.getLocalStorageKey(acc);
+
     try {
       const store = await this.getStore();
 
       if (store && this.isTauri) {
-        const saved = (await store.get('preferences')) as Partial<PersistedPreferences> | null;
+        const saved = (await store.get(storeKey)) as Partial<PersistedPreferences> | null;
         if (saved && typeof saved === 'object') {
           return this.validateAndMerge(saved);
         }
+        if (acc === 'offline_demo') {
+          const legacy = (await store.get('preferences')) as Partial<PersistedPreferences> | null;
+          if (legacy && typeof legacy === 'object') {
+            return this.validateAndMerge(legacy);
+          }
+        }
       } else if (typeof window !== 'undefined') {
-        const raw = window.localStorage.getItem('nexus_preferences');
+        const raw = window.localStorage.getItem(localKey);
         if (raw) {
           const parsed = JSON.parse(raw);
           return this.validateAndMerge(parsed);
+        }
+        if (acc === 'offline_demo') {
+          const legacyRaw = window.localStorage.getItem('nexus_preferences');
+          if (legacyRaw) {
+            return this.validateAndMerge(JSON.parse(legacyRaw));
+          }
         }
       }
     } catch (err) {
@@ -76,19 +117,26 @@ class SettingsRepository {
   }
 
   /**
-   * Debounced asynchronous save to disk
+   * Debounced asynchronous save to disk scoped to the target account
    */
-  async savePreferences(updates: Partial<PersistedPreferences>): Promise<void> {
-    pendingPreferences = { ...pendingPreferences, ...updates };
+  async savePreferences(
+    updates: Partial<PersistedPreferences>,
+    accountId?: string
+  ): Promise<void> {
+    const acc = this.resolveAccount(accountId);
+    this.pendingByAccount[acc] = {
+      ...(this.pendingByAccount[acc] || {}),
+      ...updates,
+    };
 
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
     }
 
     return new Promise((resolve) => {
-      debounceTimer = setTimeout(async () => {
+      this.debounceTimer = setTimeout(async () => {
         try {
-          await this.flushSave();
+          await this.flushSave(acc);
         } finally {
           resolve();
         }
@@ -97,27 +145,34 @@ class SettingsRepository {
   }
 
   /**
-   * Immediate flush for application lifecycle events
+   * Immediate flush for application lifecycle or account switch events
    */
-  async flushSave(): Promise<void> {
-    if (Object.keys(pendingPreferences).length === 0) return;
+  async flushSave(accountId?: string): Promise<void> {
+    const accountsToFlush = accountId
+      ? [this.resolveAccount(accountId)]
+      : Object.keys(this.pendingByAccount);
 
-    const toSave = { ...pendingPreferences };
-    pendingPreferences = {};
+    for (const acc of accountsToFlush) {
+      const pending = this.pendingByAccount[acc];
+      if (!pending || Object.keys(pending).length === 0) continue;
 
-    try {
-      const current = await this.loadPreferences();
-      const merged = { ...current, ...toSave };
+      const toSave = { ...pending };
+      delete this.pendingByAccount[acc];
 
-      const store = await this.getStore();
-      if (store && this.isTauri) {
-        await store.set('preferences', merged);
-        await store.save();
-      } else if (typeof window !== 'undefined') {
-        window.localStorage.setItem('nexus_preferences', JSON.stringify(merged));
+      try {
+        const current = await this.loadPreferences(acc);
+        const merged = this.validateAndMerge({ ...current, ...toSave });
+
+        const store = await this.getStore();
+        if (store && this.isTauri) {
+          await store.set(this.getStoreKey(acc), merged);
+          await store.save();
+        } else if (typeof window !== 'undefined') {
+          window.localStorage.setItem(this.getLocalStorageKey(acc), JSON.stringify(merged));
+        }
+      } catch (err) {
+        console.error('[SettingsRepository] Error saving preferences:', err);
       }
-    } catch (err) {
-      console.error('[SettingsRepository] Error saving preferences:', err);
     }
   }
 
@@ -125,6 +180,13 @@ class SettingsRepository {
     const validTabs: MainTab[] = ['home', 'messages', 'communities', 'calls', 'settings'];
     const validThemes = ['nexus-dark', 'midnight-black', 'cyber-slate'];
     const validFontSizes = ['sm', 'base', 'lg'];
+
+    const validAvatarUrl =
+      typeof saved.avatarUrl === 'string' &&
+      saved.avatarUrl.trim().length > 0 &&
+      saved.avatarUrl.length <= MAX_AVATAR_STORAGE_CHARS
+        ? saved.avatarUrl.trim()
+        : DEFAULT_PREFERENCES.avatarUrl;
 
     return {
       theme: validThemes.includes(saved.theme as string) ? (saved.theme as any) : DEFAULT_PREFERENCES.theme,
@@ -148,6 +210,7 @@ class SettingsRepository {
       allowDmsFrom: saved.allowDmsFrom || DEFAULT_PREFERENCES.allowDmsFrom,
       showGameActivity: typeof saved.showGameActivity === 'boolean' ? saved.showGameActivity : DEFAULT_PREFERENCES.showGameActivity,
       streamerMode: typeof saved.streamerMode === 'boolean' ? saved.streamerMode : DEFAULT_PREFERENCES.streamerMode,
+      avatarUrl: validAvatarUrl,
     };
   }
 }

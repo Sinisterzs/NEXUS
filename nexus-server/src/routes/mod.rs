@@ -158,9 +158,38 @@ pub fn create_router(
         .merge(gateway_ws_routes)
         .merge(gateway_ticket_routes);
 
-    // CORS configuration for Tauri & Web clients
+    // CORS configuration for Tauri & Web clients (strictly scoped origins)
     let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            |origin: &header::HeaderValue, _parts: &axum::http::request::Parts| {
+                if let Ok(s) = origin.to_str() {
+                    let clean = s.trim().to_ascii_lowercase();
+                    // 1. Tauri desktop application origins
+                    if clean == "tauri://localhost"
+                        || clean == "http://tauri.localhost"
+                        || clean == "https://tauri.localhost"
+                    {
+                        return true;
+                    }
+                    // 2. Local development origins (Vite / local test clients)
+                    if clean.starts_with("http://localhost:")
+                        || clean.starts_with("http://127.0.0.1:")
+                        || clean.starts_with("https://localhost:")
+                        || clean.starts_with("https://127.0.0.1:")
+                    {
+                        return true;
+                    }
+                    // 3. Tailscale MagicDNS and private network origins
+                    if clean.ends_with(".ts.net")
+                        || clean.starts_with("http://100.")
+                        || clean.starts_with("https://100.")
+                    {
+                        return true;
+                    }
+                }
+                false
+            },
+        ))
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -173,7 +202,6 @@ pub fn create_router(
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             header::ACCEPT,
-            header::HeaderName::from_static("x-forwarded-for"),
         ]);
 
     Router::new()

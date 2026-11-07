@@ -511,18 +511,43 @@ impl SessionRepository {
     }
 
     pub async fn revoke_session(&self, token_hash: &str) -> Result<bool, AppError> {
-        let result = sqlx::query!(
+        Ok(self.revoke_session_returning(token_hash).await?.is_some())
+    }
+
+    pub async fn revoke_session_returning(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<(Uuid, Uuid)>, AppError> {
+        let row = sqlx::query!(
             r#"
             UPDATE sessions
             SET revoked_at = NOW()
             WHERE token_hash = $1 AND revoked_at IS NULL
+            RETURNING id, user_id
             "#,
             token_hash
         )
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result.rows_affected() > 0)
+        Ok(row.map(|r| (r.id, r.user_id)))
+    }
+
+    pub async fn is_session_active(&self, session_id: Uuid) -> Result<bool, AppError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT id
+            FROM sessions
+            WHERE id = $1
+              AND revoked_at IS NULL
+              AND expires_at > NOW()
+            "#,
+            session_id
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.is_some())
     }
 
     pub async fn revoke_all_user_sessions(&self, user_id: Uuid) -> Result<u64, AppError> {

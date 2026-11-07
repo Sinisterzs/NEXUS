@@ -131,14 +131,22 @@ impl GoogleOAuthVerifier {
             .kid
             .ok_or_else(|| AppError::InvalidOAuthToken("Token do Google sem Key ID (kid)".to_string()))?;
 
-        let jwks = self.get_jwks().await?;
-        let key = jwks
-            .keys
-            .iter()
-            .find(|k| k.kid == kid)
-            .ok_or_else(|| {
-                AppError::InvalidOAuthToken(format!("Chave pública do Google não encontrada para kid: {}", kid))
-            })?;
+        let mut jwks = self.get_jwks().await?;
+        let mut key_opt = jwks.keys.iter().find(|k| k.kid == kid).cloned();
+
+        // Zero-downtime key rotation: if kid is not in cached JWKS, invalidate cache and re-fetch once
+        if key_opt.is_none() {
+            {
+                let mut cache = self.jwks_cache.write().await;
+                *cache = None;
+            }
+            jwks = self.get_jwks().await?;
+            key_opt = jwks.keys.iter().find(|k| k.kid == kid).cloned();
+        }
+
+        let key = key_opt.ok_or_else(|| {
+            AppError::InvalidOAuthToken(format!("Chave pública do Google não encontrada para kid: {}", kid))
+        })?;
 
         let decoding_key = DecodingKey::from_rsa_components(&key.n, &key.e)
             .map_err(|e| AppError::InvalidOAuthToken(format!("Componentes RSA do Google inválidos: {}", e)))?;
@@ -208,10 +216,11 @@ impl GoogleOAuthVerifier {
             })?;
 
         if !resp.status().is_success() {
-            let err_body = resp.text().await.unwrap_or_default();
+            let status = resp.status();
+            let _ = resp.text().await;
             return Err(AppError::InvalidOAuthToken(format!(
-                "Google rejeitou a troca do authorization code: {}",
-                err_body
+                "Google rejeitou a troca do authorization code (HTTP {}).",
+                status
             )));
         }
 

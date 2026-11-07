@@ -69,21 +69,26 @@ export const CallsView: React.FC = () => {
   const callErrorMessage = useAppStore((state) => state.callErrorMessage);
   const setCallErrorMessage = useAppStore((state) => state.setCallErrorMessage);
   const currentUser = useAppStore((state) => state.currentUser);
+  const onlineUser = useAppStore((state) => state.onlineUser);
+  const authStatus = useAppStore((state) => state.authStatus);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
 
   const [callHistory, setCallHistory] = useState<CallHistoryEntry[]>([]);
   const [isEnding, setIsEnding] = useState(false);
 
+  const currentAccountId =
+    authStatus === 'authenticated' && onlineUser?.id ? onlineUser.id : 'offline_demo';
+
   // Carrega histórico de chamadas ao entrar ou quando estado voltar para idle
   useEffect(() => {
     if (voiceCallState === 'idle') {
       setIsEnding(false);
-      setCallHistory(callHistoryRepository.getHistory());
+      setCallHistory(callHistoryRepository.getHistory(currentAccountId));
     }
-  }, [voiceCallState]);
+  }, [voiceCallState, currentAccountId]);
 
   const handleClearHistory = () => {
-    callHistoryRepository.clearHistory();
+    callHistoryRepository.clearHistory(currentAccountId);
     setCallHistory([]);
   };
 

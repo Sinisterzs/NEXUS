@@ -98,8 +98,8 @@ pub async fn execute_google_desktop_flow(client_id: &str) -> Result<GoogleAuthRe
 
     let auth_url_str = auth_url.to_string();
 
-    // 3. Open in Windows default system browser (ShellExecute without cmd.exe parsing)
-    if let Err(e) = open::that(&auth_url_str) {
+    // 3. Open in Windows default system browser (strictly validated HTTPS URL)
+    if let Err(e) = crate::network::safe_open_url(&auth_url_str) {
         eprintln!("[NEXUS OAuth] Falha ao abrir navegador padrão: {}", e);
     }
 

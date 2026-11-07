@@ -80,6 +80,12 @@ fn http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+fn validate_uuid(id: &str) -> Result<(), String> {
+    uuid::Uuid::parse_str(id)
+        .map(|_| ())
+        .map_err(|_| format!("Identificador UUID inválido: '{}'", id))
+}
+
 #[tauri::command]
 pub async fn friends_get_list() -> Result<Vec<FriendDto>, String> {
     let token = require_token()?;
@@ -166,6 +172,7 @@ pub async fn friends_send_request(target: String) -> Result<FriendRequestDto, St
 
 #[tauri::command]
 pub async fn friends_accept_request(request_id: String) -> Result<FriendDto, String> {
+    validate_uuid(&request_id)?;
     let token = require_token()?;
     let client = http_client();
     let url = format!(
@@ -196,6 +203,7 @@ pub async fn friends_accept_request(request_id: String) -> Result<FriendDto, Str
 
 #[tauri::command]
 pub async fn friends_reject_request(request_id: String) -> Result<(), String> {
+    validate_uuid(&request_id)?;
     let token = require_token()?;
     let client = http_client();
     let url = format!(
@@ -224,6 +232,7 @@ pub async fn friends_reject_request(request_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn friends_cancel_request(request_id: String) -> Result<(), String> {
+    validate_uuid(&request_id)?;
     let token = require_token()?;
     let client = http_client();
     let url = format!("{}/v1/friends/requests/{}", get_api_base(), request_id);
@@ -248,11 +257,13 @@ pub async fn friends_cancel_request(request_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn friends_decline_request(request_id: String) -> Result<(), String> {
+    validate_uuid(&request_id)?;
     friends_reject_request(request_id).await
 }
 
 #[tauri::command]
 pub async fn friends_remove(friend_id: String) -> Result<(), String> {
+    validate_uuid(&friend_id)?;
     let token = require_token()?;
     let client = http_client();
     let url = format!("{}/v1/friends/{}", get_api_base(), friend_id);
@@ -277,6 +288,7 @@ pub async fn friends_remove(friend_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn friends_block_user(user_id: String) -> Result<(), String> {
+    validate_uuid(&user_id)?;
     let token = require_token()?;
     let client = http_client();
     let url = format!("{}/v1/users/{}/block", get_api_base(), user_id);
@@ -301,6 +313,7 @@ pub async fn friends_block_user(user_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn friends_unblock_user(user_id: String) -> Result<(), String> {
+    validate_uuid(&user_id)?;
     let token = require_token()?;
     let client = http_client();
     let url = format!("{}/v1/users/{}/block", get_api_base(), user_id);
@@ -431,12 +444,6 @@ pub fn gateway_get_ws_url() -> Result<String, String> {
     };
 
     Ok(format!("{}/v1/gateway", ws_base))
-}
-
-/// Securely retrieves the active session token from Keyring strictly for Gateway initial authentication
-#[tauri::command]
-pub fn gateway_get_auth_token() -> Result<String, String> {
-    require_token()
 }
 
 /// Legacy helper for backwards compatibility

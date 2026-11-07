@@ -57,6 +57,8 @@ export class GatewayClient {
   private reconnectTimeout: any = null;
   private pingInterval: any = null;
   private isExplicitlyClosed = false;
+  private isConnecting = false;
+  private connectGeneration = 0;
   private reconnectAttempts = 0;
   private maxReconnectDelay = 15000;
   private hasConnectedBefore = false;
@@ -69,58 +71,74 @@ export class GatewayClient {
   }
 
   async connect(): Promise<void> {
-    if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+    if (
+      this.isConnecting ||
+      (this.socket &&
+        (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING))
+    ) {
       console.log('[GatewayClient] Socket já conectado ou em processo de conexão. Ignorando chamada redundante.');
       return;
     }
 
     this.disconnect();
     this.isExplicitlyClosed = false;
+    this.isConnecting = true;
+    const currentGen = ++this.connectGeneration;
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const wsUrl = await invoke<string>('gateway_get_ws_url');
 
-      console.log('[GatewayClient] Conectando ao Gateway NEXUS em:', wsUrl);
-      this.socket = new WebSocket(wsUrl);
+      if (currentGen !== this.connectGeneration || this.isExplicitlyClosed) {
+        this.isConnecting = false;
+        return;
+      }
 
-      this.socket.onopen = async () => {
+      console.log('[GatewayClient] Conectando ao Gateway NEXUS em:', wsUrl);
+      const sock = new WebSocket(wsUrl);
+      this.socket = sock;
+      this.isConnecting = false;
+
+      sock.onopen = async () => {
+        if (this.socket !== sock || currentGen !== this.connectGeneration || this.isExplicitlyClosed) {
+          try {
+            sock.close();
+          } catch {}
+          return;
+        }
         console.log('[GatewayClient] Socket aberto. Solicitando ticket efêmero para autenticação...');
         try {
-          // Request ephemeral single-use 60s ticket from Rust backend
-          let ticket: string | null = null;
-          try {
-            ticket = await invoke<string>('gateway_get_ticket');
-          } catch (tktErr) {
-            console.warn('[GatewayClient] Falha ao obter ticket, tentando fallback por token:', tktErr);
+          // Request ephemeral single-use 60s ticket from Rust backend (never expose persistent token to WebView)
+          const ticket = await invoke<string>('gateway_get_ticket');
+
+          if (this.socket !== sock || currentGen !== this.connectGeneration || this.isExplicitlyClosed) {
+            try {
+              sock.close();
+            } catch {}
+            return;
           }
 
-          if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            if (ticket) {
-              this.socket.send(JSON.stringify({ op: 'authenticate', ticket }));
-            } else {
-              const token = await invoke<string>('gateway_get_auth_token');
-              this.socket.send(JSON.stringify({ op: 'authenticate', token }));
-            }
+          if (sock.readyState === WebSocket.OPEN) {
+            sock.send(JSON.stringify({ op: 'authenticate', ticket }));
           }
-        } catch (authErr) {
-          console.error('[GatewayClient] Falha ao autenticar no Gateway:', authErr);
-          this.disconnect();
+        } catch (authErr: any) {
+          const errStr = String(authErr?.message || authErr || '');
+          console.warn('[GatewayClient] Falha ao obter ticket efêmero do Gateway:', errStr);
+          if (errStr.includes('Sessão expirada') || errStr.includes('Nenhuma sessão')) {
+            this.disconnect();
+          } else {
+            try {
+              sock.close();
+            } catch {}
+          }
           return;
         }
 
         this.startHeartbeat();
-
-        if (this.hasConnectedBefore) {
-          console.log('[GatewayClient] Reconexão detectada. Solicitando ressincronização autoritativa via REST...');
-          this.listeners.forEach((l) => l.onReconnected?.());
-        }
-        this.hasConnectedBefore = true;
-        this.reconnectAttempts = 0;
-        this.notifyConnectionChange(true);
       };
 
-      this.socket.onmessage = (event) => {
+      sock.onmessage = (event) => {
+        if (this.socket !== sock) return;
         try {
           const data: GatewayEvent = JSON.parse(event.data);
           this.handleGatewayEvent(data);
@@ -129,11 +147,13 @@ export class GatewayClient {
         }
       };
 
-      this.socket.onerror = (err) => {
+      sock.onerror = (err) => {
+        if (this.socket !== sock) return;
         console.warn('[GatewayClient] Evento de erro no socket:', err);
       };
 
-      this.socket.onclose = (event) => {
+      sock.onclose = (event) => {
+        if (this.socket !== sock) return;
         console.log(`[GatewayClient] Conexão encerrada (código ${event.code}).`);
         this.stopHeartbeat();
         this.notifyConnectionChange(false);
@@ -144,6 +164,7 @@ export class GatewayClient {
         }
       };
     } catch (err) {
+      this.isConnecting = false;
       console.warn('[GatewayClient] Erro ao inicializar conexão do Gateway:', err);
       this.scheduleReconnect();
     }
@@ -155,6 +176,14 @@ export class GatewayClient {
     switch (type) {
       case 'connection.ready':
       case 'connected':
+        if (this.hasConnectedBefore) {
+          console.log('[GatewayClient] Reconexão autenticada. Solicitando ressincronização autoritativa via REST...');
+          this.listeners.forEach((l) => l.onReconnected?.());
+        }
+        this.hasConnectedBefore = true;
+        this.reconnectAttempts = 0;
+        this.notifyConnectionChange(true);
+
         if (Array.isArray(payload?.friends)) {
           const friends: Friend[] = payload.friends.map((f: any) => ({
             id: f.id,
@@ -472,6 +501,11 @@ export class GatewayClient {
         console.warn('[GatewayClient] Erro recebido do servidor:', payload?.message);
         break;
 
+      case 'session.revoked':
+        console.warn('[GatewayClient] Sessão revogada pelo servidor. Encerrando WebSocket.');
+        this.disconnect();
+        break;
+
       default:
         break;
     }
@@ -573,6 +607,8 @@ export class GatewayClient {
 
   disconnect(): void {
     this.isExplicitlyClosed = true;
+    this.isConnecting = false;
+    this.connectGeneration++;
     this.stopHeartbeat();
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);

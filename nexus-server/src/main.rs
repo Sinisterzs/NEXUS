@@ -18,7 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    tracing::info!("Conectando ao banco PostgreSQL em {}...", config.database_url);
+    tracing::info!(
+        "Conectando ao banco PostgreSQL em {}...",
+        nexus_server::config::redact_database_url(&config.database_url)
+    );
     let pool = PgPoolOptions::new()
         .max_connections(20)
         .connect(&config.database_url)

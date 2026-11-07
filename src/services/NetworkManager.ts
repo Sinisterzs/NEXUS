@@ -125,9 +125,13 @@ class NetworkManager {
 
   async setServerAddress(url: string): Promise<string> {
     const { invoke } = await import('@tauri-apps/api/core');
+    const oldServer = this.lastStatus.server_url;
     const updated = await invoke<string>('network_set_server_address', { url });
     this.resetBackoff();
     await this.checkNetwork();
+    if (typeof window !== 'undefined' && oldServer && oldServer !== updated) {
+      window.location.reload();
+    }
     return updated;
   }
 

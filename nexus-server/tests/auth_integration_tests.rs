@@ -500,3 +500,166 @@ async fn test_11_idempotent_migrations() {
     let res2 = sqlx::migrate!("./migrations").run(&pool).await;
     assert!(res2.is_ok(), "Segunda execução de migração repetida deve ser idempotente");
 }
+
+#[tokio::test]
+async fn test_b0_rate_limiting_ignores_spoofed_x_forwarded_for() {
+    let (base_url, _) = setup_test_server().await;
+    let client = Client::new();
+
+    let mut hit_rate_limit = false;
+    // Send 35 requests with a different spoofed X-Forwarded-For IP on every request.
+    // Because the server now uses only the real TCP ConnectInfo<SocketAddr>, the 31st request must return 429.
+    for i in 0..35 {
+        let resp = client
+            .post(format!("{}/v1/auth/login", base_url))
+            .header("X-Forwarded-For", format!("203.0.113.{}", i + 1))
+            .json(&json!({
+                "login": "xff_spoof_target",
+                "password": "WrongPassword123!"
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            hit_rate_limit = true;
+            break;
+        }
+    }
+
+    assert!(
+        hit_rate_limit,
+        "Rate limiter deve bloquear após 30 tentativas mesmo quando X-Forwarded-For é rotacionado"
+    );
+}
+
+#[tokio::test]
+async fn test_b0_logout_revokes_active_websocket_and_unconsumed_tickets() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+
+    let (base_url, _) = setup_test_server().await;
+    let ws_url = format!("{}/v1/gateway", base_url.replace("http://", "ws://"));
+    let client = Client::new();
+
+    // 1. Register user and obtain session token
+    let reg_resp = client
+        .post(format!("{}/v1/auth/register", base_url))
+        .json(&json!({
+            "username": "ws_logout_user",
+            "email": "ws_logout@nexus.test",
+            "password": "Password123!"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reg_resp.status(), StatusCode::CREATED);
+    let reg_body: Value = reg_resp.json().await.unwrap();
+    let token = reg_body["session_token"].as_str().unwrap().to_string();
+
+    // 2. Obtain two ephemeral tickets bound to this session
+    let ticket1_resp: Value = client
+        .post(format!("{}/v1/gateway/ticket", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ticket1 = ticket1_resp["ticket"].as_str().unwrap().to_string();
+
+    let ticket2_resp: Value = client
+        .post(format!("{}/v1/gateway/ticket", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ticket2 = ticket2_resp["ticket"].as_str().unwrap().to_string();
+
+    // 3. Connect WebSocket 1 using ticket1
+    let (mut ws_stream, _) = connect_async(&ws_url).await.expect("Falha ao conectar WS");
+    ws_stream
+        .send(WsMessage::Text(
+            json!({
+                "op": "authenticate",
+                "ticket": ticket1
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+
+    // Expect connection.ready
+    let ready_frame = tokio::time::timeout(std::time::Duration::from_secs(3), ws_stream.next())
+        .await
+        .expect("Timeout aguardando connection.ready")
+        .unwrap()
+        .unwrap();
+    let ready_json: Value = serde_json::from_str(&ready_frame.into_text().unwrap()).unwrap();
+    assert_eq!(ready_json["type"], "connection.ready");
+
+    // 4. Logout HTTP session
+    let logout_resp = client
+        .post(format!("{}/v1/auth/logout", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout_resp.status(), StatusCode::OK);
+
+    // 5. Active WebSocket must immediately receive session.revoked and close
+    let mut received_revoked = false;
+    let mut socket_closed = false;
+    for _ in 0..4 {
+        match tokio::time::timeout(std::time::Duration::from_secs(3), ws_stream.next()).await {
+            Ok(Some(Ok(WsMessage::Text(txt)))) => {
+                let ev: Value = serde_json::from_str(&txt).unwrap_or_default();
+                if ev["type"] == "session.revoked" {
+                    received_revoked = true;
+                }
+            }
+            Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => {
+                socket_closed = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        received_revoked,
+        "WebSocket ativo deve receber evento session.revoked após logout"
+    );
+    assert!(
+        socket_closed,
+        "WebSocket ativo deve ser fechado pelo servidor após session.revoked"
+    );
+
+    // 6. Unconsumed ticket2 from the revoked session must be rejected
+    let (mut ws_stream2, _) = connect_async(&ws_url).await.expect("Falha ao conectar WS 2");
+    ws_stream2
+        .send(WsMessage::Text(
+            json!({
+                "op": "authenticate",
+                "ticket": ticket2
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let reject_frame = tokio::time::timeout(std::time::Duration::from_secs(3), ws_stream2.next())
+        .await
+        .expect("Timeout aguardando rejeição do ticket revogado")
+        .unwrap()
+        .unwrap();
+    let reject_json: Value = serde_json::from_str(&reject_frame.into_text().unwrap()).unwrap();
+    assert_eq!(
+        reject_json["type"], "error",
+        "Ticket emitido antes do logout não deve autenticar após revogação da sessão"
+    );
+}
+

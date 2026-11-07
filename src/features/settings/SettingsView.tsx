@@ -99,6 +99,7 @@ export const SettingsView: React.FC = () => {
 
   // Real-time Mic Testing with Native DSP & Audio Return Monitor
   useEffect(() => {
+    let cancelled = false;
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
     let interval: any = null;
@@ -118,6 +119,11 @@ export const SettingsView: React.FC = () => {
       };
 
       const acquireTestStream = async (): Promise<MediaStream> => {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('call_set_mic_consent', { granted: true }).catch(() => {});
+        } catch {}
+
         try {
           return await navigator.mediaDevices.getUserMedia(constraints);
         } catch (err) {
@@ -140,9 +146,18 @@ export const SettingsView: React.FC = () => {
 
       acquireTestStream()
         .then((s) => {
+          if (cancelled) {
+            s.getTracks().forEach((t) => {
+              try {
+                t.stop();
+              } catch {}
+            });
+            return;
+          }
           stream = s;
 
           // 1. Audio return/loopback: allows user to hear their own voice through the selected output
+          let htmlMonitorOk = false;
           try {
             monitorAudio = new Audio();
             monitorAudio.srcObject = s;
@@ -155,6 +170,7 @@ export const SettingsView: React.FC = () => {
               (monitorAudio as any).setSinkId(settings.audioVideo.outputDevice).catch(() => {});
             }
             monitorAudio.play().catch(() => {});
+            htmlMonitorOk = true;
           } catch (audioErr) {
             console.warn('[SettingsView] Falha ao iniciar retorno de áudio:', audioErr);
           }
@@ -166,13 +182,15 @@ export const SettingsView: React.FC = () => {
           analyser.fftSize = 256;
           src.connect(analyser);
 
-          // Web Audio destination fallback if HTMLAudioElement fails
-          try {
-            const gainNode = audioCtx.createGain();
-            gainNode.gain.value = Math.max(0, Math.min(1, (settings.audioVideo.outputVolume ?? 100) / 100));
-            src.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-          } catch {}
+          // Web Audio destination fallback ONLY if HTMLAudioElement failed
+          if (!htmlMonitorOk) {
+            try {
+              const gainNode = audioCtx.createGain();
+              gainNode.gain.value = Math.max(0, Math.min(1, (settings.audioVideo.outputVolume ?? 100) / 100));
+              src.connect(gainNode);
+              gainNode.connect(audioCtx.destination);
+            } catch {}
+          }
 
           const dataArray = new Uint8Array(128);
           interval = setInterval(() => {
@@ -184,20 +202,36 @@ export const SettingsView: React.FC = () => {
         })
         .catch((err) => {
           console.warn('[SettingsView] Falha ao testar microfone:', err);
-          setIsTestingMic(false);
+          if (!cancelled) {
+            setIsTestingMic(false);
+          }
         });
     } else {
       setMicVolumeLevel(0);
     }
 
     return () => {
+      cancelled = true;
       if (interval) clearInterval(interval);
       if (monitorAudio) {
-        monitorAudio.pause();
+        try {
+          monitorAudio.pause();
+        } catch {}
         monitorAudio.srcObject = null;
       }
-      if (stream) stream.getTracks().forEach((t) => t.stop());
+      if (stream) {
+        stream.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+      }
       if (audioCtx) (audioCtx as AudioContext).close().catch(() => {});
+      if (useAppStore.getState().voiceCallState === 'idle') {
+        import('@tauri-apps/api/core')
+          .then(({ invoke }) => invoke('call_set_mic_consent', { granted: false }).catch(() => {}))
+          .catch(() => {});
+      }
     };
   }, [
     isTestingMic,

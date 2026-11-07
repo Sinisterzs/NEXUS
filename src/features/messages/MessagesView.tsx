@@ -91,6 +91,7 @@ export const MessagesView: React.FC = () => {
   const authStatus = useAppStore((state) => state.authStatus);
   const isOnline = authStatus === 'authenticated';
   const currentUser = useAppStore((state) => state.currentUser);
+  const onlineUser = useAppStore((state) => state.onlineUser);
   const friends = useAppStore((state) => state.friends);
   const joinCall = useAppStore((state) => state.joinCall);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
@@ -147,6 +148,57 @@ export const MessagesView: React.FC = () => {
   }, [activeConversationMessages.length, demoMessages.length]);
 
   // -------------------------------------------------------------
+  // Draft Management (Scoped per Account & Conversation)
+  // -------------------------------------------------------------
+  const activeTargetId = isOnline ? activeConversationId : (selectedDemoFriend?.id || null);
+  const activeAccountId = isOnline ? (onlineUser?.id || 'offline_demo') : 'offline_demo';
+
+  useEffect(() => {
+    if (!activeTargetId) {
+      setDraftMessage('');
+      currentDraftRef.current = '';
+      return;
+    }
+
+    let isMounted = true;
+    async function loadDraft() {
+      try {
+        const state = await conversationRepository.getConversationState(
+          activeTargetId!,
+          activeAccountId
+        );
+        if (isMounted) {
+          const saved = state?.draft_text || '';
+          setDraftMessage(saved);
+          currentDraftRef.current = saved;
+        }
+      } catch (err) {
+        console.warn('[MessagesView] Erro ao carregar rascunho:', err);
+      }
+    }
+
+    loadDraft();
+
+    return () => {
+      isMounted = false;
+      const textToSave = currentDraftRef.current;
+      conversationRepository
+        .saveDraft(activeTargetId, textToSave, activeAccountId)
+        .catch(() => {});
+    };
+  }, [activeTargetId, activeAccountId]);
+
+  const handleDraftChange = (text: string) => {
+    setDraftMessage(text);
+    currentDraftRef.current = text;
+    if (activeTargetId) {
+      conversationRepository
+        .saveDraft(activeTargetId, text, activeAccountId)
+        .catch(() => {});
+    }
+  };
+
+  // -------------------------------------------------------------
   // Offline Demo Mode Logic
   // -------------------------------------------------------------
   useEffect(() => {
@@ -157,13 +209,19 @@ export const MessagesView: React.FC = () => {
 
     async function loadDemoData() {
       try {
-        await conversationRepository.ensureConversation(friendId, 'dm', friendName);
-        const state = await conversationRepository.getConversationState(friendId);
-        const savedDraft = state?.draft_text || '';
-        setDraftMessage(savedDraft);
-        currentDraftRef.current = savedDraft;
+        await conversationRepository.ensureConversation(
+          friendId,
+          'dm',
+          friendName,
+          'offline_demo'
+        );
 
-        const dbMsgs = await messageRepository.getMessages(friendId, 25);
+        const dbMsgs = await messageRepository.getMessages(
+          friendId,
+          25,
+          undefined,
+          'offline_demo'
+        );
         const formatted = dbMsgs.map((m) =>
           formatDbMessage(m, friendName, currentUser.displayName)
         );
@@ -171,7 +229,7 @@ export const MessagesView: React.FC = () => {
 
         if (dbMsgs.length > 0) {
           const lastMsg = dbMsgs[dbMsgs.length - 1];
-          await conversationRepository.markAsRead(friendId, lastMsg.id);
+          await conversationRepository.markAsRead(friendId, lastMsg.id, 'offline_demo');
         }
       } catch (err: any) {
         console.error('[MessagesView] Erro ao carregar conversa demo:', err);
@@ -193,9 +251,17 @@ export const MessagesView: React.FC = () => {
     if (isOnline) {
       if (!activeConversationId) return;
       setDraftMessage('');
+      currentDraftRef.current = '';
+      conversationRepository
+        .saveDraft(activeConversationId, '', activeAccountId)
+        .catch(() => {});
       const ok = await sendDirectMessage(content);
       if (!ok) {
         setDraftMessage(content);
+        currentDraftRef.current = content;
+        conversationRepository
+          .saveDraft(activeConversationId, content, activeAccountId)
+          .catch(() => {});
       }
     } else {
       if (!selectedDemoFriend) return;
@@ -206,13 +272,15 @@ export const MessagesView: React.FC = () => {
         await conversationRepository.ensureConversation(
           selectedDemoFriend.id,
           'dm',
-          selectedDemoFriend.name
+          selectedDemoFriend.name,
+          'offline_demo'
         );
-        await conversationRepository.saveDraft(selectedDemoFriend.id, '');
+        await conversationRepository.saveDraft(selectedDemoFriend.id, '', 'offline_demo');
         const savedDb = await messageRepository.saveMessage(
           selectedDemoFriend.id,
           currentUser.id,
-          content
+          content,
+          'offline_demo'
         );
         const visualMsg = formatDbMessage(
           savedDb,
@@ -223,6 +291,10 @@ export const MessagesView: React.FC = () => {
       } catch (err: any) {
         setLocalError(`Erro ao salvar mensagem: ${err?.message || err}`);
         setDraftMessage(content);
+        currentDraftRef.current = content;
+        conversationRepository
+          .saveDraft(selectedDemoFriend.id, content, 'offline_demo')
+          .catch(() => {});
       }
     }
   };
@@ -818,7 +890,7 @@ export const MessagesView: React.FC = () => {
               <input
                 type="text"
                 value={draftMessage}
-                onChange={(e) => setDraftMessage(e.target.value)}
+                onChange={(e) => handleDraftChange(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={
                   isOnline

@@ -760,6 +760,30 @@ impl FriendRepository {
         })
     }
 
+    /// Update only the effective connectivity status and `last_seen_at` in `user_profiles`
+    /// without altering `user_presence_preferences.preferred_status`, `custom_status`, or `activity`.
+    pub async fn set_connectivity_status(
+        &self,
+        user_id: Uuid,
+        effective_status: &str,
+    ) -> Result<chrono::DateTime<chrono::Utc>, AppError> {
+        let row = sqlx::query!(
+            r#"
+            UPDATE user_profiles
+            SET status = $2, last_seen_at = NOW()
+            WHERE user_id = $1
+            RETURNING last_seen_at
+            "#,
+            user_id,
+            effective_status
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Perfil não encontrado.".to_string()))?;
+
+        Ok(row.last_seen_at.unwrap_or_else(chrono::Utc::now))
+    }
+
     /// Update user presence status and preferences in database
     pub async fn update_presence(
         &self,
@@ -772,34 +796,80 @@ impl FriendRepository {
         let mut tx = self.pool.begin().await?;
 
         if let Some(status) = preferred_status {
-            sqlx::query!(
-                r#"
-                INSERT INTO user_presence_preferences (user_id, preferred_status, allow_friend_requests, updated_at)
-                VALUES ($1, $2, COALESCE($3, true), NOW())
-                ON CONFLICT (user_id) DO UPDATE
-                SET 
-                    preferred_status = EXCLUDED.preferred_status,
-                    allow_friend_requests = COALESCE($3, user_presence_preferences.allow_friend_requests),
-                    updated_at = NOW()
-                "#,
-                user_id,
-                status,
-                allow_friend_requests
-            )
-            .execute(&mut *tx)
-            .await?;
+            match status {
+                "online" | "idle" | "dnd" | "invisible" => {
+                    sqlx::query!(
+                        r#"
+                        INSERT INTO user_presence_preferences (user_id, preferred_status, allow_friend_requests, updated_at)
+                        VALUES ($1, $2, COALESCE($3, true), NOW())
+                        ON CONFLICT (user_id) DO UPDATE
+                        SET 
+                            preferred_status = EXCLUDED.preferred_status,
+                            allow_friend_requests = COALESCE($3, user_presence_preferences.allow_friend_requests),
+                            updated_at = NOW()
+                        "#,
+                        user_id,
+                        status,
+                        allow_friend_requests
+                    )
+                    .execute(&mut *tx)
+                    .await?;
 
-            sqlx::query!(
-                r#"
-                UPDATE user_profiles
-                SET status = $2, last_seen_at = NOW()
-                WHERE user_id = $1
-                "#,
-                user_id,
-                status
-            )
-            .execute(&mut *tx)
-            .await?;
+                    let effective_profile_status = if status == "invisible" {
+                        "offline"
+                    } else {
+                        status
+                    };
+
+                    sqlx::query!(
+                        r#"
+                        UPDATE user_profiles
+                        SET status = $2, last_seen_at = NOW()
+                        WHERE user_id = $1
+                        "#,
+                        user_id,
+                        effective_profile_status
+                    )
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                "offline" => {
+                    // Never write 'offline' into user_presence_preferences.preferred_status (violates CHECK constraint).
+                    // Only update effective connectivity status and last_seen_at on user_profiles.
+                    sqlx::query!(
+                        r#"
+                        UPDATE user_profiles
+                        SET status = 'offline', last_seen_at = NOW()
+                        WHERE user_id = $1
+                        "#,
+                        user_id
+                    )
+                    .execute(&mut *tx)
+                    .await?;
+
+                    if let Some(allow) = allow_friend_requests {
+                        sqlx::query!(
+                            r#"
+                            INSERT INTO user_presence_preferences (user_id, preferred_status, allow_friend_requests, updated_at)
+                            VALUES ($1, 'online', $2, NOW())
+                            ON CONFLICT (user_id) DO UPDATE
+                            SET 
+                                allow_friend_requests = EXCLUDED.allow_friend_requests,
+                                updated_at = NOW()
+                            "#,
+                            user_id,
+                            allow
+                        )
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                }
+                _ => {
+                    return Err(AppError::BadRequest(
+                        "Status de presença inválido. Use online, idle, dnd ou invisible.".to_string(),
+                    ));
+                }
+            }
         } else if let Some(allow) = allow_friend_requests {
             sqlx::query!(
                 r#"

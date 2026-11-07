@@ -30,11 +30,12 @@ export const Sidebar: React.FC = () => {
   const isDeafened = useAppStore((state) => state.isDeafened);
   const activeCommunityId = useAppStore((state) => state.activeCommunityId);
   const setActiveCommunity = useAppStore((state) => state.setActiveCommunity);
+  const conversations = useAppStore((state) => state.conversations);
 
-  const totalDmUnreads = mockDirectMessages.reduce(
-    (acc, dm) => acc + (dm.unreadCount || 0),
-    0
-  );
+  const isOnline = authStatus === 'authenticated';
+  const totalDmUnreads = isOnline
+    ? conversations.reduce((acc, c) => acc + (c.unread_count || 0), 0)
+    : mockDirectMessages.reduce((acc, dm) => acc + (dm.unreadCount || 0), 0);
 
   const totalCommunityUnreads = mockCommunities.reduce(
     (acc, c) => acc + (c.unreadCount || 0),

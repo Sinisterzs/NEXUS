@@ -36,6 +36,10 @@ nexus_*.json
 logs/
 *.log
 nexus-server/logs/
+scratch/
+test_homologation_profile/
+backups/
+*.dump
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

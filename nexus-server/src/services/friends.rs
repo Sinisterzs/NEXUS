@@ -182,7 +182,14 @@ impl FriendService {
 
     /// Get user presence
     pub async fn get_presence(&self, user_id: Uuid) -> Result<PresenceResponse, AppError> {
-        self.repo.get_presence(user_id).await
+        let mut presence = self.repo.get_presence(user_id).await?;
+        let is_connected = self.presence_mgr.is_user_connected(user_id).await;
+        if !is_connected || presence.preferred_status == "invisible" {
+            presence.status = "offline".to_string();
+        } else {
+            presence.status = presence.preferred_status.clone();
+        }
+        Ok(presence)
     }
 
     /// Update user presence status and broadcast to friends
@@ -194,7 +201,7 @@ impl FriendService {
         activity: Option<&str>,
         allow_friend_requests: Option<bool>,
     ) -> Result<PresenceResponse, AppError> {
-        let presence = self
+        let mut presence = self
             .repo
             .update_presence(
                 user_id,
@@ -205,12 +212,18 @@ impl FriendService {
             )
             .await?;
 
+        let is_connected = self.presence_mgr.is_user_connected(user_id).await;
+        if !is_connected {
+            let _ = self.repo.set_connectivity_status(user_id, "offline").await;
+            presence.status = "offline".to_string();
+        }
+
         let (effective_status, friend_ids) = if let Some(pref) = preferred_status {
             self.presence_mgr
                 .update_user_presence(user_id, pref, custom_status, activity)
                 .await
         } else {
-            let eff = if presence.preferred_status == "invisible" {
+            let eff = if !is_connected || presence.preferred_status == "invisible" {
                 "offline".to_string()
             } else {
                 presence.preferred_status.clone()
@@ -218,9 +231,8 @@ impl FriendService {
             (eff, self.repo.get_friend_ids(user_id).await.unwrap_or_default())
         };
 
-        // If user is invisible, friends do not receive updates unless transitioning from online to offline
-        let is_connected = self.presence_mgr.is_user_connected(user_id).await;
-        if presence.preferred_status != "invisible" || is_connected {
+        // Only broadcast presence updates to friends when the user is actively connected to the Gateway
+        if is_connected {
             let broadcast_status = if presence.preferred_status == "invisible" {
                 "offline"
             } else {
