@@ -19,16 +19,15 @@
 
 ## 📌 Última Atualização & Notas de Versão (Patch Notes)
 
-> **Versão Atual:** `v0.1.0` • **Data:** 07 de Novembro de 2026 • **Status:** Release Estável
+> **Versão Atual:** `v0.1.1` • **Data:** 07 de Novembro de 2026 • **Status:** Release Estável
 
-### 📋 Resumo das Mudanças
-- 🎙️ **Chamadas de Voz 1:1 via WebRTC + Tailscale:** Mídia P2P criptografada ponto a ponto (DTLS-SRTP, codec Opus) trafegando diretamente pela malha privada Tailscale, sem exigir portas abertas no roteador.
-- ⚡ **Correção no Encerramento de Chamada:** Resolução do travamento/congelamento reentrante ao desligar chamadas. Botão de encerramento agora oferece resposta tátil instantânea (`active:scale-90`) e transição imediata para o histórico.
-- 🔇 **Visibilidade e Sincronização de Mute:** Indicadores visuais em tempo real tanto no avatar quanto na barra inferior quando você ou seu amigo silenciarem o microfone.
-- 📜 **Novo Histórico de Chamadas:** A aba lateral "Chamadas" agora opera como central de histórico completo, exibindo chamadas completadas, perdidas e recusadas com duração, horário e botão direto de retorno ("Ligar").
-- 🎛️ **Dispositivos Reais & DSP Nativo:** Detecção automática de microfones e alto-falantes/fones do sistema, Cancelamento de Eco Acústico (AEC), Supressão de Ruído e ferramenta de teste de microfone com medidor acústico em tempo real nas Configurações.
-- 🔄 **Atualizador Automático Integrado:** Suporte nativo a updates automáticos via GitHub Releases com assinaturas digitais Minisign.
-- 🧹 **Remoção de Placeholders:** Listas de amigos e comunidades agora exibem estados vazios autênticos e limpos, sem dados fictícios na inicialização.
+### 📋 Resumo das Mudanças (v0.1.1)
+- 🎨 **Temas Dinâmicos e Aparência:** Três esquemas visuais em tempo real (*NEXUS Dark*, *Midnight Steam* para OLED e *Cyber Slate* neon Opera GX), escala ajustável de tipografia e modo compacto de mensagens.
+- 📷 **Foto de Perfil Personalizada:** Suporte completo a upload de fotos de perfil locais, com pré-visualização, persistência e exibição na barra lateral e chats.
+- 👥 **Detecção Rigorosa de Amigos Offline:** Sincronização automática que marca amigos como offline assim que fecham o aplicativo, com timeout de inatividade de 60s no servidor para quedas de conexão.
+- 🎧 **Retorno de Áudio no Teste de Microfone:** O teste de microfone agora possui retorno em tempo real nos fones/alto-falantes para você ouvir exatamente como sua voz e o cancelamento de ruído soam.
+- 🔔 **Efeitos Sonoros de Mute & Unmute:** Alertas acústicos sintetizados instantaneamente via Web Audio API ao silenciar ou reativar o microfone.
+- 🏷️ **Alinhamento de Versão e Interface:** Versão do topo sincronizada com `v0.1.1` e selo de status limpo sem referências técnicas ao PostgreSQL.
 
 *(Para ver os detalhes técnicos completos, consulte a [Aba de Releases](https://github.com/Sinisterzs/NEXUS/releases)).*
 
