@@ -14,6 +14,7 @@ export class CallService {
   private durationTimer: any = null;
   private initialized = false;
   private isCleaningUp = false;
+  private isProcessingOffer = false;
 
   init(): void {
     if (this.initialized) return;
@@ -124,13 +125,38 @@ export class CallService {
         store.setPeerMuted(Boolean(data.isMuted));
       },
 
+      onCallAcceptedByUser: (data) => {
+        console.log('[CallService] Chamada atendida em outra sessão/dispositivo:', data.callId);
+        const store = useAppStore.getState();
+        if (store.incomingCall?.callId === data.callId && store.voiceCallState === 'incoming') {
+          store.setIncomingCall(null);
+          store.setVoiceCallState('idle');
+        }
+      },
+
       onCallWebrtcOffer: async (data) => {
         console.log('[CallService] SDP Offer recebida do chamador (call.webrtc.offer).');
         const store = useAppStore.getState();
-        if (store.activeCallId !== data.callId && store.incomingCall?.callId !== data.callId) return;
+        // Apenas processa se ESTA instância tiver explicitamente aceitado a chamada (estado 'connecting' ou 'connected')
+        if (
+          store.activeCallId !== data.callId ||
+          (store.voiceCallState !== 'connecting' && store.voiceCallState !== 'connected')
+        ) {
+          console.log(
+            `[CallService] Ignorando SDP Offer pois esta instância não é o participante ativo da chamada ${data.callId} (state=${store.voiceCallState})`
+          );
+          return;
+        }
 
+        if (this.isProcessingOffer) {
+          console.warn('[CallService] Ignorando SDP Offer simultânea enquanto outra está em processamento.');
+          return;
+        }
+
+        this.isProcessingOffer = true;
         try {
           if (!this.webRtc) {
+            console.warn('[CallService] webRtc não inicializado ao receber offer, criando...');
             this.webRtc = this.createWebRtcInstance();
           }
 
@@ -139,13 +165,20 @@ export class CallService {
         } catch (err: any) {
           console.error('[CallService] Falha ao processar SDP Offer:', err);
           this.endCall('Falha ao negociar conexão de áudio.');
+        } finally {
+          this.isProcessingOffer = false;
         }
       },
 
       onCallWebrtcAnswer: async (data) => {
         console.log('[CallService] SDP Answer recebida do destinatário (call.webrtc.answer).');
         const store = useAppStore.getState();
-        if (store.activeCallId !== data.callId) return;
+        if (
+          store.activeCallId !== data.callId ||
+          (store.voiceCallState !== 'connecting' && store.voiceCallState !== 'connected')
+        ) {
+          return;
+        }
 
         try {
           if (this.webRtc) {
@@ -159,7 +192,12 @@ export class CallService {
 
       onCallWebrtcIceCandidate: async (data) => {
         const store = useAppStore.getState();
-        if (store.activeCallId !== data.callId && store.incomingCall?.callId !== data.callId) return;
+        if (
+          store.activeCallId !== data.callId ||
+          (store.voiceCallState !== 'connecting' && store.voiceCallState !== 'connected')
+        ) {
+          return;
+        }
 
         if (this.webRtc) {
           await this.webRtc.addIceCandidate(data.candidate);

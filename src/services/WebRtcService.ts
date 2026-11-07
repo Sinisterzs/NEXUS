@@ -136,6 +136,8 @@ export class WebRtcService {
     const config: RTCConfiguration = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
       ],
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
@@ -229,7 +231,19 @@ export class WebRtcService {
    */
   async handleOffer(sdp: string): Promise<string> {
     const pc = this.peerConnection || this.createPeerConnection();
-    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+
+    // Idempotência: se a remoteDescription já possui este mesmo SDP e já temos uma localDescription (answer), reutiliza
+    if (pc.remoteDescription?.sdp === sdp && pc.localDescription?.sdp) {
+      console.log('[WebRtcService] Offer idêntica já processada com sucesso anteriormente. Reenviando answer existente.');
+      return pc.localDescription.sdp;
+    }
+
+    if (pc.signalingState === 'have-remote-offer') {
+      console.warn('[WebRtcService] Conexão já em have-remote-offer, gerando answer sem re-executar setRemoteDescription.');
+    } else {
+      await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+    }
+
     this.isRemoteDescriptionSet = true;
     await this.flushQueuedCandidates();
 
@@ -244,6 +258,14 @@ export class WebRtcService {
    */
   async handleAnswer(sdp: string): Promise<void> {
     if (!this.peerConnection) return;
+
+    if (this.peerConnection.signalingState !== 'have-local-offer') {
+      console.warn(
+        `[WebRtcService] Ignorando SDP Answer redundante pois signalingState atual é ${this.peerConnection.signalingState}`
+      );
+      return;
+    }
+
     await this.peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
     this.isRemoteDescriptionSet = true;
     await this.flushQueuedCandidates();

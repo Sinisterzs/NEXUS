@@ -200,6 +200,15 @@ impl CallService {
         );
         self.presence_mgr.send_to_user(session.caller_id, &accepted_event).await;
 
+        // Notifica quaisquer outras conexões do callee que a chamada foi atendida nesta sessão
+        let callee_dismiss_event = GatewayEvent::new(
+            "call.accepted_by_user",
+            json!({
+                "call_id": call_id,
+            }),
+        );
+        self.presence_mgr.send_to_user(user_id, &callee_dismiss_event).await;
+
         info!(
             "[Calls] Chamada {} aceita por {}. Sessão ativa.",
             call_id, user_id

@@ -40,6 +40,7 @@ export type GatewayEventListener = {
     };
   }) => void;
   onCallAccepted?: (data: { callId: string; peerId: string }) => void;
+  onCallAcceptedByUser?: (data: { callId: string }) => void;
   onCallRejected?: (data: { callId: string; reason: string }) => void;
   onCallCanceled?: (data: { callId: string }) => void;
   onCallEnded?: (data: { callId: string; reason: string }) => void;
@@ -68,6 +69,11 @@ export class GatewayClient {
   }
 
   async connect(): Promise<void> {
+    if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+      console.log('[GatewayClient] Socket já conectado ou em processo de conexão. Ignorando chamada redundante.');
+      return;
+    }
+
     this.disconnect();
     this.isExplicitlyClosed = false;
 
@@ -329,6 +335,19 @@ export class GatewayClient {
         break;
       }
 
+      case 'call.accepted_by_user': {
+        const callId = payload?.call_id || payload?.callId;
+        if (callId) {
+          console.log('[GatewayClient] Recebido call.accepted_by_user (atendida em outra sessão):', { callId });
+          this.listeners.forEach((l) =>
+            l.onCallAcceptedByUser?.({
+              callId,
+            })
+          );
+        }
+        break;
+      }
+
       case 'call.rejected': {
         const callId = payload?.call_id || payload?.callId;
         if (callId) {
@@ -560,8 +579,16 @@ export class GatewayClient {
       this.reconnectTimeout = null;
     }
     if (this.socket) {
-      this.socket.close();
+      const sock = this.socket;
       this.socket = null;
+      // Desanexa handlers para impedir que o encerramento assíncrono dispare reconexão ou zere conexões novas
+      sock.onopen = null;
+      sock.onmessage = null;
+      sock.onerror = null;
+      sock.onclose = null;
+      try {
+        sock.close();
+      } catch {}
     }
     this.notifyConnectionChange(false);
   }
