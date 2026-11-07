@@ -1,6 +1,7 @@
 import React from 'react';
 import { Search, LogIn, LogOut } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
+import { APP_VERSION } from '../version';
 
 const tabTitles = {
   home: 'Início',
@@ -91,7 +92,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ backendReady }) => {
           </div>
           <span className="font-semibold text-sm tracking-wide">NEXUS</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded bg-nexus-panel text-nexus-muted border border-nexus-border font-mono">
-            v0.1.2
+            v{APP_VERSION}
           </span>
         </div>
 

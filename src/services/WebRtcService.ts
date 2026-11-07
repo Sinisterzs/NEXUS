@@ -71,11 +71,10 @@ export class WebRtcService {
 
       const constraints: MediaStreamConstraints = {
         audio: {
-          deviceId: deviceIdToUse ? { exact: deviceIdToUse } : undefined,
+          deviceId: deviceIdToUse ? { ideal: deviceIdToUse } : undefined,
           echoCancellation: Boolean(audioSettings.echoCancellation),
           noiseSuppression: Boolean(audioSettings.noiseSuppression),
           autoGainControl: true,
-          channelCount: 1, // Mono suficiente para voz, reduz banda e jitter
         },
         video: false,
       };
@@ -84,7 +83,31 @@ export class WebRtcService {
         `[WebRtcService] Inicializando captura com restrições reais: EchoCancellation=${audioSettings.echoCancellation}, NoiseSuppression=${audioSettings.noiseSuppression}, DeviceId=${deviceIdToUse || 'default'}`
       );
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err: any) {
+        console.warn('[WebRtcService] Falha com restrições solicitadas, tentando fallback resiliente:', err);
+        try {
+          // Fallback 1: mantém DSP mas remove restrição de deviceId para evitar OverconstrainedError
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: Boolean(audioSettings.echoCancellation),
+              noiseSuppression: Boolean(audioSettings.noiseSuppression),
+              autoGainControl: true,
+            },
+            video: false,
+          });
+        } catch (fallbackErr) {
+          console.warn('[WebRtcService] Fallback com DSP falhou, capturando áudio padrão do sistema:', fallbackErr);
+          // Fallback 2: áudio padrão absoluto
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          });
+        }
+      }
+
       this.localStream = stream;
 
       // 3. Inicializa Voice Activity Detection (VAD) local
@@ -315,16 +338,24 @@ export class WebRtcService {
 
     try {
       const audioSettings = useAppStore.getState().settings.audioVideo;
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: deviceId && deviceId !== 'default' ? { exact: deviceId } : undefined,
-          echoCancellation: Boolean(audioSettings.echoCancellation),
-          noiseSuppression: Boolean(audioSettings.noiseSuppression),
-          autoGainControl: true,
-          channelCount: 1,
-        },
-        video: false,
-      });
+      let newStream: MediaStream;
+      try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: deviceId && deviceId !== 'default' ? { ideal: deviceId } : undefined,
+            echoCancellation: Boolean(audioSettings.echoCancellation),
+            noiseSuppression: Boolean(audioSettings.noiseSuppression),
+            autoGainControl: true,
+          },
+          video: false,
+        });
+      } catch (e) {
+        console.warn('[WebRtcService] Falha ao trocar dispositivo com ideal, tentando padrão:', e);
+        newStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false,
+        });
+      }
 
       const newTrack = newStream.getAudioTracks()[0];
       const senders = this.peerConnection.getSenders();

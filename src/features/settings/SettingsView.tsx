@@ -27,6 +27,7 @@ import { updateService, UpdateState } from '../../services/UpdateService';
 import { audioDeviceService, AudioDeviceInfo } from '../../services/AudioDeviceService';
 import { callService } from '../../services/CallService';
 import { Avatar } from '../../components/Avatar';
+import { APP_VERSION } from '../../version';
 
 type SettingsSection = 'profile' | 'appearance' | 'audioVideo' | 'notifications' | 'privacy' | 'network' | 'about';
 
@@ -108,7 +109,7 @@ export const SettingsView: React.FC = () => {
       const deviceId = settings.audioVideo.inputDevice;
       const constraints: MediaStreamConstraints = {
         audio: {
-          deviceId: deviceId && deviceId !== 'default' ? { exact: deviceId } : undefined,
+          deviceId: deviceId && deviceId !== 'default' ? { ideal: deviceId } : undefined,
           echoCancellation: Boolean(settings.audioVideo.echoCancellation),
           noiseSuppression: Boolean(settings.audioVideo.noiseSuppression),
           autoGainControl: true,
@@ -116,8 +117,28 @@ export const SettingsView: React.FC = () => {
         video: false,
       };
 
-      navigator.mediaDevices
-        ?.getUserMedia(constraints)
+      const acquireTestStream = async (): Promise<MediaStream> => {
+        try {
+          return await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (err) {
+          console.warn('[SettingsView] Falha ao testar mic com ideal deviceId, tentando fallback sem ID:', err);
+          try {
+            return await navigator.mediaDevices.getUserMedia({
+              audio: {
+                echoCancellation: Boolean(settings.audioVideo.echoCancellation),
+                noiseSuppression: Boolean(settings.audioVideo.noiseSuppression),
+                autoGainControl: true,
+              },
+              video: false,
+            });
+          } catch (fallbackErr) {
+            console.warn('[SettingsView] Falha no fallback com DSP, tentando áudio padrão:', fallbackErr);
+            return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          }
+        }
+      };
+
+      acquireTestStream()
         .then((s) => {
           stream = s;
 
@@ -1399,7 +1420,7 @@ export const SettingsView: React.FC = () => {
                   <h3 className="text-base font-bold text-nexus-text flex items-center gap-2">
                     NEXUS Desktop
                     <span className="text-xs px-2 py-0.5 rounded-full bg-nexus-panel border border-nexus-border text-nexus-muted font-mono font-normal">
-                      v0.1.0
+                      v{APP_VERSION}
                     </span>
                   </h3>
                   <p className="text-xs text-nexus-muted mt-0.5">
