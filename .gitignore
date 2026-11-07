@@ -1,0 +1,74 @@
+# ========================================================
+# NEXUS - .gitignore (Proteção Estrita de Arquivos Sensíveis)
+# ========================================================
+
+# 1. Chaves Criptográficas & Segredos
+.tauri/
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+*.cert
+
+# 2. Variáveis de Ambiente & Credenciais
+.env
+*.env
+.env.*
+*.env.local
+nexus-server/.env
+!.env.example
+!*.env.example
+
+# 3. Bancos de Dados Locais & Persistência
+.postgres/
+postgres/
+pg_data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+nexus_settings.json
+nexus_*.json
+
+# 4. Logs, Trava de Processos & Temp
+logs/
+*.log
+nexus-server/logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.lock
+!package-lock.json
+!Cargo.lock
+
+# 5. Diretórios de Compilação & Dependências
+node_modules/
+dist/
+dist-ssr/
+dist-release/
+target/
+src-tauri/target/
+nexus-server/target/
+
+# 6. Pacotes Binários & Artefatos de Distribuição (Publicados via GitHub Releases)
+*.zip
+*.tar.gz
+*.7z
+*.rar
+nexus-windows-x64.zip
+
+# 7. Editores & Sistema Operacional
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

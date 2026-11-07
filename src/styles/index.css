@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@theme {
+  --color-nexus-bg: #111318;
+  --color-nexus-surface: #1B1E25;
+  --color-nexus-panel: #262931;
+  --color-nexus-border: #353943;
+  --color-nexus-border-light: #444955;
+  --color-nexus-accent: #B8495A;
+  --color-nexus-accent-hover: #cf5668;
+  --color-nexus-accent-dim: rgba(184, 73, 90, 0.15);
+  --color-nexus-text: #F0EEF2;
+  --color-nexus-muted: #9699A5;
+  --color-nexus-muted-hover: #c4c7d4;
+  --color-nexus-status-online: #22c55e;
+  --color-nexus-status-idle: #eab308;
+  --color-nexus-status-dnd: #ef4444;
+  --color-nexus-status-offline: #64748b;
+}
+
+/* Discrete transitions (120-180ms) */
+* {
+  box-sizing: border-box;
+}
+
+.transition-nexus {
+  transition-property: color, background-color, border-color, opacity, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Custom scrollbar - Steam/Opera GX sleek dark aesthetic */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2e38;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3e4452;
+}
+
+/* Speaking pulse effect */
+@keyframes speaking-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.85);
+  }
+}
+
+.animate-speaking {
+  animation: speaking-glow 1.2s infinite ease-in-out;
+}
+
+/* Typing bounce indicator */
+@keyframes typing-bounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.typing-dot-1 {
+  animation: typing-bounce 1.4s infinite ease-in-out;
+}
+.typing-dot-2 {
+  animation: typing-bounce 1.4s infinite ease-in-out 0.2s;
+}
+.typing-dot-3 {
+  animation: typing-bounce 1.4s infinite ease-in-out 0.4s;
+}
+
+/* Base styles */
+html, body {
+  background-color: var(--color-nexus-bg);
+  color: var(--color-nexus-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}

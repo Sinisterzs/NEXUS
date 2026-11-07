@@ -1,0 +1,38 @@
+{
+  "//": "NEXUS Tailscale Access Control Policy (ACL) - Fase 2.4",
+  "//": "Política de Menor Privilégio: Restringe TCP 3001 (API/Sinalização) e UDP dinâmico P2P entre clientes NEXUS para WebRTC.",
+  "tagOwners": {
+    "tag:nexus-server": ["autogroup:admin"],
+    "tag:nexus-client": ["autogroup:admin"]
+  },
+  "acls": [
+    {
+      "//": "Regra 1: Permite aos clientes acessarem a API Axum e Gateway WebSocket na porta TCP 3001",
+      "action": "accept",
+      "src": ["tag:nexus-client", "autogroup:admin"],
+      "dst": ["tag:nexus-server:3001"]
+    },
+    {
+      "//": "Regra 2: Permite tráfego de mídia WebRTC (UDP) estritamente ponto a ponto entre os 3 nós autorizados",
+      "action": "accept",
+      "src": ["tag:nexus-client", "tag:nexus-server"],
+      "dst": ["tag:nexus-client:*", "tag:nexus-server:*"],
+      "proto": "udp"
+    }
+  ],
+  "nodeAttrs": [
+    {
+      "target": ["*"],
+      "app": {
+        "tailscale.com/cap/nexus": []
+      }
+    }
+  ],
+  "tests": [
+    {
+      "src": "tag:nexus-client",
+      "accept": ["tag:nexus-server:3001", "tag:nexus-client:50000"],
+      "deny": ["tag:nexus-server:5432", "tag:nexus-server:22"]
+    }
+  ]
+}
