@@ -61,6 +61,7 @@ $sigPath = Join-Path $rootDir "nexus-windows-x64.zip.sig"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path $releaseExe -DestinationPath $zipPath -Force
 
+Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
 & npx tauri signer sign -f ".tauri\nexus.key" $zipPath
 $signature = (Get-Content -Raw $sigPath).Trim()
 
