@@ -125,19 +125,25 @@ pub fn get_api_base() -> String {
             return valid;
         }
     }
-    // 1. Runtime override via NEXUS_API_URL or NEXUS_API_BASE
+    // 1. Persisted server URL from previous configuration or successful Tailscale discovery
+    if let Some(persisted_url) = crate::network::load_persisted_server_url() {
+        if let Ok(valid) = crate::network::validate_server_url(&persisted_url) {
+            return valid;
+        }
+    }
+    // 2. Runtime override via NEXUS_API_URL or NEXUS_API_BASE
     if let Ok(val) = std::env::var("NEXUS_API_URL").or_else(|_| std::env::var("NEXUS_API_BASE")) {
         if let Ok(valid) = crate::network::validate_server_url(&val) {
             return valid;
         }
     }
-    // 2. Compile-time embedded default from build.rs
+    // 3. Compile-time embedded default from build.rs
     if let Some(val) = option_env!("NEXUS_DEFAULT_API_URL") {
         if let Ok(valid) = crate::network::validate_server_url(val) {
             return valid;
         }
     }
-    // 3. Default fallback
+    // 4. Default fallback
     DEFAULT_API_BASE.to_string()
 }
 
@@ -269,6 +275,31 @@ pub fn get_secure_token() -> Option<String> {
     if let Ok(cred) = serde_json::from_str::<StoredSessionCredential>(trimmed) {
         let stored_origin = cred.server_origin.trim().trim_end_matches('/').to_lowercase();
         if stored_origin != current_origin {
+            let is_in_memory_verified = AUTHENTICATED_SERVER_ORIGIN
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .as_deref()
+                == Some(&current_origin);
+
+            let is_stored_authorized = url::Url::parse(&stored_origin)
+                .ok()
+                .and_then(|u| u.host_str().map(crate::network::is_authorized_server_host))
+                .unwrap_or(false);
+            let is_current_authorized = url::Url::parse(&current_origin)
+                .ok()
+                .and_then(|u| u.host_str().map(crate::network::is_authorized_server_host))
+                .unwrap_or(false);
+
+            if is_in_memory_verified && is_stored_authorized && is_current_authorized {
+                eprintln!(
+                    "[Auth] Migrando token para servidor Tailscale verificado ({}) a partir de ({}).",
+                    current_origin, stored_origin
+                );
+                let _ = save_secure_token_for_origin(&cred.token, &current_origin);
+                return Some(cred.token);
+            }
+
             eprintln!(
                 "[Auth] Token retido por segurança: servidor atual ({}) difere do servidor de origem autenticado ({}).",
                 current_origin, stored_origin
@@ -695,6 +726,8 @@ mod tests {
 
     #[test]
     fn test_api_base_loaded_without_manual_env_var() {
+        crate::network::clear_dynamic_api_base_for_tests();
+        crate::network::clear_persisted_server_url_for_tests();
         let api_base = get_api_base();
         assert!(!api_base.is_empty());
         assert!(crate::network::validate_server_url(&api_base).is_ok());
@@ -749,6 +782,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_keyring_and_session_restore_lifecycle() {
+        clear_authenticated_server_origin();
+        crate::network::clear_dynamic_api_base_for_tests();
+        crate::network::clear_persisted_server_url_for_tests();
+
         // Step 1: Basic save, retrieval and deletion in Windows Credential Manager
         let test_token = "test_nexus_session_token_12345";
         assert!(save_secure_token(test_token).is_ok());

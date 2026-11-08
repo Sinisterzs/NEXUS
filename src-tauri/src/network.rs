@@ -125,6 +125,85 @@ pub fn get_dynamic_api_base() -> Option<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedNetworkConfig {
+    pub server_url: Option<String>,
+    pub updated_at: i64,
+}
+
+static PERSISTED_API_BASE: RwLock<Option<String>> = RwLock::new(None);
+
+fn get_network_config_path() -> PathBuf {
+    if let Ok(custom) = std::env::var("NEXUS_APP_DATA_DIR") {
+        let p = PathBuf::from(custom.trim());
+        if !p.as_os_str().is_empty() {
+            return p.join("nexus_network.json");
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = PathBuf::from(appdata).join("com.nexus.desktop");
+            return p.join("nexus_network.json");
+        }
+    }
+    PathBuf::from("nexus_network.json")
+}
+
+pub fn save_persisted_server_url(url: &str) -> Result<(), String> {
+    let validated = validate_server_url(url)?;
+    if let Ok(mut lock) = PERSISTED_API_BASE.write() {
+        *lock = Some(validated.clone());
+    }
+    if !cfg!(test) || std::env::var("NEXUS_APP_DATA_DIR").is_ok() {
+        let path = get_network_config_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let config = PersistedNetworkConfig {
+            server_url: Some(validated),
+            updated_at: now_ts,
+        };
+        let json = serde_json::to_string_pretty(&config)
+            .map_err(|e| format!("Falha ao serializar configuração de rede: {}", e))?;
+        std::fs::write(&path, json)
+            .map_err(|e| format!("Falha ao gravar nexus_network.json: {}", e))?;
+    }
+    Ok(())
+}
+
+pub fn load_persisted_server_url() -> Option<String> {
+    if let Ok(lock) = PERSISTED_API_BASE.read() {
+        if let Some(ref val) = *lock {
+            return Some(val.clone());
+        }
+    }
+    let path = get_network_config_path();
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    let config: PersistedNetworkConfig = serde_json::from_str(&content).ok()?;
+    let url = config.server_url?;
+    let validated = validate_server_url(&url).ok()?;
+    if let Ok(mut lock) = PERSISTED_API_BASE.write() {
+        *lock = Some(validated.clone());
+    }
+    Some(validated)
+}
+
+pub fn clear_persisted_server_url_for_tests() {
+    if let Ok(mut lock) = PERSISTED_API_BASE.write() {
+        *lock = None;
+    }
+    let path = get_network_config_path();
+    let _ = std::fs::remove_file(path);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TailscalePeerSummary {
     pub host_name: String,
     pub dns_name: String,
@@ -378,16 +457,62 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
         }
     }
 
-    // Determine current target server URL (preserves explicitly configured server; never auto-switches to arbitrary peers)
+    // Determine current target server URL
     let current_base = crate::auth::get_api_base();
-    let active_url = current_base.clone();
+    let mut active_url = current_base.clone();
     let mut server_latency: Option<u64> = None;
     let mut reachability = "server_unreachable".to_string();
 
-    // Probe only the explicitly configured server URL
+    // 1. Probe the current/configured server URL first
     if let Ok(lat) = probe_server_health(&active_url).await {
         server_latency = Some(lat);
         reachability = "connected".to_string();
+    } else if state_str == "running" && !detected_peers.is_empty() {
+        // 2. Fallback: Automatic secure Tailscale discovery among online peers on the private Tailnet
+        let mut candidates: Vec<String> = Vec::new();
+
+        // Pass 1: Peers labeled as likely servers
+        for p in &detected_peers {
+            if p.online && p.is_likely_server {
+                if !p.dns_name.is_empty() {
+                    candidates.push(format!("http://{}:3001", p.dns_name));
+                }
+                for ip in &p.tailscale_ips {
+                    candidates.push(format!("http://{}:3001", ip));
+                }
+            }
+        }
+
+        // Pass 2: Other online peers in the Tailnet
+        for p in &detected_peers {
+            if p.online && !p.is_likely_server {
+                if !p.dns_name.is_empty() {
+                    candidates.push(format!("http://{}:3001", p.dns_name));
+                }
+                for ip in &p.tailscale_ips {
+                    candidates.push(format!("http://{}:3001", ip));
+                }
+            }
+        }
+
+        for cand in candidates {
+            if cand == active_url {
+                continue;
+            }
+            if let Ok(lat) = probe_server_health(&cand).await {
+                server_latency = Some(lat);
+                reachability = "connected".to_string();
+                active_url = cand.clone();
+                set_dynamic_api_base(cand.clone());
+                let _ = save_persisted_server_url(&cand);
+                crate::auth::record_authenticated_server_origin(&cand);
+                eprintln!(
+                    "[Network] Servidor NEXUS detectado e conectado automaticamente via Tailscale: {}",
+                    cand
+                );
+                break;
+            }
+        }
     }
 
     if reachability != "connected" {
@@ -498,6 +623,7 @@ pub fn network_set_server_address(url: String) -> Result<String, String> {
     let valid_url = validate_server_url(&url)?;
     let old_base = crate::auth::get_api_base();
     set_dynamic_api_base(valid_url.clone());
+    let _ = save_persisted_server_url(&valid_url);
     if old_base != valid_url {
         eprintln!(
             "[Network] Origem do servidor alterada de {} para {}. Sessão ativa desvinculada para segurança.",
@@ -663,5 +789,23 @@ mod tests {
         );
 
         clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+    }
+
+    #[test]
+    fn test_persisted_server_url_lifecycle() {
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+
+        assert_eq!(load_persisted_server_url(), None);
+
+        assert!(save_persisted_server_url("http://100.117.183.97:3001").is_ok());
+        assert_eq!(
+            load_persisted_server_url(),
+            Some("http://100.117.183.97:3001".to_string())
+        );
+
+        clear_persisted_server_url_for_tests();
+        assert_eq!(load_persisted_server_url(), None);
     }
 }
