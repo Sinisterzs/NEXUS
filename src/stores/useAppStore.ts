@@ -29,6 +29,7 @@ import { messageRepository } from '../repositories/MessageRepository';
 import { callHistoryRepository } from '../repositories/CallHistoryRepository';
 import { gatewayClient } from '../services/GatewayClient';
 import { callService } from '../services/CallService';
+import { screenCaptureService } from '../services/ScreenCaptureService';
 import { networkManager, DEFAULT_NETWORK_STATUS } from '../services/NetworkManager';
 import { DeliveryStatus } from '../lib/types';
 
@@ -226,7 +227,6 @@ interface AppState {
   isMicMuted: boolean;
   isDeafened: boolean;
   isCamOn: boolean;
-  isScreenSharing: boolean;
   isCallActive: boolean;
   activeCallRoom: string;
   isCallParticipantsOpen: boolean;
@@ -245,6 +245,24 @@ interface AppState {
   isRemoteSpeaking: boolean;
   isPeerMuted: boolean;
   callErrorMessage: string | null;
+
+  // Phase 3.0: Local Screen Capture State (Preview only)
+  isScreenSharing: boolean;
+  isStartingScreenShare: boolean;
+  screenStream: MediaStream | null;
+  screenShareLabel: string | null;
+  screenShareError: string | null;
+  startScreenShare: () => Promise<MediaStream | null>;
+  stopScreenShare: () => void;
+  clearScreenShareError: () => void;
+
+  // Phase 3.1: Remote Screen Share State (Received via WebRTC)
+  isRemoteScreenSharing: boolean;
+  remoteScreenStream: MediaStream | null;
+  remoteScreenTrack: MediaStreamTrack | null;
+  isRemoteScreenMuted: boolean;
+  setRemoteScreenStream: (stream: MediaStream | null, track: MediaStreamTrack | null) => void;
+  setRemoteScreenMuted: (isMuted: boolean) => void;
 
   // App Settings (session persistence)
   settings: AppSettings;
@@ -453,7 +471,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   isMicMuted: false,
   isDeafened: false,
   isCamOn: false,
-  isScreenSharing: false,
   isCallActive: false,
   activeCallRoom: 'Sala de Voz',
   isCallParticipantsOpen: false,
@@ -469,6 +486,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   isRemoteSpeaking: false,
   isPeerMuted: false,
   callErrorMessage: null,
+
+  // Phase 3.0 Screen Sharing Initial State (Local Preview Only)
+  isScreenSharing: false,
+  isStartingScreenShare: false,
+  screenStream: null,
+  screenShareLabel: null,
+  screenShareError: null,
+
+  // Phase 3.1 Remote Screen Share Initial State
+  isRemoteScreenSharing: false,
+  remoteScreenStream: null,
+  remoteScreenTrack: null,
+  isRemoteScreenMuted: false,
 
   // Settings State
   settings: initialAppSettings,
@@ -1577,26 +1607,43 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
 
-  toggleScreenShare: () =>
-    set((state) => {
-      const nextScreen = !state.isScreenSharing;
-      return {
-        isScreenSharing: nextScreen,
-        callParticipants: state.callParticipants.map((p) =>
-          p.id === 'usr_me' ? { ...p, isScreenSharing: nextScreen } : p
-        ),
-      };
+  startScreenShare: async () => {
+    return callService.startScreenShare();
+  },
+
+  stopScreenShare: () => {
+    callService.stopScreenShare();
+  },
+
+  clearScreenShareError: () => {
+    screenCaptureService.clearError();
+  },
+
+  toggleScreenShare: () => {
+    callService.toggleScreenShare();
+  },
+
+  setRemoteScreenStream: (stream, track) =>
+    set({
+      isRemoteScreenSharing: Boolean(stream && track),
+      remoteScreenStream: stream,
+      remoteScreenTrack: track,
+      isRemoteScreenMuted: false,
     }),
+
+  setRemoteScreenMuted: (isRemoteScreenMuted) => set({ isRemoteScreenMuted }),
 
   toggleCallParticipants: () =>
     set((state) => ({ isCallParticipantsOpen: !state.isCallParticipantsOpen })),
 
-  disconnectCall: () =>
+  disconnectCall: () => {
+    screenCaptureService.stopCapture();
     set({
       isCallActive: false,
       isCamOn: false,
       isScreenSharing: false,
-    }),
+    });
+  },
 
   joinCall: (roomName) =>
     set({
@@ -1735,3 +1782,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 }));
+
+// Sincroniza o estado do ScreenCaptureService em tempo real com o store Zustand
+screenCaptureService.addListener((state) => {
+  useAppStore.setState({
+    isScreenSharing: state.isCapturing,
+    isStartingScreenShare: state.isStarting,
+    screenStream: state.stream,
+    screenShareLabel: state.sourceLabel,
+    screenShareError: state.error,
+  });
+});

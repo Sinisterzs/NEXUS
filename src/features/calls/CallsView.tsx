@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Mic,
   MicOff,
@@ -13,9 +13,15 @@ import {
   AlertCircle,
   Loader2,
   Trash2,
+  ScreenShare,
+  ScreenShareOff,
+  Monitor,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { callService } from '../../services/CallService';
+import { screenCaptureService } from '../../services/ScreenCaptureService';
 import { callHistoryRepository, CallHistoryEntry } from '../../repositories/CallHistoryRepository';
 import { Avatar } from '../../components/Avatar';
 import { Tooltip } from '../../components/Tooltip';
@@ -72,6 +78,60 @@ export const CallsView: React.FC = () => {
   const onlineUser = useAppStore((state) => state.onlineUser);
   const authStatus = useAppStore((state) => state.authStatus);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
+
+  // Phase 3.0: Screen Sharing State (Local Preview)
+  const isScreenSharing = useAppStore((state) => state.isScreenSharing);
+  const isStartingScreenShare = useAppStore((state) => state.isStartingScreenShare);
+  const screenStream = useAppStore((state) => state.screenStream);
+  const screenShareLabel = useAppStore((state) => state.screenShareLabel);
+  const screenShareError = useAppStore((state) => state.screenShareError);
+  const toggleScreenShare = useAppStore((state) => state.toggleScreenShare);
+  const stopScreenShare = useAppStore((state) => state.stopScreenShare);
+  const clearScreenShareError = useAppStore((state) => state.clearScreenShareError);
+
+  // Phase 3.1: Remote Screen Share State (WebRTC)
+  const isRemoteScreenSharing = useAppStore((state) => state.isRemoteScreenSharing);
+  const remoteScreenStream = useAppStore((state) => state.remoteScreenStream);
+  const isRemoteScreenMuted = useAppStore((state) => state.isRemoteScreenMuted);
+
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  // Atualiza elemento HTML5 video com a faixa remota de vídeo
+  useEffect(() => {
+    if (remoteVideoRef.current) {
+      if (remoteScreenStream) {
+        remoteVideoRef.current.srcObject = remoteScreenStream;
+        remoteVideoRef.current.play().catch((err) => {
+          console.warn('[CallsView] Falha ao reproduzir elemento de vídeo remoto:', err);
+        });
+      } else {
+        remoteVideoRef.current.srcObject = null;
+      }
+    }
+  }, [remoteScreenStream]);
+
+  // Atualiza elemento HTML5 video com a faixa da prévia local
+  useEffect(() => {
+    if (previewVideoRef.current) {
+      if (screenStream) {
+        previewVideoRef.current.srcObject = screenStream;
+        previewVideoRef.current.play().catch((err) => {
+          console.warn('[CallsView] Falha ao reproduzir elemento de vídeo:', err);
+        });
+      } else {
+        previewVideoRef.current.srcObject = null;
+      }
+    }
+  }, [screenStream]);
+
+  // Encerra captura ativa ao desmontar a visualização de chamadas
+  useEffect(() => {
+    return () => {
+      screenCaptureService.stopCapture();
+    };
+  }, []);
 
   const [callHistory, setCallHistory] = useState<CallHistoryEntry[]>([]);
   const [isEnding, setIsEnding] = useState(false);
@@ -407,8 +467,151 @@ export const CallsView: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Call Stage - 2-Participant P2P Grid */}
+      {/* Main Call Stage - 2-Participant P2P Grid & Local Screen Preview */}
       <div className="flex-1 flex flex-col items-center justify-center p-6 pb-24 overflow-y-auto">
+        {/* Alerta de erro de compartilhamento de tela */}
+        {screenShareError && (
+          <div className="w-full max-w-3xl mb-4 p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 flex items-center justify-between text-xs text-rose-300 font-mono animate-fadeIn">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{screenShareError}</span>
+            </div>
+            <button
+              onClick={clearScreenShareError}
+              className="p-1 rounded hover:bg-rose-900/40 text-rose-400 hover:text-white transition-nexus cursor-pointer ml-3 shrink-0"
+              title="Fechar aviso"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Visualizador de Transmissão Remota de Tela (WebRTC) */}
+        {isRemoteScreenSharing && remoteScreenStream && (
+          <div
+            className={
+              isExpanded
+                ? 'fixed inset-0 z-50 bg-black/95 p-6 flex flex-col animate-fadeIn'
+                : 'w-full max-w-4xl mb-6 bg-nexus-surface/90 border border-nexus-border rounded-2xl overflow-hidden shadow-2xl transition-all animate-fadeIn'
+            }
+          >
+            {/* Header do Visualizador Remoto */}
+            <div className="px-4 py-2.5 bg-nexus-surface border-b border-nexus-border flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                  <ScreenShare className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-nexus-text">
+                      Tela de {activeCallPeer?.name || 'Amigo'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[10px] font-mono font-semibold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Ao Vivo
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-nexus-muted font-mono mt-0.5">
+                    Transmissão P2P WebRTC direta (Tailscale DTLS-SRTP)
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="p-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-border text-nexus-muted hover:text-nexus-text transition-all active:scale-95 cursor-pointer border border-nexus-border"
+                  title={isExpanded ? 'Reduzir tela' : 'Expandir tela'}
+                >
+                  {isExpanded ? (
+                    <Minimize2 className="w-4 h-4" />
+                  ) : (
+                    <Maximize2 className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Elemento de Vídeo Remoto */}
+            <div className="relative bg-black flex-1 flex items-center justify-center overflow-hidden min-h-[300px]">
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className={`w-full ${isExpanded ? 'h-full object-contain' : 'max-h-[460px] object-contain'}`}
+              />
+
+              {/* Overlay de pausa se a faixa remota estiver mutada */}
+              {isRemoteScreenMuted && (
+                <div className="absolute inset-0 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center p-4">
+                  <div className="p-3 rounded-full bg-nexus-surface/80 border border-nexus-border mb-2">
+                    <Monitor className="w-6 h-6 text-amber-400 animate-pulse" />
+                  </div>
+                  <span className="text-xs font-bold text-nexus-text">
+                    Transmissão temporariamente pausada
+                  </span>
+                  <span className="text-[11px] text-nexus-muted font-mono mt-1">
+                    Aguardando retomada pelo participante...
+                  </span>
+                </div>
+              )}
+
+              <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/60 backdrop-blur text-[10px] text-nexus-muted font-mono border border-nexus-border">
+                P2P • WebRTC Video
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Prévia da Transmissão de Tela Local */}
+        {isScreenSharing && screenStream && (
+          <div className="w-full max-w-3xl mb-6 bg-nexus-surface/90 border border-nexus-border rounded-2xl overflow-hidden shadow-2xl transition-all animate-fadeIn">
+            <div className="px-4 py-2.5 bg-nexus-surface border-b border-nexus-border flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 rounded-lg bg-nexus-accent/15 text-nexus-accent border border-nexus-accent/30">
+                  <Monitor className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-nexus-text">
+                      {screenShareLabel || 'Prévia da Tela / Janela'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-nexus-accent/20 text-nexus-accent border border-nexus-accent/40 text-[10px] font-mono font-semibold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-nexus-accent animate-pulse" />
+                      Transmitindo tela
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-nexus-muted font-mono mt-0.5">
+                    Transmitindo para {activeCallPeer?.name || 'Amigo'} via WebRTC P2P
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={stopScreenShare}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/30 hover:border-rose-500/50 text-xs font-semibold transition-all active:scale-95 cursor-pointer"
+                title="Parar compartilhamento de tela"
+              >
+                <ScreenShareOff className="w-3.5 h-3.5" />
+                <span>Parar compartilhamento</span>
+              </button>
+            </div>
+
+            <div className="relative bg-black flex items-center justify-center overflow-hidden">
+              <video
+                ref={previewVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full max-h-[380px] object-contain"
+              />
+              <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/60 backdrop-blur text-[10px] text-nexus-muted font-mono border border-nexus-border">
+                30 FPS • Local
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 w-full max-w-3xl">
           {/* Tile 1: Usuário Local (Você) */}
           <div
@@ -528,6 +731,39 @@ export const CallsView: React.FC = () => {
               }`}
             >
               <Headphones className="w-4 h-4" />
+            </button>
+          </Tooltip>
+
+          {/* Compartilhar Tela / Parar Compartilhamento */}
+          <Tooltip
+            content={
+              isStartingScreenShare
+                ? 'Iniciando captura...'
+                : isScreenSharing
+                ? 'Parar compartilhamento'
+                : 'Compartilhar tela'
+            }
+            position="top"
+          >
+            <button
+              onClick={toggleScreenShare}
+              disabled={isStartingScreenShare}
+              aria-label={isScreenSharing ? 'Parar compartilhamento' : 'Compartilhar tela'}
+              className={`p-3 rounded-xl border transition-all active:scale-95 cursor-pointer flex items-center justify-center ${
+                isScreenSharing
+                  ? 'bg-nexus-accent text-white border-cyan-400 shadow-lg shadow-cyan-950/50'
+                  : isStartingScreenShare
+                  ? 'bg-nexus-panel border-nexus-border text-nexus-muted cursor-wait'
+                  : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border hover:text-white'
+              }`}
+            >
+              {isStartingScreenShare ? (
+                <Loader2 className="w-4 h-4 animate-spin text-nexus-accent" />
+              ) : isScreenSharing ? (
+                <ScreenShareOff className="w-4 h-4" />
+              ) : (
+                <ScreenShare className="w-4 h-4" />
+              )}
             </button>
           </Tooltip>
 

@@ -15,6 +15,7 @@ import {
 import { useAppStore } from '../stores/useAppStore';
 import { callHistoryRepository } from '../repositories/CallHistoryRepository';
 import { soundEffects } from '../lib/soundEffects';
+import { screenCaptureService } from './ScreenCaptureService';
 
 export const DEFAULT_CALLING_TIMEOUT_MS = 47000;
 export const DEFAULT_CONNECTING_TIMEOUT_MS = 20000;
@@ -89,6 +90,20 @@ export class CallService {
   init(): void {
     if (this.initialized) return;
     this.initialized = true;
+
+    // Sincroniza encerramentos locais de tela com a chamada WebRTC
+    screenCaptureService.addListener((state) => {
+      if (!state.isCapturing && this.webRtc && !this.isCleaningUp) {
+        const store = useAppStore.getState();
+        if (store.activeCallId && store.activeCallPeer?.id && store.voiceCallState === 'connected') {
+          this.webRtc.detachScreenTrack().then((offerSdp) => {
+            if (offerSdp && store.activeCallId && store.activeCallPeer?.id) {
+              gatewayClient.sendCallWebrtcOffer(store.activeCallId, store.activeCallPeer.id, offerSdp);
+            }
+          }).catch(() => {});
+        }
+      }
+    });
 
     gatewayClient.addListener({
       onCallRinging: (data) => {
@@ -476,40 +491,45 @@ export class CallService {
 
   private createWebRtcInstance(): WebRtcService {
     const instanceToken = this.callSessionToken;
+    const store = useAppStore.getState();
+    const myId = store.onlineUser?.id || '';
+    const peerId = store.activeCallPeer?.id || '';
+    const isPolite = myId ? (peerId ? myId > peerId : false) : true;
+
     return new WebRtcService(
       {
         onIceCandidate: (candidate) => {
           if (instanceToken !== this.callSessionToken) return;
-          const store = useAppStore.getState();
-          if (store.activeCallId && store.activeCallPeer?.id) {
+          const currentStore = useAppStore.getState();
+          if (currentStore.activeCallId && currentStore.activeCallPeer?.id) {
             gatewayClient.sendCallWebrtcIceCandidate(
-              store.activeCallId,
-              store.activeCallPeer.id,
+              currentStore.activeCallId,
+              currentStore.activeCallPeer.id,
               candidate
             );
           }
         },
         onConnectionStateChange: (state: WebRtcConnectionState) => {
           if (instanceToken !== this.callSessionToken) return;
-          const store = useAppStore.getState();
+          const currentStore = useAppStore.getState();
           if (state === 'connected') {
             this.clearConnectingTimer();
             this.clearReconnectingTimer();
-            store.setVoiceCallState('connected');
+            currentStore.setVoiceCallState('connected');
             this.startDurationTimer();
           } else if (state === 'reconnecting') {
             if (
-              store.voiceCallState === 'connected' ||
-              store.voiceCallState === 'connecting'
+              currentStore.voiceCallState === 'connected' ||
+              currentStore.voiceCallState === 'connecting'
             ) {
-              store.setVoiceCallState('reconnecting');
+              currentStore.setVoiceCallState('reconnecting');
               this.startReconnectingTimer();
             }
           } else if (state === 'failed') {
-            store.setCallErrorMessage('Falha na conexão de mídia P2P.');
+            currentStore.setCallErrorMessage('Falha na conexão de mídia P2P.');
             this.endCall('Falha na conectividade WebRTC.');
           } else if (state === 'closed') {
-            if (store.voiceCallState !== 'idle') {
+            if (currentStore.voiceCallState !== 'idle') {
               this.cleanup();
             }
           }
@@ -526,8 +546,22 @@ export class CallService {
           if (instanceToken !== this.callSessionToken) return;
           useAppStore.getState().setCallErrorMessage(errMsg);
         },
+        onRemoteVideoTrack: (track, stream) => {
+          if (instanceToken !== this.callSessionToken) return;
+          console.log('[CallService] Exibindo transmissão de tela remota:', track.id);
+          useAppStore.getState().setRemoteScreenStream(stream, track);
+        },
+        onRemoteVideoMuteChange: (isMuted) => {
+          if (instanceToken !== this.callSessionToken) return;
+          useAppStore.getState().setRemoteScreenMuted(isMuted);
+        },
+        onRemoteVideoEnded: () => {
+          if (instanceToken !== this.callSessionToken) return;
+          console.log('[CallService] Transmissão de tela remota finalizada.');
+          useAppStore.getState().setRemoteScreenStream(null, null);
+        },
       },
-      { iceDisconnectTimeoutMs: this.iceDisconnectTimeoutMs }
+      { iceDisconnectTimeoutMs: this.iceDisconnectTimeoutMs, isPolite }
     );
   }
 
@@ -761,9 +795,71 @@ export class CallService {
   }
 
   /**
+   * Inicia compartilhamento de tela na chamada ativa e renegocia a conexão WebRTC
+   */
+  async startScreenShare(): Promise<MediaStream | null> {
+    const store = useAppStore.getState();
+    const stream = await screenCaptureService.startCapture();
+    if (!stream) return null;
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) return null;
+
+    const token = this.callSessionToken;
+    if (this.webRtc && store.voiceCallState === 'connected' && store.activeCallId && store.activeCallPeer?.id) {
+      try {
+        const offerSdp = await this.webRtc.attachScreenTrack(videoTrack, stream);
+        if (token === this.callSessionToken && store.activeCallId && store.activeCallPeer?.id) {
+          console.log('[CallService] Enviando SDP Offer de renegociação (tela iniciada).');
+          gatewayClient.sendCallWebrtcOffer(store.activeCallId, store.activeCallPeer.id, offerSdp);
+        }
+      } catch (err) {
+        console.error('[CallService] Falha ao renegociar adição de vídeo:', err);
+      }
+    }
+
+    return stream;
+  }
+
+  /**
+   * Interrompe compartilhamento de tela na chamada ativa e renegocia sem interromper o áudio
+   */
+  async stopScreenShare(): Promise<void> {
+    screenCaptureService.stopCapture();
+
+    const store = useAppStore.getState();
+    const token = this.callSessionToken;
+
+    if (this.webRtc && store.voiceCallState === 'connected' && store.activeCallId && store.activeCallPeer?.id) {
+      try {
+        const offerSdp = await this.webRtc.detachScreenTrack();
+        if (offerSdp && token === this.callSessionToken) {
+          console.log('[CallService] Enviando SDP Offer de renegociação (tela encerrada).');
+          gatewayClient.sendCallWebrtcOffer(store.activeCallId, store.activeCallPeer.id, offerSdp);
+        }
+      } catch (err) {
+        console.warn('[CallService] Aviso ao renegociar encerramento de vídeo:', err);
+      }
+    }
+  }
+
+  /**
+   * Alterna compartilhamento de tela na chamada
+   */
+  async toggleScreenShare(): Promise<void> {
+    const store = useAppStore.getState();
+    if (store.isScreenSharing || store.isStartingScreenShare) {
+      await this.stopScreenShare();
+    } else {
+      await this.startScreenShare();
+    }
+  }
+
+  /**
    * Encerra imediatamente qualquer chamada ativa/pendente e libera microfone antes de logout
    */
   terminateOnLogout(): void {
+    screenCaptureService.stopCapture();
     const store = useAppStore.getState();
     if (store.activeCallId) {
       this.markCallTerminated(store.activeCallId);
@@ -913,6 +1009,10 @@ export class CallService {
         this.webRtc = null;
         rtc.destroy(false);
       }
+
+      screenCaptureService.stopCapture();
+      store.setRemoteScreenStream(null, null);
+      store.setRemoteScreenMuted(false);
 
       store.setVoiceCallState('idle');
       store.setActiveCall(null, null);

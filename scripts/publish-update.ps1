@@ -190,6 +190,16 @@ Upload-Asset -FilePath $setupSig.FullName -ContentType "text/plain" -FileName $s
 Upload-Asset -FilePath $setupExe.FullName -ContentType "application/vnd.microsoft.portable-executable" -FileName $setupExe.Name
 Upload-Asset -FilePath $releaseExe -ContentType "application/vnd.microsoft.portable-executable" -FileName "nexus.exe"
 
+$msiDir = Join-Path $rootDir "src-tauri\target\release\bundle\msi"
+$msiFile = Get-ChildItem -Path $msiDir -Filter "*$version*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+$msiSig = Get-ChildItem -Path $msiDir -Filter "*$version*.msi.sig" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($msiFile) {
+    Upload-Asset -FilePath $msiFile.FullName -ContentType "application/x-msi" -FileName $msiFile.Name
+}
+if ($msiSig) {
+    Upload-Asset -FilePath $msiSig.FullName -ContentType "text/plain" -FileName $msiSig.Name
+}
+
 Write-Host "==================================================" -ForegroundColor Green
 Write-Host "   Release $tag publicado com sucesso!            " -ForegroundColor Green
 Write-Host "   URL: $($release.html_url)                      " -ForegroundColor Green

@@ -11,19 +11,50 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 
 static CALL_MIC_CONSENT: AtomicBool = AtomicBool::new(false);
+static SCREEN_CAPTURE_CONSENT: AtomicBool = AtomicBool::new(false);
 
 pub fn reset_mic_consent() {
     CALL_MIC_CONSENT.store(false, Ordering::SeqCst);
 }
 
+pub fn set_mic_consent(granted: bool) {
+    CALL_MIC_CONSENT.store(granted, Ordering::SeqCst);
+}
+
+pub fn get_mic_consent() -> bool {
+    CALL_MIC_CONSENT.load(Ordering::SeqCst)
+}
+
+pub fn reset_screen_capture_consent() {
+    SCREEN_CAPTURE_CONSENT.store(false, Ordering::SeqCst);
+}
+
+pub fn set_screen_capture_consent(granted: bool) {
+    SCREEN_CAPTURE_CONSENT.store(granted, Ordering::SeqCst);
+}
+
+pub fn get_screen_capture_consent() -> bool {
+    SCREEN_CAPTURE_CONSENT.load(Ordering::SeqCst)
+}
+
 #[tauri::command]
 fn call_set_mic_consent(granted: bool) {
-    CALL_MIC_CONSENT.store(granted, Ordering::SeqCst);
+    set_mic_consent(granted);
 }
 
 #[tauri::command]
 fn call_get_mic_consent() -> bool {
-    CALL_MIC_CONSENT.load(Ordering::SeqCst)
+    get_mic_consent()
+}
+
+#[tauri::command]
+fn screen_set_capture_consent(granted: bool) {
+    set_screen_capture_consent(granted);
+}
+
+#[tauri::command]
+fn screen_get_capture_consent() -> bool {
+    get_screen_capture_consent()
 }
 
 #[tauri::command]
@@ -31,7 +62,7 @@ fn get_app_info() -> serde_json::Value {
     serde_json::json!({
         "name": "NEXUS",
         "version": env!("CARGO_PKG_VERSION"),
-        "phase": "2.5",
+        "phase": "3.1",
         "status": "ready"
     })
 }
@@ -62,6 +93,13 @@ pub fn run() {
         .on_permission_request(|_webview, kind| match kind {
             tauri::webview::PermissionKind::Microphone => {
                 if CALL_MIC_CONSENT.load(Ordering::SeqCst) {
+                    tauri::webview::PermissionResponse::Allow
+                } else {
+                    tauri::webview::PermissionResponse::Deny
+                }
+            }
+            tauri::webview::PermissionKind::DisplayCapture => {
+                if SCREEN_CAPTURE_CONSENT.load(Ordering::SeqCst) {
                     tauri::webview::PermissionResponse::Allow
                 } else {
                     tauri::webview::PermissionResponse::Deny
@@ -164,6 +202,8 @@ pub fn run() {
             network::network_open_tailscale,
             call_set_mic_consent,
             call_get_mic_consent,
+            screen_set_capture_consent,
+            screen_get_capture_consent,
             network::network_get_server_address,
             network::network_set_server_address,
             network::network_check_server,

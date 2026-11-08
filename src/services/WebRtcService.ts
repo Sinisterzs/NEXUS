@@ -22,6 +22,9 @@ export type WebRtcCallbacks = {
   onLocalSpeaking: (isSpeaking: boolean) => void;
   onRemoteSpeaking: (isSpeaking: boolean) => void;
   onError: (error: string) => void;
+  onRemoteVideoTrack?: (track: MediaStreamTrack, stream: MediaStream) => void;
+  onRemoteVideoMuteChange?: (isMuted: boolean) => void;
+  onRemoteVideoEnded?: () => void;
 };
 
 export interface WebRtcTransportDiagnostics {
@@ -103,6 +106,10 @@ export class WebRtcService {
   private iceDisconnectTimeoutMs = DEFAULT_ICE_DISCONNECT_TIMEOUT_MS;
 
   private callbacks: WebRtcCallbacks;
+  private isPolite = false;
+  private screenVideoTrack: MediaStreamTrack | null = null;
+  private screenVideoSender: RTCRtpSender | null = null;
+  private remoteVideoStream: MediaStream | null = null;
   private isMuted = false;
   private isDeafened = false;
   private candidateQueue: RTCIceCandidateInit[] = [];
@@ -116,11 +123,25 @@ export class WebRtcService {
   private lastDiagnostics: WebRtcTransportDiagnostics | null = null;
   private isDestroyed = false;
 
-  constructor(callbacks: WebRtcCallbacks, options?: { iceDisconnectTimeoutMs?: number }) {
+  constructor(
+    callbacks: WebRtcCallbacks,
+    options?: { iceDisconnectTimeoutMs?: number; isPolite?: boolean }
+  ) {
     this.callbacks = callbacks;
     if (options?.iceDisconnectTimeoutMs !== undefined) {
       this.iceDisconnectTimeoutMs = options.iceDisconnectTimeoutMs;
     }
+    if (options?.isPolite !== undefined) {
+      this.isPolite = options.isPolite;
+    }
+  }
+
+  public setPolite(polite: boolean): void {
+    this.isPolite = polite;
+  }
+
+  public getRemoteVideoStream(): MediaStream | null {
+    return this.remoteVideoStream;
   }
 
   private enqueueSignaling<T>(operation: () => Promise<T>): Promise<T> {
@@ -341,10 +362,10 @@ export class WebRtcService {
       }
     };
 
-    // Track de áudio remoto recebido
+    // Track remoto (áudio ou vídeo de tela) recebido
     pc.ontrack = (event) => {
       if (this.isDestroyed || this.peerConnection !== pc) return;
-      console.log('[WebRtcService] Track de áudio remoto recebido:', event.track.kind);
+      console.log('[WebRtcService] Track remoto recebido:', event.track.kind, event.track.id);
       if (event.track.kind === 'audio') {
         const stream =
           event.streams && event.streams[0]
@@ -353,6 +374,28 @@ export class WebRtcService {
         this.remoteStream = stream;
         this.playRemoteAudio(stream);
         this.setupRemoteVad(stream);
+      } else if (event.track.kind === 'video') {
+        const stream =
+          event.streams && event.streams[0]
+            ? event.streams[0]
+            : new MediaStream([event.track]);
+        this.remoteVideoStream = stream;
+        console.log('[WebRtcService] Faixa de vídeo remoto de tela recebida:', event.track.id);
+        this.callbacks.onRemoteVideoTrack?.(event.track, stream);
+
+        event.track.onmute = () => {
+          console.log('[WebRtcService] Faixa de vídeo remoto pausada (mute).');
+          this.callbacks.onRemoteVideoMuteChange?.(true);
+        };
+        event.track.onunmute = () => {
+          console.log('[WebRtcService] Faixa de vídeo remoto retomada (unmute).');
+          this.callbacks.onRemoteVideoMuteChange?.(false);
+        };
+        event.track.onended = () => {
+          console.log('[WebRtcService] Faixa de vídeo remoto finalizada (ended).');
+          this.remoteVideoStream = null;
+          this.callbacks.onRemoteVideoEnded?.();
+        };
       }
     };
 
@@ -409,6 +452,88 @@ export class WebRtcService {
   }
 
   /**
+   * Vincula a track de vídeo de tela local à conexão WebRTC existente e retorna o novo SDP Offer
+   */
+  async attachScreenTrack(track: MediaStreamTrack, stream: MediaStream): Promise<string> {
+    return this.enqueueSignaling(async () => {
+      if (this.isDestroyed) {
+        throw new Error('Sessão WebRTC já encerrada.');
+      }
+      const pc = this.peerConnection || this.createPeerConnection();
+      this.screenVideoTrack = track;
+
+      // 1. Procura se já existe um sender de vídeo (ex: compartilhamento reiniciado)
+      const existingSender = pc.getSenders().find(
+        (s) => s.track?.kind === 'video' || (s.track === null && (s as any).kind === 'video')
+      );
+
+      if (existingSender) {
+        this.screenVideoSender = existingSender;
+        await existingSender.replaceTrack(track);
+        console.log('[WebRtcService] Track de vídeo substituído no sender existente via replaceTrack.');
+      } else {
+        this.screenVideoSender = pc.addTrack(track, stream);
+        console.log('[WebRtcService] Nova faixa de vídeo anexada via addTrack.');
+      }
+
+      // 2. Aplica parâmetros de codificação (30 FPS, máx 2.5 Mbps conservador)
+      if (this.screenVideoSender && typeof this.screenVideoSender.getParameters === 'function') {
+        try {
+          const params = this.screenVideoSender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = 2_500_000;
+          params.encodings[0].maxFramerate = 30;
+          if (typeof this.screenVideoSender.setParameters === 'function') {
+            await this.screenVideoSender.setParameters(params);
+          }
+        } catch (paramErr) {
+          console.warn('[WebRtcService] Aviso ao configurar parâmetros do sender de vídeo:', paramErr);
+        }
+      }
+
+      // 3. Gera SDP Offer de renegociação
+      this.hasAppliedRemoteAnswer = false;
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      console.log('[WebRtcService] SDP Offer de renegociação (vídeo adicionado) criada com sucesso.');
+      return offer.sdp || '';
+    });
+  }
+
+  /**
+   * Desvincula a faixa de vídeo de tela sem reiniciar o peer connection nem fechar áudio
+   */
+  async detachScreenTrack(): Promise<string | null> {
+    return this.enqueueSignaling(async () => {
+      if (this.isDestroyed || !this.peerConnection) return null;
+      const pc = this.peerConnection;
+
+      if (this.screenVideoSender) {
+        try {
+          await this.screenVideoSender.replaceTrack(null);
+          pc.removeTrack(this.screenVideoSender);
+        } catch (err) {
+          console.warn('[WebRtcService] Aviso ao remover faixa de vídeo:', err);
+        }
+        this.screenVideoSender = null;
+      }
+      this.screenVideoTrack = null;
+
+      // Gera SDP Offer de renegociação para atualizar transceivers
+      if (pc.signalingState === 'stable') {
+        this.hasAppliedRemoteAnswer = false;
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        console.log('[WebRtcService] SDP Offer de renegociação (vídeo removido) criada com sucesso.');
+        return offer.sdp || null;
+      }
+      return null;
+    });
+  }
+
+  /**
    * Cria SDP Offer (Chamador) de forma serializada e idempotente
    */
   async createOffer(): Promise<string> {
@@ -425,18 +550,11 @@ export class WebRtcService {
         return pc.localDescription.sdp;
       }
 
-      if (pc.signalingState !== 'stable') {
-        console.warn(
-          `[WebRtcService] Estado de sinalização inesperado em createOffer (${pc.signalingState}).`
-        );
-        if (pc.localDescription?.sdp) {
-          return pc.localDescription.sdp;
-        }
-      }
+      this.hasAppliedRemoteAnswer = false;
 
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: false,
+        offerToReceiveVideo: this.screenVideoTrack !== null,
       });
 
       if (this.isDestroyed || this.peerConnection !== pc) {
@@ -471,15 +589,22 @@ export class WebRtcService {
         return this.lastGeneratedAnswerSdp || pc.localDescription?.sdp || '';
       }
 
-      // 2. Se a conexão 1:1 já concluiu a negociação inicial (stable + remoteDescription aplicada),
-      // não destrói o transporte ativo por uma oferta atrasada/duplicada
-      if (this.isRemoteDescriptionSet && pc.signalingState === 'stable' && this.lastGeneratedAnswerSdp) {
-        console.warn(
-          '[WebRtcService] Offer recebida com conexão já estável. Preservando transporte atual e retornando answer.'
-        );
-        return this.lastGeneratedAnswerSdp;
+      // 2. Tratamento de colisão de ofertas (Glare / Perfect Negotiation)
+      const isOfferCollision = pc.signalingState === 'have-local-offer';
+      if (isOfferCollision) {
+        if (!this.isPolite) {
+          console.warn('[WebRtcService] Colisão de ofertas detectada. Peer impolite ignora oferta concorrente.');
+          return this.lastGeneratedAnswerSdp || pc.localDescription?.sdp || '';
+        }
+        console.log('[WebRtcService] Colisão de ofertas detectada. Peer polite realiza rollback local.');
+        try {
+          await pc.setLocalDescription({ type: 'rollback' });
+        } catch (rollbackErr) {
+          console.warn('[WebRtcService] Falha ao executar rollback no peer polite:', rollbackErr);
+        }
       }
 
+      // 3. Aplica nova Remote Description
       if (pc.signalingState === 'have-remote-offer') {
         console.warn(
           '[WebRtcService] Conexão já em have-remote-offer, gerando answer sem re-executar setRemoteDescription.'
@@ -521,7 +646,7 @@ export class WebRtcService {
 
       if (this.hasAppliedRemoteAnswer || pc.signalingState === 'stable') {
         console.log(
-          `[WebRtcService] Ignorando SDP Answer duplicada de forma idempotente (signalingState=${pc.signalingState}).`
+          `[WebRtcService] Ignorando SDP Answer duplicada ou tardia (signalingState=stable).`
         );
         return;
       }
@@ -539,7 +664,7 @@ export class WebRtcService {
       this.isRemoteDescriptionSet = true;
       this.hasAppliedRemoteAnswer = true;
       await this.flushQueuedCandidates();
-      console.log('[WebRtcService] SDP Answer aplicada localmente. Conexão em negociação.');
+      console.log('[WebRtcService] SDP Answer aplicada localmente. Conexão renegociada com sucesso.');
     });
   }
 
@@ -986,6 +1111,7 @@ export class WebRtcService {
   destroy(emitClosed = false): void {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
+    this.currentState = 'closed';
     console.log('[WebRtcService] Destruindo sessão WebRTC e liberando microfone...');
 
     this.clearIceDisconnectTimer();
@@ -1051,6 +1177,15 @@ export class WebRtcService {
 
   private cleanupPeerConnection(clearQueue = true): void {
     this.clearIceDisconnectTimer();
+    if (this.screenVideoTrack) {
+      try {
+        this.screenVideoTrack.stop();
+      } catch {}
+      this.screenVideoTrack = null;
+    }
+    this.screenVideoSender = null;
+    this.remoteVideoStream = null;
+
     if (this.peerConnection) {
       this.peerConnection.onicecandidate = null;
       this.peerConnection.ontrack = null;
