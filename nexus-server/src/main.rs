@@ -4,7 +4,6 @@ use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use nexus_server::config::AppConfig;
-use nexus_server::create_app;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,7 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("Aviso ao inicializar presença dos usuários: {}", e);
     }
 
-    let app = create_app(pool, config.clone());
+    let identity = nexus_server::identity::ServerIdentity::load_or_generate(None)?;
+    tracing::info!("NEXUS Server Identity: {}", identity.server_id);
+    let app = nexus_server::create_app_with_identity(pool, config.clone(), identity);
 
     let client_id_prefix = if config.google_client_id.len() > 16 {
         format!("{}...", &config.google_client_id[..16])

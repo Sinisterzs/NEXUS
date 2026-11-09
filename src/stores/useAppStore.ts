@@ -293,6 +293,7 @@ interface AppState {
   checkNetwork: () => Promise<NetworkStatus>;
   openTailscale: () => Promise<void>;
   setServerAddress: (url: string) => Promise<void>;
+  approveServer: () => Promise<void>;
 
   // Friends & Social Actions (Phase 2.2)
   loadFriends: () => Promise<void>;
@@ -598,10 +599,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().checkSession();
   },
 
+  approveServer: async () => {
+    const netStatus = get().networkStatus;
+    if (netStatus.pending_server_identity) {
+      await networkManager.approveServer(
+        netStatus.pending_server_identity.bound_endpoint,
+        netStatus.pending_server_identity.server_id,
+        netStatus.pending_server_identity.public_key,
+      );
+      await get().checkSession();
+    }
+  },
+
   checkSession: async () => {
     try {
       const netStatus = await networkManager.checkNetwork();
       set({ networkStatus: netStatus });
+
+      if (netStatus.server_reachability === 'needs_approval') {
+        const hasToken = await authRepository.hasStoredSession().catch(() => false);
+        set({
+          backendAvailable: false,
+          authStatus: hasToken ? 'offline' : 'unauthenticated',
+          authMode: hasToken ? 'reconnecting' : 'offline_demo',
+        });
+        return;
+      }
 
       if (netStatus.server_reachability === 'network_disconnected' || netStatus.server_reachability === 'server_unreachable') {
         set({ backendAvailable: false });
@@ -817,6 +840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     syncAccountRepositories('offline_demo');
     const demoPrefs = await settingsRepository.loadPreferences('offline_demo');
     set({
+      activeTab: 'home',
       authStatus: 'unauthenticated',
       authMode: 'offline_demo',
       onlineUser: null,

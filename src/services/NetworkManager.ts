@@ -1,4 +1,4 @@
-import { NetworkStatus } from '../lib/types';
+import { NetworkStatus, VerifiedServerIdentity } from '../lib/types';
 
 export const DEFAULT_NETWORK_STATUS: NetworkStatus = {
   tailscale_installed: false,
@@ -13,6 +13,9 @@ export const DEFAULT_NETWORK_STATUS: NetworkStatus = {
   server_latency_ms: null,
   is_magic_dns: true,
   detected_peers: [],
+  pending_server_identity: null,
+  approved_server_id: null,
+  verified_server_identity: null,
   error_message: null,
 };
 
@@ -153,6 +156,23 @@ class NetworkManager {
     } catch (err: any) {
       return { status: 'unreachable', error: String(err?.message || err) };
     }
+  }
+
+  async verifyServer(url: string): Promise<VerifiedServerIdentity> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<VerifiedServerIdentity>('network_verify_server', { url });
+  }
+
+  async approveServer(url: string, serverId: string, publicKey: string, nodeKey?: string): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('network_approve_server', {
+      url,
+      serverId,
+      publicKey,
+      nodeKey: nodeKey || null,
+    });
+    this.resetBackoff();
+    await this.checkNetwork();
   }
 
   getLastStatus(): NetworkStatus {

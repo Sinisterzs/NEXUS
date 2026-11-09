@@ -20,6 +20,9 @@ import {
   Info,
   Sparkles,
   Download,
+  Copy,
+  ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { networkManager } from '../../services/NetworkManager';
@@ -61,6 +64,14 @@ export const SettingsView: React.FC = () => {
   const [serverAddressInput, setServerAddressInput] = useState(networkStatus.server_url);
   const [isTestingServer, setIsTestingServer] = useState(false);
   const [networkTestFeedback, setNetworkTestFeedback] = useState<{ text: string; isError: boolean } | null>(null);
+  const [copiedServerId, setCopiedServerId] = useState(false);
+
+  const handleCopyServerId = (id: string) => {
+    if (!id) return;
+    navigator.clipboard.writeText(id);
+    setCopiedServerId(true);
+    setTimeout(() => setCopiedServerId(false), 2000);
+  };
 
   useEffect(() => {
     setServerAddressInput(networkStatus.server_url);
@@ -1339,6 +1350,11 @@ export const SettingsView: React.FC = () => {
                       <span className="w-2 h-2 rounded-full bg-emerald-400" />
                       Conectado {networkStatus.server_latency_ms ? `(${networkStatus.server_latency_ms}ms)` : ''}
                     </span>
+                  ) : networkStatus.server_reachability === 'needs_approval' ? (
+                    <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-sky-500/15 border border-sky-500/30 text-[11px] font-semibold text-sky-300">
+                      <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+                      Aguardando Aprovação
+                    </span>
                   ) : networkStatus.server_reachability === 'connecting' ? (
                     <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-[11px] font-semibold text-amber-300">
                       <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
@@ -1352,6 +1368,32 @@ export const SettingsView: React.FC = () => {
                   )}
                 </div>
               </div>
+
+              {networkStatus.server_reachability === 'needs_approval' && networkStatus.pending_server_identity && (
+                <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/30 space-y-2">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="text-xs font-bold text-sky-200">Novo Servidor Localizado na Tailnet</div>
+                      <div className="text-[11px] text-sky-300/80 font-mono mt-0.5">
+                        ID: {networkStatus.pending_server_identity.server_id}
+                      </div>
+                      <div className="text-[11px] text-sky-300/80 font-mono">
+                        Endpoint: {networkStatus.pending_server_identity.bound_endpoint}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const approve = useAppStore.getState().approveServer;
+                        await approve();
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white shadow transition-colors cursor-pointer"
+                    >
+                      Aprovar Servidor
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Server address configuration form */}
               <div className="space-y-3">
@@ -1432,6 +1474,143 @@ export const SettingsView: React.FC = () => {
                 )}
               </div>
             </div>
+
+            {/* Cartão de Identidade Criptográfica do Servidor */}
+            {(() => {
+              const activeIdentity = networkStatus.verified_server_identity || networkStatus.pending_server_identity;
+              const serverId = activeIdentity?.server_id || networkStatus.approved_server_id || '';
+              const approvedId = networkStatus.approved_server_id;
+              const isApproved = activeIdentity ? activeIdentity.is_approved : Boolean(approvedId);
+              const isConnected = networkStatus.server_reachability === 'connected';
+              const isNeedsApproval = networkStatus.server_reachability === 'needs_approval';
+
+              const isMatching = Boolean(
+                approvedId && activeIdentity?.server_id && approvedId === activeIdentity.server_id
+              );
+              const isMismatch = Boolean(
+                approvedId && activeIdentity?.server_id && approvedId !== activeIdentity.server_id
+              );
+
+              const abbreviatedId = serverId
+                ? serverId.length > 24
+                  ? `${serverId.slice(0, 14)}...${serverId.slice(-8)}`
+                  : serverId
+                : 'Não identificado';
+
+              return (
+                <div className="bg-nexus-surface border border-nexus-border rounded-xl p-5 space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-nexus-border/60">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-lg bg-nexus-panel border border-nexus-border flex items-center justify-center text-nexus-text">
+                        <ShieldCheck className="w-5 h-5 text-nexus-accent" />
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-bold text-nexus-text">Identidade Criptográfica do Servidor</h3>
+                        <p className="text-[11px] text-nexus-muted">Assinatura digital Ed25519 & vinculação de canal (anti-relay)</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {isConnected && (isApproved || isMatching) ? (
+                        <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[11px] font-semibold text-emerald-300">
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          Identidade Verificada
+                        </span>
+                      ) : isNeedsApproval ? (
+                        <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-sky-500/15 border border-sky-500/30 text-[11px] font-semibold text-sky-300">
+                          <ShieldAlert className="w-3.5 h-3.5 text-sky-400 animate-pulse" />
+                          Aguardando Aprovação
+                        </span>
+                      ) : isMismatch ? (
+                        <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/15 border border-rose-500/30 text-[11px] font-semibold text-rose-300">
+                          <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                          Identidade Divergente
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-nexus-panel border border-nexus-border text-[11px] font-semibold text-nexus-muted">
+                          <Shield className="w-3.5 h-3.5" />
+                          {networkStatus.server_reachability === 'network_disconnected' ? 'Rede Desconectada' : 'Não Verificado'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Detalhes da Identidade */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-lg bg-nexus-panel/50 border border-nexus-border/60 flex items-center justify-between">
+                      <div className="min-w-0 pr-2">
+                        <span className="text-[10px] text-nexus-muted uppercase font-mono tracking-wider block">ID do Servidor (Hash Ed25519)</span>
+                        <p className="text-xs font-semibold text-nexus-text mt-0.5 font-mono truncate" title={serverId || undefined}>
+                          {abbreviatedId}
+                        </p>
+                      </div>
+                      {serverId && (
+                        <button
+                          type="button"
+                          onClick={() => handleCopyServerId(serverId)}
+                          title="Copiar ID completo do servidor"
+                          className="flex items-center gap-1 px-2 py-1 rounded bg-nexus-surface hover:bg-nexus-panel border border-nexus-border text-[11px] text-nexus-muted hover:text-white transition-colors cursor-pointer shrink-0"
+                        >
+                          {copiedServerId ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-400" />
+                              <span className="text-emerald-400 text-[10px]">Copiado</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span className="text-[10px]">Copiar</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-nexus-panel/50 border border-nexus-border/60">
+                      <span className="text-[10px] text-nexus-muted uppercase font-mono tracking-wider block">Endereço Atual Conectado</span>
+                      <p className="text-xs font-semibold text-nexus-text mt-0.5 truncate font-mono">
+                        {activeIdentity?.bound_endpoint || networkStatus.server_url || 'Nenhum'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Status de Correspondência */}
+                  <div className="p-3 rounded-lg bg-nexus-panel/30 border border-nexus-border/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${
+                        isMatching || (isConnected && isApproved)
+                          ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50'
+                          : isMismatch
+                          ? 'bg-rose-400'
+                          : 'bg-amber-400'
+                      }`} />
+                      <span className="text-nexus-muted">Correspondência com backend conectado:</span>
+                      <span className={`font-semibold ${
+                        isMatching || (isConnected && isApproved)
+                          ? 'text-emerald-300'
+                          : isMismatch
+                          ? 'text-rose-300'
+                          : 'text-amber-300'
+                      }`}>
+                        {isMatching || (isConnected && isApproved)
+                          ? 'Confirmada e Autêntica'
+                          : isMismatch
+                          ? 'Divergente da Identidade Aprovada'
+                          : isNeedsApproval
+                          ? 'Aguardando Aprovação do Usuário'
+                          : 'Pendente de Verificação'}
+                      </span>
+                    </div>
+
+                    {activeIdentity?.public_key && (
+                      <div className="text-[11px] text-nexus-muted font-mono truncate" title={`Chave Pública: ${activeIdentity.public_key}`}>
+                        Chave: <span className="text-nexus-text">{activeIdentity.public_key.slice(0, 8)}...{activeIdentity.public_key.slice(-6)}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 

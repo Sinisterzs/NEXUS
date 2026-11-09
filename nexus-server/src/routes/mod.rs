@@ -37,6 +37,30 @@ pub fn create_router(
     dm_service: DmService,
     config: &AppConfig,
 ) -> Router {
+    let identity = crate::identity::ServerIdentity::load_or_generate(None)
+        .unwrap_or_else(|_| crate::identity::ServerIdentity::generate_ephemeral());
+    create_router_with_identity(auth_service, friend_service, dm_service, config, identity)
+}
+
+pub fn create_router_with_identity(
+    auth_service: AuthService,
+    friend_service: FriendService,
+    dm_service: DmService,
+    config: &AppConfig,
+    identity: crate::identity::ServerIdentity,
+) -> Router {
+    let system_state = handlers::health::SystemState {
+        identity: std::sync::Arc::new(identity),
+        config_host: config.server_host.clone(),
+        config_port: config.server_port,
+        tailscale_ip: config.tailscale_ip.clone(),
+    };
+
+    let system_routes = Router::new()
+        .route("/health", get(handlers::health::health_check))
+        .route("/v1/system/challenge", post(handlers::health::challenge_check))
+        .route("/system/challenge", post(handlers::health::challenge_check))
+        .with_state(system_state);
     let rate_limiter = RateLimiter::new(
         config.rate_limit_auth_per_minute as usize,
         Duration::from_secs(60),
@@ -205,7 +229,7 @@ pub fn create_router(
         ]);
 
     Router::new()
-        .route("/health", get(handlers::health::health_check))
+        .merge(system_routes)
         .nest("/v1/auth", auth_routes)
         .nest("/v1/users", users_routes)
         .nest("/v1/friends", friends_routes)

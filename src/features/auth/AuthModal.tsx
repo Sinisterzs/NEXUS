@@ -49,7 +49,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const loginGoogle = useAppStore((state) => state.loginGoogle);
   const cancelGoogleLogin = useAppStore((state) => state.cancelGoogleLogin);
   const isGoogleLoading = useAppStore((state) => state.isGoogleLoading);
-  const setOfflineDemoMode = useAppStore((state) => state.setOfflineDemoMode);
   const authError = useAppStore((state) => state.authError);
   const clearAuthError = useAppStore((state) => state.clearAuthError);
 
@@ -158,11 +157,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
         setLocalError(msg);
       }
     }
-  };
-
-  const handleContinueOffline = () => {
-    setOfflineDemoMode();
-    onClose();
   };
 
   const currentError = localError || authError;
@@ -443,17 +437,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               </button>
             </form>
           )}
-
-          {/* Footer: Offline mode switch */}
-          <div className="mt-5 pt-4 border-t border-nexus-border/60 text-center">
-            <button
-              type="button"
-              onClick={handleContinueOffline}
-              className="text-[11px] text-nexus-muted hover:text-nexus-text underline decoration-nexus-muted/50 underline-offset-4 transition-colors cursor-pointer"
-            >
-              Continuar em Modo Demonstração (Offline com SQLite local)
-            </button>
-          </div>
         </div>
       </div>
     </div>

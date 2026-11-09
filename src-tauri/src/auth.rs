@@ -196,28 +196,63 @@ struct ApiErrorResponse {
     pub error: ApiErrorDetail,
 }
 
-static AUTHENTICATED_SERVER_ORIGIN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSessionCredential {
     pub token: String,
     pub server_origin: String,
+    #[serde(default)]
+    pub server_id: Option<String>,
+}
+
+static AUTHENTICATED_SERVER_ORIGIN: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static AUTHENTICATED_SERVER_IDENTITY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+pub fn record_authenticated_server_identity(origin: &str, server_id: &str) {
+    let norm = origin.trim().trim_end_matches('/').to_lowercase();
+    let lock_origin = AUTHENTICATED_SERVER_ORIGIN.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock_origin.lock() {
+        *guard = Some(norm);
+    }
+    let lock_id = AUTHENTICATED_SERVER_IDENTITY.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock_id.lock() {
+        *guard = Some(server_id.trim().to_string());
+    }
 }
 
 pub fn record_authenticated_server_origin(origin: &str) {
-    if let Ok(mut lock) = AUTHENTICATED_SERVER_ORIGIN.lock() {
-        *lock = Some(origin.trim().trim_end_matches('/').to_lowercase());
+    let norm_origin = origin.trim().trim_end_matches('/').to_lowercase();
+    let lock_origin = AUTHENTICATED_SERVER_ORIGIN.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock_origin.lock() {
+        *guard = Some(norm_origin);
     }
 }
 
 pub fn clear_authenticated_server_origin() {
-    if let Ok(mut lock) = AUTHENTICATED_SERVER_ORIGIN.lock() {
-        *lock = None;
+    let lock_origin = AUTHENTICATED_SERVER_ORIGIN.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock_origin.lock() {
+        *guard = None;
+    }
+    let lock_id = AUTHENTICATED_SERVER_IDENTITY.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock_id.lock() {
+        *guard = None;
     }
 }
 
 pub fn get_authenticated_server_origin() -> Option<String> {
-    AUTHENTICATED_SERVER_ORIGIN.lock().ok()?.clone()
+    let lock_origin = AUTHENTICATED_SERVER_ORIGIN.get_or_init(|| Mutex::new(None));
+    lock_origin.lock().ok()?.clone()
+}
+
+pub fn get_authenticated_server_identity() -> Option<String> {
+    let lock_id = AUTHENTICATED_SERVER_IDENTITY.get_or_init(|| Mutex::new(None));
+    lock_id.lock().ok()?.clone()
+}
+
+pub fn is_server_origin_authenticated(origin: &str) -> bool {
+    let norm = origin.trim().trim_end_matches('/').to_lowercase();
+    let auth_origin = get_authenticated_server_origin();
+    let auth_id = get_authenticated_server_identity();
+    auth_origin.as_deref() == Some(&norm) && auth_id.is_some()
 }
 
 /// Securely stores session token in the OS Keyring (Windows Credential Manager / DPAPI)
@@ -230,11 +265,17 @@ pub fn save_secure_token(token: &str) -> Result<(), String> {
 /// Securely stores session token in the OS Keyring explicitly bound to a target server origin
 pub fn save_secure_token_for_origin(token: &str, origin: &str) -> Result<(), String> {
     let norm_origin = origin.trim().trim_end_matches('/').to_lowercase();
-    record_authenticated_server_origin(&norm_origin);
+    let auth_id = get_authenticated_server_identity();
+    if let Some(ref id) = auth_id {
+        record_authenticated_server_identity(&norm_origin, id);
+    } else {
+        record_authenticated_server_origin(&norm_origin);
+    }
 
     let cred = StoredSessionCredential {
         token: token.trim().to_string(),
         server_origin: norm_origin,
+        server_id: auth_id,
     };
     let payload = serde_json::to_string(&cred)
         .map_err(|e| format!("Falha ao serializar credencial de sessão: {}", e))?;
@@ -251,16 +292,17 @@ pub fn save_secure_token_for_origin(token: &str, origin: &str) -> Result<(), Str
 pub fn get_secure_token() -> Option<String> {
     let current_origin = get_api_base().trim().trim_end_matches('/').to_lowercase();
 
+    let auth_origin = get_authenticated_server_origin();
+    let auth_id = get_authenticated_server_identity();
+
     // Fast in-memory origin check
-    if let Ok(lock) = AUTHENTICATED_SERVER_ORIGIN.lock() {
-        if let Some(ref auth_origin) = *lock {
-            if auth_origin != &current_origin {
-                eprintln!(
-                    "[Auth] Token retido por segurança: servidor atual ({}) difere do servidor autenticado em memória ({}).",
-                    current_origin, auth_origin
-                );
-                return None;
-            }
+    if let Some(ref auth_orig) = auth_origin {
+        if auth_orig != &current_origin {
+            eprintln!(
+                "[Auth] Token retido por segurança: servidor atual ({}) difere do servidor autenticado em memória ({}).",
+                current_origin, auth_orig
+            );
+            return None;
         }
     }
 
@@ -275,12 +317,7 @@ pub fn get_secure_token() -> Option<String> {
     if let Ok(cred) = serde_json::from_str::<StoredSessionCredential>(trimmed) {
         let stored_origin = cred.server_origin.trim().trim_end_matches('/').to_lowercase();
         if stored_origin != current_origin {
-            let is_in_memory_verified = AUTHENTICATED_SERVER_ORIGIN
-                .lock()
-                .ok()
-                .and_then(|g| g.clone())
-                .as_deref()
-                == Some(&current_origin);
+            let is_in_memory_verified = auth_origin.as_deref() == Some(&current_origin) && auth_id.is_some();
 
             let is_stored_authorized = url::Url::parse(&stored_origin)
                 .ok()
@@ -291,9 +328,22 @@ pub fn get_secure_token() -> Option<String> {
                 .and_then(|u| u.host_str().map(crate::network::is_authorized_server_host))
                 .unwrap_or(false);
 
-            if is_in_memory_verified && is_stored_authorized && is_current_authorized {
+            // Server identity consistency: MUST match the server_id where the token was generated
+            let is_same_server_identity = match (&cred.server_id, &auth_id) {
+                (Some(stored_id), Some(curr_id)) => stored_id == curr_id,
+                (None, Some(curr_id)) => {
+                    // Legacy credential without server_id: check persisted approved_server_id
+                    crate::network::load_persisted_network_config()
+                        .and_then(|c| c.approved_server_id)
+                        .map(|app_id| &app_id == curr_id)
+                        .unwrap_or(true)
+                }
+                _ => false,
+            };
+
+            if is_in_memory_verified && is_stored_authorized && is_current_authorized && is_same_server_identity {
                 eprintln!(
-                    "[Auth] Migrando token para servidor Tailscale verificado ({}) a partir de ({}).",
+                    "[Auth] Migrando token para servidor Tailscale com identidade criptográfica comprovada ({}) a partir de ({}).",
                     current_origin, stored_origin
                 );
                 let _ = save_secure_token_for_origin(&cred.token, &current_origin);
@@ -301,7 +351,7 @@ pub fn get_secure_token() -> Option<String> {
             }
 
             eprintln!(
-                "[Auth] Token retido por segurança: servidor atual ({}) difere do servidor de origem autenticado ({}).",
+                "[Auth] Token retido por segurança: servidor atual ({}) difere do servidor de origem autenticado ({}) ou identidade não coincide.",
                 current_origin, stored_origin
             );
             return None;
@@ -315,22 +365,20 @@ pub fn get_secure_token() -> Option<String> {
     // either the in-memory recorded origin OR the compile-time default server origin.
     // It must NEVER be delivered to an arbitrary new or changed dynamic address on cold start!
     let default_origin = get_default_api_base().trim().trim_end_matches('/').to_lowercase();
-    if let Ok(lock) = AUTHENTICATED_SERVER_ORIGIN.lock() {
-        if let Some(ref auth_origin) = *lock {
-            if auth_origin != &current_origin {
-                eprintln!(
-                    "[Auth] Token legado retido por segurança: servidor atual ({}) difere do servidor autenticado em memória ({}).",
-                    current_origin, auth_origin
-                );
-                return None;
-            }
-        } else if current_origin != default_origin {
+    if let Some(ref auth_orig) = auth_origin {
+        if auth_orig != &current_origin {
             eprintln!(
-                "[Auth] Token legado retido por segurança: servidor atual ({}) difere da origem padrão confiável ({}) após cold start. Reautentique-se neste servidor.",
-                current_origin, default_origin
+                "[Auth] Token legado retido por segurança: servidor atual ({}) difere do servidor autenticado em memória ({}).",
+                current_origin, auth_orig
             );
             return None;
         }
+    } else if current_origin != default_origin {
+        eprintln!(
+            "[Auth] Token legado retido por segurança: servidor atual ({}) difere da origem padrão confiável ({}) após cold start. Reautentique-se neste servidor.",
+            current_origin, default_origin
+        );
+        return None;
     }
 
     record_authenticated_server_origin(&current_origin);

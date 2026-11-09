@@ -207,6 +207,8 @@ pub fn run() {
             network::network_get_server_address,
             network::network_set_server_address,
             network::network_check_server,
+            network::network_approve_server,
+            network::network_verify_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXUS desktop application");

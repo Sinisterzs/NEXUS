@@ -293,7 +293,15 @@ export type NetworkReachability =
   | 'connected'
   | 'connecting'
   | 'server_unreachable'
-  | 'network_disconnected';
+  | 'network_disconnected'
+  | 'needs_approval';
+
+export interface VerifiedServerIdentity {
+  server_id: string;
+  public_key: string;
+  bound_endpoint: string;
+  is_approved: boolean;
+}
 
 export interface TailscalePeerSummary {
   host_name: string;
@@ -301,6 +309,9 @@ export interface TailscalePeerSummary {
   tailscale_ips: string[];
   online: boolean;
   is_likely_server: boolean;
+  node_key?: string | null;
+  server_id?: string | null;
+  is_approved?: boolean;
 }
 
 export interface NetworkStatus {
@@ -316,6 +327,9 @@ export interface NetworkStatus {
   server_latency_ms?: number | null;
   is_magic_dns: boolean;
   detected_peers: TailscalePeerSummary[];
+  pending_server_identity?: VerifiedServerIdentity | null;
+  approved_server_id?: string | null;
+  verified_server_identity?: VerifiedServerIdentity | null;
   error_message?: string | null;
 }
 

@@ -127,10 +127,17 @@ pub fn get_dynamic_api_base() -> Option<String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedNetworkConfig {
     pub server_url: Option<String>,
+    #[serde(default)]
+    pub approved_server_id: Option<String>,
+    #[serde(default)]
+    pub approved_public_key: Option<String>,
+    #[serde(default)]
+    pub approved_node_key: Option<String>,
     pub updated_at: i64,
 }
 
 static PERSISTED_API_BASE: RwLock<Option<String>> = RwLock::new(None);
+static PERSISTED_CONFIG_CACHE: RwLock<Option<PersistedNetworkConfig>> = RwLock::new(None);
 
 fn get_network_config_path() -> PathBuf {
     if let Ok(custom) = std::env::var("NEXUS_APP_DATA_DIR") {
@@ -149,24 +156,35 @@ fn get_network_config_path() -> PathBuf {
     PathBuf::from("nexus_network.json")
 }
 
-pub fn save_persisted_server_url(url: &str) -> Result<(), String> {
+pub fn save_persisted_network_config(
+    url: &str,
+    server_id: Option<&str>,
+    public_key: Option<&str>,
+    node_key: Option<&str>,
+) -> Result<(), String> {
     let validated = validate_server_url(url)?;
     if let Ok(mut lock) = PERSISTED_API_BASE.write() {
         *lock = Some(validated.clone());
+    }
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let config = PersistedNetworkConfig {
+        server_url: Some(validated),
+        approved_server_id: server_id.map(|s| s.trim().to_string()),
+        approved_public_key: public_key.map(|s| s.trim().to_string()),
+        approved_node_key: node_key.map(|s| s.trim().to_string()),
+        updated_at: now_ts,
+    };
+    if let Ok(mut cache_lock) = PERSISTED_CONFIG_CACHE.write() {
+        *cache_lock = Some(config.clone());
     }
     if !cfg!(test) || std::env::var("NEXUS_APP_DATA_DIR").is_ok() {
         let path = get_network_config_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let now_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        let config = PersistedNetworkConfig {
-            server_url: Some(validated),
-            updated_at: now_ts,
-        };
         let json = serde_json::to_string_pretty(&config)
             .map_err(|e| format!("Falha ao serializar configuração de rede: {}", e))?;
         std::fs::write(&path, json)
@@ -175,8 +193,8 @@ pub fn save_persisted_server_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn load_persisted_server_url() -> Option<String> {
-    if let Ok(lock) = PERSISTED_API_BASE.read() {
+pub fn load_persisted_network_config() -> Option<PersistedNetworkConfig> {
+    if let Ok(lock) = PERSISTED_CONFIG_CACHE.read() {
         if let Some(ref val) = *lock {
             return Some(val.clone());
         }
@@ -186,7 +204,30 @@ pub fn load_persisted_server_url() -> Option<String> {
         return None;
     }
     let content = std::fs::read_to_string(&path).ok()?;
-    let config: PersistedNetworkConfig = serde_json::from_str(&content).ok()?;
+    let cfg: PersistedNetworkConfig = serde_json::from_str(&content).ok()?;
+    if let Ok(mut lock) = PERSISTED_CONFIG_CACHE.write() {
+        *lock = Some(cfg.clone());
+    }
+    Some(cfg)
+}
+
+pub fn save_persisted_server_url(url: &str) -> Result<(), String> {
+    let existing = load_persisted_network_config();
+    save_persisted_network_config(
+        url,
+        existing.as_ref().and_then(|c| c.approved_server_id.as_deref()),
+        existing.as_ref().and_then(|c| c.approved_public_key.as_deref()),
+        existing.as_ref().and_then(|c| c.approved_node_key.as_deref()),
+    )
+}
+
+pub fn load_persisted_server_url() -> Option<String> {
+    if let Ok(lock) = PERSISTED_API_BASE.read() {
+        if let Some(ref val) = *lock {
+            return Some(val.clone());
+        }
+    }
+    let config = load_persisted_network_config()?;
     let url = config.server_url?;
     let validated = validate_server_url(&url).ok()?;
     if let Ok(mut lock) = PERSISTED_API_BASE.write() {
@@ -199,6 +240,9 @@ pub fn clear_persisted_server_url_for_tests() {
     if let Ok(mut lock) = PERSISTED_API_BASE.write() {
         *lock = None;
     }
+    if let Ok(mut lock) = PERSISTED_CONFIG_CACHE.write() {
+        *lock = None;
+    }
     let path = get_network_config_path();
     let _ = std::fs::remove_file(path);
 }
@@ -208,8 +252,26 @@ pub struct TailscalePeerSummary {
     pub host_name: String,
     pub dns_name: String,
     pub tailscale_ips: Vec<String>,
+    pub node_key: Option<String>,
     pub online: bool,
     pub is_likely_server: bool,
+    pub server_id: Option<String>,
+    pub is_approved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerHealthProbe {
+    pub latency_ms: u64,
+    pub server_id: Option<String>,
+    pub public_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedServerIdentity {
+    pub server_id: String,
+    pub public_key: String,
+    pub bound_endpoint: String,
+    pub is_approved: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,15 +279,18 @@ pub struct NetworkStatus {
     pub tailscale_installed: bool,
     pub tailscale_service_running: bool,
     pub tailscale_authenticated: bool,
-    pub tailscale_state: String, // "running", "needs_login", "stopped", "service_stopped", "not_installed"
+    pub tailscale_state: String,
     pub tailscale_ips: Vec<String>,
     pub tailscale_self_name: Option<String>,
     pub tailscale_auth_url: Option<String>,
-    pub server_reachability: String, // "connected", "connecting", "server_unreachable", "network_disconnected"
+    pub server_reachability: String,
     pub server_url: String,
     pub server_latency_ms: Option<u64>,
     pub is_magic_dns: bool,
     pub detected_peers: Vec<TailscalePeerSummary>,
+    pub pending_server_identity: Option<VerifiedServerIdentity>,
+    pub approved_server_id: Option<String>,
+    pub verified_server_identity: Option<VerifiedServerIdentity>,
     pub error_message: Option<String>,
 }
 
@@ -303,7 +368,7 @@ pub fn query_tailscale_status_raw() -> Result<serde_json::Value, String> {
         .map_err(|e| format!("Falha ao interpretar status JSON do Tailscale: {}", e))
 }
 
-pub async fn probe_server_health(url: &str) -> Result<u64, String> {
+pub async fn probe_server_health(url: &str) -> Result<ServerHealthProbe, String> {
     let validated = validate_server_url(url)?;
     let clean_url = format!("{}/health", validated.trim_end_matches('/'));
     let client = reqwest::Client::builder()
@@ -333,13 +398,156 @@ pub async fn probe_server_health(url: &str) -> Result<u64, String> {
 
             if is_ok && (is_nexus_service || has_nexus_header) && has_version {
                 let elapsed = start.elapsed().as_millis() as u64;
-                return Ok(elapsed);
+                let server_id = body.get("server_id").and_then(|v| v.as_str()).map(String::from);
+                let public_key = body.get("public_key").and_then(|v| v.as_str()).map(String::from);
+                return Ok(ServerHealthProbe {
+                    latency_ms: elapsed,
+                    server_id,
+                    public_key,
+                });
             }
         }
         Err("Servidor respondeu mas não possui a identidade autêntica do NEXUS ('service': 'nexus-server').".to_string())
     } else {
         Err(format!("Servidor respondeu com HTTP {}", resp.status()))
     }
+}
+
+pub async fn verify_channel_bound_server_identity(
+    target_url: &str,
+    expected_server_id: Option<&str>,
+    expected_public_key: Option<&str>,
+) -> Result<VerifiedServerIdentity, String> {
+    use base64::prelude::*;
+    use ring::rand::SystemRandom;
+    use ring::signature::{UnparsedPublicKey, ED25519};
+    use sha2::{Digest, Sha256};
+
+    let validated_target = validate_server_url(target_url)?;
+    let clean_target = validated_target.trim_end_matches('/').to_lowercase();
+    let challenge_url = format!("{}/v1/system/challenge", clean_target);
+
+    // 1. Generate random 32-byte client_nonce
+    let rng = SystemRandom::new();
+    let mut nonce_bytes = [0u8; 32];
+    ring::rand::SecureRandom::fill(&rng, &mut nonce_bytes)
+        .map_err(|_| "Falha ao gerar nonce aleatório para o desafio".to_string())?;
+    let client_nonce = hex::encode(nonce_bytes);
+
+    // 2. Client timestamp for anti-replay
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(3000))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let payload = serde_json::json!({
+        "client_nonce": client_nonce,
+        "target_url": clean_target,
+        "client_timestamp": now,
+    });
+
+    let resp = client
+        .post(&challenge_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Falha ao conectar no endpoint de desafio do servidor: {}", e))?;
+
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Servidor rejeitou o desafio de identidade: {}", err_text));
+    }
+
+    let challenge_resp: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Resposta de desafio inválida: {}", e))?;
+
+    let server_id = challenge_resp
+        .get("server_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "server_id ausente na resposta de desafio".to_string())?;
+    let public_key_b64 = challenge_resp
+        .get("public_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "public_key ausente na resposta de desafio".to_string())?;
+    let server_nonce = challenge_resp
+        .get("server_nonce")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "server_nonce ausente na resposta de desafio".to_string())?;
+    let signature_b64 = challenge_resp
+        .get("signature")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "signature ausente na resposta de desafio".to_string())?;
+    let bound_endpoint = challenge_resp
+        .get("bound_endpoint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // 3. Verify channel binding: bound_endpoint must match the exact URL we contacted
+    if bound_endpoint.trim().trim_end_matches('/').to_lowercase() != clean_target {
+        return Err(format!(
+            "Violação de segurança: o servidor assinou para o endpoint '{}', diferente da URL conectada '{}'. Possível ataque de relay!",
+            bound_endpoint, clean_target
+        ));
+    }
+
+    // 4. Verify public_key format and derive server_id
+    let pub_bytes = BASE64_STANDARD
+        .decode(public_key_b64)
+        .map_err(|_| "Chave pública Ed25519 inválida".to_string())?;
+    if pub_bytes.len() != 32 {
+        return Err("Chave pública Ed25519 deve ter 32 bytes".to_string());
+    }
+
+    let computed_server_id = format!("nexus-id-{}", hex::encode(Sha256::digest(&pub_bytes)));
+    if computed_server_id != server_id {
+        return Err("server_id não corresponde à impressão digital da chave pública apresentada".to_string());
+    }
+
+    // 5. Verify Ed25519 signature over transcript
+    let message = format!(
+        "NEXUS-V1-CHANNEL-BIND:{}:{}:{}:{}",
+        client_nonce, clean_target, now, server_nonce
+    );
+    let sig_bytes = BASE64_STANDARD
+        .decode(signature_b64)
+        .map_err(|_| "Assinatura do servidor inválida em base64".to_string())?;
+
+    let verifier = UnparsedPublicKey::new(&ED25519, &pub_bytes);
+    verifier
+        .verify(message.as_bytes(), &sig_bytes)
+        .map_err(|_| "Falha na verificação da assinatura criptográfica do servidor!".to_string())?;
+
+    // 6. Check against expected server identity
+    let is_approved = if let Some(exp_id) = expected_server_id {
+        if server_id != exp_id {
+            return Err(format!(
+                "Atenção de segurança: A identidade do servidor mudou! Esperada: '{}', Apresentada: '{}'.",
+                exp_id, server_id
+            ));
+        }
+        if let Some(exp_pk) = expected_public_key {
+            if public_key_b64 != exp_pk {
+                return Err("Chave pública diferente da aprovada anteriormente.".to_string());
+            }
+        }
+        true
+    } else {
+        false
+    };
+
+    Ok(VerifiedServerIdentity {
+        server_id: server_id.to_string(),
+        public_key: public_key_b64.to_string(),
+        bound_endpoint: clean_target,
+        is_approved,
+    })
 }
 
 #[tauri::command]
@@ -387,6 +595,7 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
                     }
                 }
 
+
                 // Parse peers to discover potential Nexus server
                 if let Some(peer_map) = json.get("Peer").and_then(|v| v.as_object()) {
                     for (_k, p_val) in peer_map {
@@ -404,6 +613,10 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
                             .get("Online")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
+                        let node_key = p_val
+                            .get("PublicKey")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
                         let mut p_ips = Vec::new();
                         if let Some(ip_arr) = p_val.get("TailscaleIPs").and_then(|v| v.as_array()) {
                             for item in ip_arr {
@@ -422,8 +635,11 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
                             host_name: hn,
                             dns_name: clean_dns,
                             tailscale_ips: p_ips,
+                            node_key,
                             online,
                             is_likely_server: is_server,
+                            server_id: None,
+                            is_approved: false,
                         });
                     }
                 }
@@ -462,13 +678,65 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
     let mut active_url = current_base.clone();
     let mut server_latency: Option<u64> = None;
     let mut reachability = "server_unreachable".to_string();
+    let mut pending_server_identity: Option<VerifiedServerIdentity> = None;
+    let mut verified_server_identity: Option<VerifiedServerIdentity> = None;
+
+    let persisted_cfg = load_persisted_network_config();
+    let approved_server_id = persisted_cfg.as_ref().and_then(|c| c.approved_server_id.clone());
+    let approved_pub_key = persisted_cfg.as_ref().and_then(|c| c.approved_public_key.clone());
 
     // 1. Probe the current/configured server URL first
-    if let Ok(lat) = probe_server_health(&active_url).await {
-        server_latency = Some(lat);
-        reachability = "connected".to_string();
-    } else if state_str == "running" && !detected_peers.is_empty() {
-        // 2. Fallback: Automatic secure Tailscale discovery among online peers on the private Tailnet
+    if let Ok(probe) = probe_server_health(&active_url).await {
+        server_latency = Some(probe.latency_ms);
+
+        // Perform cryptographic channel-bound verification
+        match verify_channel_bound_server_identity(
+            &active_url,
+            approved_server_id.as_deref(),
+            approved_pub_key.as_deref(),
+        )
+        .await
+        {
+            Ok(ver) => {
+                if ver.is_approved {
+                    reachability = "connected".to_string();
+                    crate::auth::record_authenticated_server_identity(&active_url, &ver.server_id);
+                    verified_server_identity = Some(ver);
+                } else if approved_server_id.is_none()
+                    && (active_url.contains("127.0.0.1") || active_url.contains("localhost"))
+                {
+                    // Auto-approve loopback on cold start for local development
+                    let _ = save_persisted_network_config(
+                        &active_url,
+                        Some(&ver.server_id),
+                        Some(&ver.public_key),
+                        None,
+                    );
+                    crate::auth::record_authenticated_server_identity(&active_url, &ver.server_id);
+                    reachability = "connected".to_string();
+                    let mut approved_ver = ver;
+                    approved_ver.is_approved = true;
+                    verified_server_identity = Some(approved_ver);
+                } else {
+                    // Server responded and proved its key via channel binding, but has NOT been approved by the user yet
+                    reachability = "needs_approval".to_string();
+                    pending_server_identity = Some(ver.clone());
+                    verified_server_identity = Some(ver);
+                }
+            }
+            Err(err) => {
+                eprintln!("[Network] Falha na validação de identidade criptográfica do servidor {}: {}", active_url, err);
+                reachability = "server_unreachable".to_string();
+            }
+        }
+    }
+
+    if reachability != "connected" && reachability != "needs_approval" {
+        // 2. Fallback: Automatic discovery among potential candidates on private Tailnet / local:
+        // - Online Tailscale peers labeled as likely servers
+        // - Local Tailscale IPs of Self (backend running on local Tailscale interface)
+        // - Local loopback (backend running locally)
+        // - Other online Tailscale peers
         let mut candidates: Vec<String> = Vec::new();
 
         // Pass 1: Peers labeled as likely servers
@@ -483,7 +751,18 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
             }
         }
 
-        // Pass 2: Other online peers in the Tailnet
+        // Pass 2: Self Tailscale IPs (if backend is running on local Tailscale interface)
+        for ip in &ips {
+            if is_valid_tailscale_ip(ip) {
+                candidates.push(format!("http://{}:3001", ip));
+            }
+        }
+
+        // Pass 3: Loopback
+        candidates.push("http://127.0.0.1:3001".to_string());
+        candidates.push("http://localhost:3001".to_string());
+
+        // Pass 4: Other online peers in the Tailnet
         for p in &detected_peers {
             if p.online && !p.is_likely_server {
                 if !p.dns_name.is_empty() {
@@ -495,27 +774,91 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
             }
         }
 
+        // Deduplicate candidates while preserving order
+        let mut seen = std::collections::HashSet::new();
+        candidates.retain(|c| seen.insert(c.clone()));
+
         for cand in candidates {
             if cand == active_url {
                 continue;
             }
-            if let Ok(lat) = probe_server_health(&cand).await {
-                server_latency = Some(lat);
-                reachability = "connected".to_string();
-                active_url = cand.clone();
-                set_dynamic_api_base(cand.clone());
-                let _ = save_persisted_server_url(&cand);
-                crate::auth::record_authenticated_server_origin(&cand);
-                eprintln!(
-                    "[Network] Servidor NEXUS detectado e conectado automaticamente via Tailscale: {}",
-                    cand
-                );
-                break;
+            if let Ok(probe) = probe_server_health(&cand).await {
+                // If an approved_server_id was previously saved, candidate must match it
+                if let (Some(ref app_id), Some(ref cand_id)) = (&approved_server_id, &probe.server_id) {
+                    if app_id == cand_id {
+                        if let Ok(ver) = verify_channel_bound_server_identity(
+                            &cand,
+                            Some(app_id),
+                            approved_pub_key.as_deref(),
+                        )
+                        .await
+                        {
+                            server_latency = Some(probe.latency_ms);
+                            reachability = "connected".to_string();
+                            active_url = cand.clone();
+                            set_dynamic_api_base(cand.clone());
+                            let _ = save_persisted_server_url(&cand);
+                            crate::auth::record_authenticated_server_identity(&cand, &ver.server_id);
+                            eprintln!(
+                                "[Network] Servidor NEXUS legítimo reconectado e autenticado criptograficamente via Tailscale: {} (ID: {})",
+                                cand, ver.server_id
+                            );
+                            verified_server_identity = Some(ver);
+                            break;
+                        }
+                    }
+                } else if approved_server_id.is_none() {
+                    // TOFU (Trust On First Use): Server identity verified cryptographically via Ed25519 channel challenge
+                    if let Ok(ver) = verify_channel_bound_server_identity(
+                        &cand,
+                        None,
+                        None,
+                    )
+                    .await
+                    {
+                        if cand.contains("127.0.0.1") || cand.contains("localhost") {
+                            // Auto-approve loopback on cold start for local development
+                            let _ = save_persisted_network_config(
+                                &cand,
+                                Some(&ver.server_id),
+                                Some(&ver.public_key),
+                                None,
+                            );
+                            server_latency = Some(probe.latency_ms);
+                            reachability = "connected".to_string();
+                            active_url = cand.clone();
+                            set_dynamic_api_base(cand.clone());
+                            crate::auth::record_authenticated_server_identity(&cand, &ver.server_id);
+                            eprintln!(
+                                "[Network] Servidor local em loopback auto-aprovado: {} (ID: {})",
+                                cand, ver.server_id
+                            );
+                            let mut approved_ver = ver;
+                            approved_ver.is_approved = true;
+                            verified_server_identity = Some(approved_ver);
+                            break;
+                        } else {
+                            // Tailscale server candidate located and cryptographically verified:
+                            // Propose to user for explicit approval (TOFU banner)
+                            server_latency = Some(probe.latency_ms);
+                            reachability = "needs_approval".to_string();
+                            active_url = cand.clone();
+                            set_dynamic_api_base(cand.clone());
+                            pending_server_identity = Some(ver.clone());
+                            verified_server_identity = Some(ver);
+                            eprintln!(
+                                "[Network] Novo servidor NEXUS aguardando aprovação do usuário: {} (ID: {})",
+                                cand, pending_server_identity.as_ref().unwrap().server_id
+                            );
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
 
-    if reachability != "connected" {
+    if reachability != "connected" && reachability != "needs_approval" {
         if !installed || state_str != "running" {
             reachability = "network_disconnected".to_string();
         } else {
@@ -538,6 +881,9 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
         server_latency_ms: server_latency,
         is_magic_dns: is_magic,
         detected_peers,
+        pending_server_identity,
+        approved_server_id,
+        verified_server_identity,
         error_message: None,
     })
 }
@@ -635,14 +981,56 @@ pub fn network_set_server_address(url: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn network_approve_server(url: String) -> Result<VerifiedServerIdentity, String> {
+    let valid_url = validate_server_url(&url)?;
+    let ver = verify_channel_bound_server_identity(&valid_url, None, None).await?;
+    let old_cfg = load_persisted_network_config();
+    let is_different_server = old_cfg
+        .as_ref()
+        .and_then(|c| c.approved_server_id.as_deref())
+        .map(|old_id| old_id != ver.server_id)
+        .unwrap_or(false);
+
+    save_persisted_network_config(&valid_url, Some(&ver.server_id), Some(&ver.public_key), None)?;
+    set_dynamic_api_base(valid_url.clone());
+    crate::auth::record_authenticated_server_identity(&valid_url, &ver.server_id);
+
+    if is_different_server {
+        eprintln!(
+            "[Network] Novo servidor com identidade distinta aprovado. Sessão anterior desvinculada para evitar vazamento de token para outra entidade."
+        );
+        crate::auth::set_active_user_id(None);
+        let _ = crate::auth::delete_secure_token();
+    }
+
+    eprintln!(
+        "[Network] Servidor aprovado explicitamente pelo usuário: {} (ID: {})",
+        valid_url, ver.server_id
+    );
+    Ok(ver)
+}
+
+#[tauri::command]
+pub async fn network_verify_server(url: Option<String>) -> Result<VerifiedServerIdentity, String> {
+    let target = url.unwrap_or_else(|| crate::auth::get_api_base());
+    let valid_target = validate_server_url(&target)?;
+    let persisted_cfg = load_persisted_network_config();
+    let app_id = persisted_cfg.as_ref().and_then(|c| c.approved_server_id.as_deref());
+    let app_pk = persisted_cfg.as_ref().and_then(|c| c.approved_public_key.as_deref());
+    verify_channel_bound_server_identity(&valid_target, app_id, app_pk).await
+}
+
+#[tauri::command]
 pub async fn network_check_server(url: Option<String>) -> Result<serde_json::Value, String> {
     let raw_target = url.unwrap_or_else(|| crate::auth::get_api_base());
     let target = validate_server_url(&raw_target)?;
     match probe_server_health(&target).await {
-        Ok(latency_ms) => Ok(serde_json::json!({
+        Ok(probe) => Ok(serde_json::json!({
             "status": "connected",
             "url": target,
-            "latency_ms": latency_ms
+            "latency_ms": probe.latency_ms,
+            "server_id": probe.server_id,
+            "public_key": probe.public_key
         })),
         Err(err) => Ok(serde_json::json!({
             "status": "unreachable",
@@ -706,6 +1094,8 @@ pub fn augment_csp_for_server(base_csp: &str, server_url: &str) -> String {
 mod tests {
     use super::*;
 
+    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_augment_csp_for_server_injects_tailscale_ip_origins() {
         let base_csp = "default-src 'self'; connect-src 'self' ws://nexus-server:* ws://*.ts.net:*;";
@@ -755,6 +1145,7 @@ mod tests {
 
     #[test]
     fn test_validate_server_url_rejects_unauthorized_hosts_and_exfiltration_vectors() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         clear_dynamic_api_base_for_tests();
 
         // External domains (HTTP and HTTPS) must be rejected to prevent Bearer token exfiltration
@@ -794,6 +1185,7 @@ mod tests {
 
     #[test]
     fn test_persisted_server_url_lifecycle() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         clear_dynamic_api_base_for_tests();
         clear_persisted_server_url_for_tests();
 
@@ -807,5 +1199,145 @@ mod tests {
 
         clear_persisted_server_url_for_tests();
         assert_eq!(load_persisted_server_url(), None);
+    }
+
+    #[test]
+    fn test_channel_challenge_signature_verification_rules() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
+        use sha2::{Digest, Sha256};
+
+        // 1. Generate an Ed25519 keypair for the server
+        let rng = SystemRandom::new();
+        let pkcs8_bytes = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let keypair = Ed25519KeyPair::from_pkcs8(pkcs8_bytes.as_ref()).unwrap();
+        let pubkey_bytes = keypair.public_key().as_ref();
+        let server_id = format!("nexus-id-{}", hex::encode(Sha256::digest(pubkey_bytes)));
+
+        let client_nonce = hex::encode([0x12u8; 32]);
+        let target_url = "http://100.86.96.35:3001";
+        let timestamp = 1731000000i64;
+        let server_nonce = hex::encode([0x34u8; 32]);
+
+        let message = format!(
+            "NEXUS-V1-CHANNEL-BIND:{}:{}:{}:{}",
+            client_nonce, target_url, timestamp, server_nonce
+        );
+        let sig = keypair.sign(message.as_bytes());
+
+        // Client verification succeeds with matching endpoint, key, nonces
+        let verifier = UnparsedPublicKey::new(&ED25519, pubkey_bytes);
+        assert!(verifier.verify(message.as_bytes(), sig.as_ref()).is_ok());
+
+        // Derived server_id must match SHA-256 of public key
+        let derived_id = format!("nexus-id-{}", hex::encode(Sha256::digest(pubkey_bytes)));
+        assert_eq!(derived_id, server_id);
+
+        // Relay Attack Attempt: message was signed for 100.86.96.35:3001, but attacker presents it at 100.99.99.99:3001
+        let rogue_target = "http://100.99.99.99:3001";
+        let rogue_message = format!(
+            "NEXUS-V1-CHANNEL-BIND:{}:{}:{}:{}",
+            client_nonce, rogue_target, timestamp, server_nonce
+        );
+        assert!(
+            verifier.verify(rogue_message.as_bytes(), sig.as_ref()).is_err(),
+            "Client must reject signature if target endpoint differs"
+        );
+
+        // Rogue Server Identity: rogue key generates different server_id
+        let rogue_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let rogue_keypair = Ed25519KeyPair::from_pkcs8(rogue_pkcs8.as_ref()).unwrap();
+        let rogue_server_id = format!(
+            "nexus-id-{}",
+            hex::encode(Sha256::digest(rogue_keypair.public_key().as_ref()))
+        );
+        assert_ne!(rogue_server_id, server_id, "Different keys must produce distinct server_ids");
+    }
+
+    #[test]
+    fn test_auth_token_withholding_on_unauthenticated_server() {
+        use crate::auth::*;
+
+        let _guard = TEST_MUTEX.lock().unwrap();
+        clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+
+        let initial_origin = "http://127.0.0.1:3001";
+        let token = "test_safe_session_secret_777";
+        set_dynamic_api_base(initial_origin.to_string());
+        assert!(save_secure_token_for_origin(token, initial_origin).is_ok());
+
+        // If active origin is the same, token is retrieved
+        assert_eq!(get_secure_token(), Some(token.to_string()));
+
+        // Switch dynamic API base to an unapproved rogue server
+        let rogue_origin = "http://100.99.99.99:3001";
+        set_dynamic_api_base(rogue_origin.to_string());
+
+        // Token MUST BE WITHHELD! Because 100.99.99.99 is not the authenticated origin in memory
+        // and has not passed cryptographic verification.
+        assert_eq!(
+            get_secure_token(),
+            None,
+            "Token must be withheld from unauthenticated rogue origin"
+        );
+
+        // When legitimately authenticated with cryptographic identity matching:
+        record_authenticated_server_identity(rogue_origin, "nexus-id-approved-123");
+        assert_eq!(
+            get_secure_token(),
+            Some(token.to_string()),
+            "Token safely delivered only after cryptographic verification records identity"
+        );
+
+        clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+        let _ = delete_secure_token();
+    }
+
+    #[tokio::test]
+    async fn test_live_backend_needs_approval_flow() {
+        use crate::auth::clear_authenticated_server_origin;
+
+        let _guard = TEST_MUTEX.lock().unwrap();
+        clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+
+        // When no server is approved yet:
+        let status = network_get_status().await.expect("network_get_status must succeed");
+        println!(
+            "[Test] Live status reachability: {}, server_url: {}, pending_id: {:?}",
+            status.server_reachability,
+            status.server_url,
+            status.pending_server_identity.as_ref().map(|p| &p.server_id)
+        );
+
+        assert_eq!(status.server_reachability, "needs_approval");
+        assert!(status.pending_server_identity.is_some());
+        let pending = status.pending_server_identity.unwrap();
+        assert_eq!(
+            pending.server_id,
+            "nexus-id-6a2d70e5c08d48566d6e1d7749359de11eba6dc8fa3743c01d59411b4d7e7092"
+        );
+
+        // Now test approving this server:
+        let approved = network_approve_server(status.server_url.clone())
+            .await
+            .expect("Approval must succeed");
+        assert_eq!(approved.server_id, pending.server_id);
+
+        // After approval, network_get_status must report connected:
+        let status_after = network_get_status()
+            .await
+            .expect("network_get_status after approval must succeed");
+        assert_eq!(status_after.server_reachability, "connected");
+
+        // Cleanup
+        clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
     }
 }

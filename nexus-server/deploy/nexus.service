@@ -1,0 +1,39 @@
+[Unit]
+Description=NEXUS Real-Time Backend Server
+After=network-online.target tailscaled.service postgresql.service
+Wants=network-online.target tailscaled.service postgresql.service
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/opt/nexus
+ExecStart=/opt/nexus/nexus-server
+Restart=always
+RestartSec=5s
+
+# Carregamento seguro de ambiente
+EnvironmentFile=/opt/nexus/.env
+
+# Hardening e Isolamento
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+
+# Limites de recursos para VPS de ~1 GB
+MemoryMax=600M
+MemoryHigh=500M
+LimitNOFILE=65535
+
+# Logs direcionados para o journald do systemd
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nexus-server
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 import React from 'react';
-import { WifiOff, RefreshCw, ExternalLink } from 'lucide-react';
+import { WifiOff, RefreshCw, ExternalLink, ShieldAlert, Check } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 
 export const ConnectionBanner: React.FC = () => {
@@ -8,10 +8,34 @@ export const ConnectionBanner: React.FC = () => {
   const networkStatus = useAppStore((state) => state.networkStatus);
   const checkSession = useAppStore((state) => state.checkSession);
   const openTailscale = useAppStore((state) => state.openTailscale);
+  const approveServer = useAppStore((state) => state.approveServer);
 
   // If backend is fully available and connected, no banner needed
   if (backendAvailable && networkStatus.server_reachability === 'connected') {
     return null;
+  }
+
+  // 0. Server Needs User Approval (TOFU - Trust On First Use)
+  if (networkStatus.server_reachability === 'needs_approval') {
+    return (
+      <div className="bg-sky-500/15 border-b border-sky-500/30 px-3 py-2 flex items-center justify-between text-xs text-sky-100 select-none animate-fadeIn">
+        <div className="flex items-center gap-2">
+          <ShieldAlert className="w-4 h-4 text-sky-400 shrink-0" />
+          <span>
+            Novo servidor NEXUS localizado (<code className="font-mono text-sky-200">{networkStatus.pending_server_identity?.server_id || networkStatus.server_url}</code>). Deseja autorizar este servidor?
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => approveServer()}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold text-[11px] cursor-pointer shadow transition-colors"
+          >
+            <Check className="w-3.5 h-3.5" />
+            Aprovar e Conectar
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // 1. Private Network Disconnected (Tailscale not running, stopped, or needs login)

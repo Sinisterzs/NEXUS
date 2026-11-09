@@ -46,6 +46,18 @@ const NetworkStatusBadge: React.FC = () => {
     );
   }
 
+  if (reachability === 'needs_approval') {
+    return (
+      <div
+        title="Novo servidor detectado aguardando autorização de segurança."
+        className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-[10px] text-sky-200 select-none"
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+        <span>Aguardando autorização</span>
+      </div>
+    );
+  }
+
   if (reachability === 'network_disconnected') {
     return (
       <button

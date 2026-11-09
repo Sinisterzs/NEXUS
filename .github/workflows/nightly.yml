@@ -1,0 +1,116 @@
+name: NEXUS Nightly Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão SemVer Prerelease (ex: 0.1.9-nightly.1)'
+        required: true
+        default: '0.1.9-nightly.1'
+        type: string
+      release_notes:
+        description: 'Notas de atualização da versão Nightly'
+        required: false
+        default: 'Build Nightly automatizado do NEXUS com as últimas alterações e validações.'
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish-nightly:
+    name: Build & Publish Nightly (Windows Release)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js (v22)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Setup Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install NPM Dependencies
+        run: npm ci
+
+      - name: Apply Nightly Version
+        run: node scripts/set-nightly-version.cjs "${{ github.event.inputs.version }}"
+
+      - name: Build Frontend
+        run: npm run build
+
+      - name: Verify Signing Key Configuration
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY)) {
+            Write-Error "O GitHub Secret 'TAURI_SIGNING_PRIVATE_KEY' não está configurado. A chave privada é necessária para assinar o instalador de atualização."
+            exit 1
+          }
+          Write-Host "Chave de assinatura detectada no repositório."
+
+      - name: Build Native Windows Release with Tauri (NSIS + MSI)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build
+
+      - name: Generate Nightly Updater Manifest (latest-nightly.json)
+        run: node scripts/generate-nightly-manifest.cjs "${{ github.event.inputs.version }}" "${{ github.event.inputs.release_notes }}"
+        env:
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Strict Security Audit of Artifacts
+        run: node scripts/audit-nightly-artifacts.cjs
+
+      - name: Publish GitHub Pre-Release (Nightly Channel)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: NEXUS v${{ github.event.inputs.version }} (Nightly)
+          body: |
+            ## 🌙 NEXUS Nightly Release — v${{ github.event.inputs.version }}
+            
+            ${{ github.event.inputs.release_notes }}
+            
+            ---
+            
+            > [!NOTE]
+            > Este é um build pré-lançamento do canal **Nightly**. Não altera o canal estável (`latest.json`).
+            
+            ### Artefatos de Instalação:
+            - **Instalador NSIS:** Instalador com suporte a auto-update assinado.
+            - **Assinatura Minisign:** Arquivo `.sig` validado pela chave pública oficial.
+            - **Canal de Atualização:** `latest-nightly.json`
+          draft: false
+          prerelease: true
+          make_latest: 'false'
+          files: |
+            src-tauri/target/release/nexus.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.sig
+            latest-nightly.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

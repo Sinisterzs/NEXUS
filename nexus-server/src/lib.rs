@@ -1,6 +1,7 @@
 pub mod config;
 pub mod errors;
 pub mod handlers;
+pub mod identity;
 pub mod middleware;
 pub mod models;
 pub mod repositories;
@@ -11,10 +12,17 @@ use axum::Router;
 use sqlx::PgPool;
 
 use crate::config::AppConfig;
+use crate::identity::ServerIdentity;
 use crate::repositories::{DmRepository, FriendRepository, SessionRepository, UserRepository};
 use crate::services::{AuthService, DmService, FriendService, PresenceManager};
 
 pub fn create_app(pool: PgPool, config: AppConfig) -> Router {
+    let identity = ServerIdentity::load_or_generate(None)
+        .unwrap_or_else(|_| ServerIdentity::generate_ephemeral());
+    create_app_with_identity(pool, config, identity)
+}
+
+pub fn create_app_with_identity(pool: PgPool, config: AppConfig, identity: ServerIdentity) -> Router {
     let user_repo = UserRepository::new(pool.clone());
     let session_repo = SessionRepository::new(pool.clone());
     let friend_repo = FriendRepository::new(pool.clone());
@@ -27,7 +35,7 @@ pub fn create_app(pool: PgPool, config: AppConfig) -> Router {
     let dm_repo = DmRepository::new(pool);
     let dm_service = DmService::new(dm_repo, friend_repo, user_repo, presence_mgr);
 
-    routes::create_router(auth_service, friend_service, dm_service, &config)
+    routes::create_router_with_identity(auth_service, friend_service, dm_service, &config, identity)
 }
 
 pub fn create_app_with_auth_service(auth_service: AuthService, config: AppConfig) -> Router {

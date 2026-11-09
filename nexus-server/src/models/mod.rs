@@ -141,6 +141,26 @@ pub struct HealthResponse {
     pub service: String,
     pub timestamp: DateTime<Utc>,
     pub version: String,
+    #[serde(default)]
+    pub server_id: Option<String>,
+    #[serde(default)]
+    pub public_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengeRequest {
+    pub client_nonce: String,
+    pub target_url: String,
+    pub client_timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengeResponse {
+    pub server_id: String,
+    pub public_key: String,
+    pub server_nonce: String,
+    pub signature: String,
+    pub bound_endpoint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

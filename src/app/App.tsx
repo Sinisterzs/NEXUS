@@ -11,6 +11,9 @@ import { MessagesView } from '../features/messages/MessagesView';
 import { CommunitiesView } from '../features/communities/CommunitiesView';
 import { CallsView } from '../features/calls/CallsView';
 import { SettingsView } from '../features/settings/SettingsView';
+import { AuthView } from '../features/auth/AuthView';
+import { ServerOfflineView } from '../features/auth/ServerOfflineView';
+import { ServerApprovalView } from '../features/auth/ServerApprovalView';
 import { useAppStore } from '../stores/useAppStore';
 import { callService } from '../services/CallService';
 import { gatewayClient } from '../services/GatewayClient';
@@ -21,6 +24,9 @@ export const App: React.FC = () => {
   const isInitialized = useAppStore((state) => state.isInitialized);
   const initializeStore = useAppStore((state) => state.initializeStore);
   const appearance = useAppStore((state) => state.settings.appearance);
+  const authStatus = useAppStore((state) => state.authStatus);
+  const onlineUser = useAppStore((state) => state.onlineUser);
+  const networkStatus = useAppStore((state) => state.networkStatus);
   const isAuthModalOpen = useAppStore((state) => state.isAuthModalOpen);
   const closeAuthModal = useAppStore((state) => state.closeAuthModal);
   const [rustBackendReady, setRustBackendReady] = useState(false);
@@ -88,16 +94,36 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTab]);
 
-  if (!isInitialized) {
+  // 1. Splash / Carregamento Inicial (nunca piscar workspace desautenticado)
+  if (!isInitialized || authStatus === 'initializing') {
     return (
       <div className="flex flex-col items-center justify-center h-screen w-screen bg-nexus-bg text-nexus-text select-none">
         <div className="w-12 h-12 rounded-xl bg-nexus-accent flex items-center justify-center text-white font-extrabold text-xl shadow-lg mb-3 animate-pulse">
           N
         </div>
         <p className="text-xs font-semibold text-nexus-text">Iniciando NEXUS...</p>
-        <p className="text-[10px] text-nexus-muted mt-1 font-mono">Carregando preferências e banco SQLite</p>
+        <p className="text-[10px] text-nexus-muted mt-1 font-mono">Restaurando sessão e verificando conectividade</p>
       </div>
     );
+  }
+
+  // 2. Servidor pendente de aprovação criptográfica de identidade (TOFU)
+  if (networkStatus.server_reachability === 'needs_approval') {
+    return <ServerApprovalView />;
+  }
+
+  // 3. Servidor offline / rede desconectada sem sessão ativa em memória
+  if (
+    (networkStatus.server_reachability === 'network_disconnected' ||
+      networkStatus.server_reachability === 'server_unreachable') &&
+    !onlineUser
+  ) {
+    return <ServerOfflineView />;
+  }
+
+  // 4. Sem autenticação (primeiro acesso, sem sessão ou sessão expirada/deslogado)
+  if (authStatus === 'unauthenticated' || !onlineUser) {
+    return <AuthView />;
   }
 
   return (

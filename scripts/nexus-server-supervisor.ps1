@@ -20,6 +20,13 @@ function Write-SupervisorLog {
     Add-Content -Path $logFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
 }
 
+# 0. Trava de migração para AWS
+$migrationFile = Join-Path $serverDir "logs\MIGRATED_TO_AWS"
+if (Test-Path $migrationFile) {
+    Write-SupervisorLog "Backend NEXUS foi migrado para a VPS AWS. Supervisor desativado para evitar concorrência com a produção." "INFO"
+    exit 0
+}
+
 # 1. Trava contra múltiplas instâncias simultâneas
 if (Test-Path $lockFile) {
     try {

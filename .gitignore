@@ -54,8 +54,12 @@ dist/
 dist-ssr/
 dist-release/
 target/
+target_tests/
 src-tauri/target/
+src-tauri/target_tests/
 nexus-server/target/
+nexus-server/target_tests/
+nexus-server/target_staging/
 
 # 6. Pacotes Binários & Artefatos de Distribuição (Publicados via GitHub Releases)
 *.zip
@@ -63,6 +67,7 @@ nexus-server/target/
 *.7z
 *.rar
 *.sig
+*.bak
 nexus-windows-x64.zip
 nexus-windows-x64.zip.sig
 latest.json
