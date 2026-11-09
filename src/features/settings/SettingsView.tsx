@@ -395,96 +395,96 @@ export const SettingsView: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 flex overflow-hidden select-none">
+    <div className="flex-1 flex overflow-hidden select-none bg-[#07080b]">
       {/* Settings Sections Sidebar */}
-      <div className="w-56 bg-nexus-surface border-r border-nexus-border flex flex-col p-3 shrink-0">
-        <h3 className="text-xs font-bold text-nexus-muted uppercase tracking-wider px-2 py-1 mb-2">
+      <div className="w-60 bg-[#090b10] border-r border-white/[0.06] flex flex-col p-3.5 shrink-0">
+        <h3 className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider px-3 py-1.5 mb-2">
           Painel de Preferências
         </h3>
 
-        <nav className="space-y-1">
+        <nav className="space-y-1.5">
           <button
             onClick={() => setActiveSection('profile')}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-left transition-nexus ${
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'profile'
-                ? 'bg-nexus-panel text-white font-medium border-l-2 border-nexus-accent'
-                : 'text-nexus-muted hover:bg-nexus-panel/50 hover:text-nexus-text'
+                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <User className="w-4 h-4" />
+            <User className={`w-4 h-4 ${activeSection === 'profile' ? 'text-rose-500' : 'text-zinc-400'}`} />
             <span>Perfil de Usuário</span>
           </button>
 
           <button
             onClick={() => setActiveSection('appearance')}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-left transition-nexus ${
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'appearance'
-                ? 'bg-nexus-panel text-white font-medium border-l-2 border-nexus-accent'
-                : 'text-nexus-muted hover:bg-nexus-panel/50 hover:text-nexus-text'
+                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Palette className="w-4 h-4" />
+            <Palette className={`w-4 h-4 ${activeSection === 'appearance' ? 'text-rose-500' : 'text-zinc-400'}`} />
             <span>Aparência & Tema</span>
           </button>
 
           <button
             onClick={() => setActiveSection('audioVideo')}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-left transition-nexus ${
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'audioVideo'
-                ? 'bg-nexus-panel text-white font-medium border-l-2 border-nexus-accent'
-                : 'text-nexus-muted hover:bg-nexus-panel/50 hover:text-nexus-text'
+                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Volume2 className="w-4 h-4" />
+            <Volume2 className={`w-4 h-4 ${activeSection === 'audioVideo' ? 'text-rose-500' : 'text-zinc-400'}`} />
             <span>Áudio & Vídeo</span>
           </button>
 
           <button
             onClick={() => setActiveSection('notifications')}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-left transition-nexus ${
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'notifications'
-                ? 'bg-nexus-panel text-white font-medium border-l-2 border-nexus-accent'
-                : 'text-nexus-muted hover:bg-nexus-panel/50 hover:text-nexus-text'
+                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Bell className="w-4 h-4" />
+            <Bell className={`w-4 h-4 ${activeSection === 'notifications' ? 'text-rose-500' : 'text-zinc-400'}`} />
             <span>Notificações</span>
           </button>
 
           <button
             onClick={() => setActiveSection('privacy')}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-left transition-nexus ${
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'privacy'
-                ? 'bg-nexus-panel text-white font-medium border-l-2 border-nexus-accent'
-                : 'text-nexus-muted hover:bg-nexus-panel/50 hover:text-nexus-text'
+                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Lock className="w-4 h-4" />
+            <Lock className={`w-4 h-4 ${activeSection === 'privacy' ? 'text-rose-500' : 'text-zinc-400'}`} />
             <span>Privacidade & Segurança</span>
           </button>
 
           <button
             onClick={() => setActiveSection('network')}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-left transition-nexus ${
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'network'
-                ? 'bg-nexus-panel text-white font-medium border-l-2 border-nexus-accent'
-                : 'text-nexus-muted hover:bg-nexus-panel/50 hover:text-nexus-text'
+                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Network className="w-4 h-4" />
+            <Network className={`w-4 h-4 ${activeSection === 'network' ? 'text-rose-500' : 'text-zinc-400'}`} />
             <span>Rede & Conectividade</span>
           </button>
 
-          <div className="pt-2 mt-2 border-t border-nexus-border/50">
+          <div className="pt-2 mt-2 border-t border-white/[0.06]">
             <button
               onClick={() => setActiveSection('about')}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-left transition-nexus cursor-pointer ${
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
                 activeSection === 'about'
-                  ? 'bg-nexus-panel text-white font-medium border-l-2 border-nexus-accent'
-                  : 'text-nexus-muted hover:bg-nexus-panel/50 hover:text-nexus-text'
+                  ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                  : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
               }`}
             >
-              <Info className="w-4 h-4" />
+              <Info className={`w-4 h-4 ${activeSection === 'about' ? 'text-rose-500' : 'text-zinc-400'}`} />
               <span>Sobre & Atualizações</span>
             </button>
           </div>
@@ -492,7 +492,7 @@ export const SettingsView: React.FC = () => {
       </div>
 
       {/* Main Settings Content Area */}
-      <div className="flex-1 overflow-y-auto p-6 max-w-3xl space-y-6">
+      <div className="flex-1 overflow-y-auto p-6 max-w-4xl space-y-6">
         {/* Feedback Alert for local session update */}
         {saveBanner && (
           <div className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-400">

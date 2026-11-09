@@ -6,7 +6,6 @@ import {
   Phone,
   Smile,
   Paperclip,
-  HardDrive,
   ChevronUp,
   AlertCircle,
   Check,
@@ -598,16 +597,23 @@ export const MessagesView: React.FC = () => {
       {(isOnline && selectedOnlineConv) || (!isOnline && selectedDemoFriend) ? (
         <div className="flex-1 flex flex-col bg-[#07080b] overflow-hidden">
           {/* Header Bar */}
-          <div className="h-14 border-b border-white/[0.06] px-5 flex items-center justify-between bg-[#0d0f15]/90 backdrop-blur shrink-0">
-            <div className="flex items-center gap-3.5 min-w-0">
-              <Avatar
-                name={activePartnerName || 'Usuário'}
-                avatarUrl={activePartnerAvatar}
-                status={activePartnerStatus}
-                size="md"
-                shapeClassName="rounded-xl"
-                className="ring-1 ring-white/10"
-              />
+          <div className="h-14 border-b border-white/[0.06] px-6 flex items-center justify-between bg-[#0d0f15]/90 backdrop-blur shrink-0 relative overflow-hidden">
+            {/* Sutil linha de acento carmesim no rodapé do cabeçalho */}
+            <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-rose-500/25 to-transparent pointer-events-none" />
+            <div className="absolute -top-10 left-10 w-44 h-24 bg-rose-600/[0.04] rounded-full blur-2xl pointer-events-none" />
+
+            <div className="flex items-center gap-3.5 min-w-0 relative z-10">
+              <div className="relative shrink-0">
+                <Avatar
+                  name={activePartnerName || 'Usuário'}
+                  avatarUrl={activePartnerAvatar}
+                  status={activePartnerStatus || 'online'}
+                  size="md"
+                  shapeClassName="rounded-xl"
+                  className="ring-1 ring-rose-500/50 shadow-[0_0_12px_rgba(244,63,94,0.18)]"
+                  showStatus={true}
+                />
+              </div>
               <div className="min-w-0">
                 <div className="flex items-center">
                   <h3 className="text-sm font-bold text-white tracking-tight truncate">
@@ -621,7 +627,7 @@ export const MessagesView: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                  <span className="text-[11px] text-zinc-400 font-normal truncate">
+                  <span className="text-xs text-zinc-400 font-normal truncate">
                     {activePartnerActivity}
                   </span>
                 </div>
@@ -629,11 +635,11 @@ export const MessagesView: React.FC = () => {
             </div>
 
             {/* Header Actions */}
-            <div className="flex items-center gap-2.5 shrink-0">
+            <div className="flex items-center gap-2.5 shrink-0 relative z-10">
               <button
                 type="button"
                 onClick={startQuickCall}
-                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white text-xs font-medium border border-rose-500/40 hover:border-rose-500/60 transition-all cursor-pointer shadow-sm shadow-rose-950/40 active:scale-95"
+                className="inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white text-xs font-medium border border-rose-500/40 hover:border-rose-500/60 transition-all cursor-pointer shadow-sm shadow-rose-950/40 active:scale-95"
                 title={`Iniciar chamada com ${activePartnerName}`}
               >
                 <Phone className="w-3.5 h-3.5 text-emerald-400" />
@@ -644,7 +650,7 @@ export const MessagesView: React.FC = () => {
 
           {/* Real Error Banner */}
           {(localError || dmError) && (
-            <div className="bg-rose-950/40 border-b border-rose-500/30 px-5 py-2.5 flex items-center justify-between text-xs text-rose-200 shrink-0 animate-fadeIn">
+            <div className="bg-rose-950/40 border-b border-rose-500/30 px-6 py-2.5 flex items-center justify-between text-xs text-rose-200 shrink-0 animate-fadeIn">
               <div className="flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
                 <span>{localError || dmError}</span>
@@ -659,342 +665,351 @@ export const MessagesView: React.FC = () => {
             </div>
           )}
 
-          {/* Messages History Pane */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-3.5">
-            {/* Online load older messages pagination */}
-            {isOnline && activeConversationMessages.length >= 25 && (
-              <div className="flex justify-center pb-2">
-                <button
-                  type="button"
-                  onClick={() => loadOlderMessages()}
-                  disabled={isLoadingMessages}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
-                >
-                  <ChevronUp className="w-3.5 h-3.5" />
-                  <span>Carregar mensagens anteriores</span>
-                </button>
+          {/* Messages History Pane - Bounded max-w-4xl for comfortable readability on 1080p */}
+          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-3 flex flex-col items-center">
+            <div className="w-full max-w-4xl space-y-3 flex-1 flex flex-col justify-end">
+              {/* Online load older messages pagination */}
+              {isOnline && activeConversationMessages.length >= 25 && (
+                <div className="flex justify-center pb-2">
+                  <button
+                    type="button"
+                    onClick={() => loadOlderMessages()}
+                    disabled={isLoadingMessages}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5" />
+                    <span>Carregar mensagens anteriores</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Conversation Intro Header */}
+              <div className="flex flex-col items-center justify-center py-8 mb-4 border-b border-white/[0.04] text-center">
+                <Avatar
+                  name={activePartnerName || 'Usuário'}
+                  avatarUrl={activePartnerAvatar}
+                  size="xl"
+                  shapeClassName="rounded-2xl"
+                  className="mb-3 ring-1 ring-rose-500/50 shadow-[0_0_16px_rgba(244,63,94,0.18)]"
+                />
+                <h4 className="text-base font-bold text-white tracking-tight">
+                  {activePartnerName}
+                </h4>
+                <p className="text-xs text-zinc-400 mt-1 max-w-sm">
+                  {isOnline
+                    ? `Início da sua conversa privada e segura com @${activePartnerUsername}`
+                    : `Histórico local de demonstração com @${activePartnerName}`}
+                </p>
               </div>
-            )}
 
-            {/* Conversation Intro Header */}
-            <div className="flex flex-col items-center justify-center py-8 mb-4 border-b border-white/[0.04] text-center">
-              <Avatar
-                name={activePartnerName || 'Usuário'}
-                avatarUrl={activePartnerAvatar}
-                size="xl"
-                shapeClassName="rounded-2xl"
-                className="mb-3 ring-1 ring-rose-500/50 shadow-[0_0_16px_rgba(244,63,94,0.18)]"
-              />
-              <h4 className="text-base font-bold text-white tracking-tight">
-                {activePartnerName}
-              </h4>
-              <p className="text-xs text-zinc-400 mt-1 max-w-sm">
-                {isOnline
-                  ? `Início da sua conversa privada e segura com @${activePartnerUsername}`
-                  : `Histórico local de demonstração com @${activePartnerName}`}
-              </p>
-            </div>
+              {/* RENDER MESSAGES: ONLINE MODE */}
+              {isOnline ? (
+                activeConversationMessages.map((msg, index) => {
+                  const prevMsg = activeConversationMessages[index - 1];
+                  const { time, dateKey } = formatDateKey(msg.created_at);
+                  const prevDateKey = prevMsg ? formatDateKey(prevMsg.created_at).dateKey : null;
+                  const showDateDivider = !prevMsg || prevDateKey !== dateKey;
+                  const isGroupedWithPrev =
+                    !showDateDivider && prevMsg && prevMsg.sender_id === msg.sender_id;
 
-            {/* RENDER MESSAGES: ONLINE MODE */}
-            {isOnline ? (
-              activeConversationMessages.map((msg, index) => {
-                const prevMsg = activeConversationMessages[index - 1];
-                const { time, dateKey } = formatDateKey(msg.created_at);
-                const prevDateKey = prevMsg ? formatDateKey(prevMsg.created_at).dateKey : null;
-                const showDateDivider = !prevMsg || prevDateKey !== dateKey;
-                const isGroupedWithPrev =
-                  !showDateDivider && prevMsg && prevMsg.sender_id === msg.sender_id;
+                  const isAuthorMe = msg.is_mine;
+                  const isEditing = editingMessageId === msg.id;
+                  const isDeleted = Boolean(msg.deleted_at);
 
-                const isAuthorMe = msg.is_mine;
-                const isEditing = editingMessageId === msg.id;
-                const isDeleted = Boolean(msg.deleted_at);
+                  const authorAvatar = isAuthorMe
+                    ? currentUser.avatarUrl
+                    : activePartnerAvatar;
 
-                const authorAvatar = isAuthorMe
-                  ? currentUser.avatarUrl
-                  : activePartnerAvatar;
-
-                return (
-                  <React.Fragment key={msg.id}>
-                    {showDateDivider && (
-                      <div className="flex items-center my-5">
-                        <div className="flex-1 border-t border-white/[0.05]" />
-                        <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#111319] border border-white/[0.06] rounded-full">
-                          {dateKey}
-                        </span>
-                        <div className="flex-1 border-t border-white/[0.05]" />
-                      </div>
-                    )}
-
-                    <div
-                      className={`group relative flex items-start gap-3.5 hover:bg-white/[0.02] px-3 py-1 rounded-xl transition-all ${
-                        isGroupedWithPrev ? (compactMode ? 'mt-0 pl-12' : 'mt-0.5 pl-12') : 'mt-2.5'
-                      }`}
-                    >
-                      {!isGroupedWithPrev && (
-                        <Avatar
-                          name={isAuthorMe ? currentUser.displayName : (activePartnerName || 'Usuário')}
-                          avatarUrl={authorAvatar}
-                          size="sm"
-                          shapeClassName="rounded-xl"
-                          className="shrink-0 mt-0.5"
-                          showStatus={false}
-                        />
+                  return (
+                    <React.Fragment key={msg.id}>
+                      {showDateDivider && (
+                        <div className="flex items-center my-5">
+                          <div className="flex-1 border-t border-white/[0.05]" />
+                          <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#111319] border border-white/[0.06] rounded-full">
+                            {dateKey}
+                          </span>
+                          <div className="flex-1 border-t border-white/[0.05]" />
+                        </div>
                       )}
 
-                      <div className="flex-1 min-w-0">
+                      <div
+                        className={`group relative flex items-start gap-3.5 hover:bg-white/[0.02] px-3 py-1 rounded-xl transition-all ${
+                          isGroupedWithPrev ? (compactMode ? 'mt-0.5 pl-[52px]' : 'mt-1 pl-[52px]') : 'mt-3.5'
+                        }`}
+                      >
                         {!isGroupedWithPrev && (
-                          <div className="flex items-center gap-2 mb-1">
-                            <span
-                              className={`text-xs font-semibold ${
-                                isAuthorMe ? 'text-rose-400' : 'text-white'
-                              }`}
-                            >
-                              {isAuthorMe ? currentUser.displayName : activePartnerName}
-                            </span>
-                            <span className="text-[11px] text-zinc-500 font-mono">
-                              {time}
-                            </span>
-                            {msg.edited_at && !isDeleted && (
-                              <span className="text-[10px] text-zinc-500 italic">
-                                (editado)
+                          <Avatar
+                            name={isAuthorMe ? currentUser.displayName : (activePartnerName || 'Usuário')}
+                            avatarUrl={authorAvatar}
+                            size="sm"
+                            shapeClassName="rounded-xl"
+                            className="shrink-0 mt-0.5"
+                            showStatus={false}
+                          />
+                        )}
+
+                        <div className="flex-1 min-w-0">
+                          {!isGroupedWithPrev && (
+                            <div className="flex items-center gap-2 mb-1">
+                              <span
+                                className={`text-xs font-semibold ${
+                                  isAuthorMe ? 'text-rose-400' : 'text-white'
+                                }`}
+                              >
+                                {isAuthorMe ? currentUser.displayName : activePartnerName}
+                              </span>
+                              <span className="text-[11px] text-zinc-500 font-mono">
+                                {time}
+                              </span>
+                              {msg.edited_at && !isDeleted && (
+                                <span className="text-[10px] text-zinc-500 italic">
+                                  (editado)
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {isEditing ? (
+                            <div className="flex items-center gap-2 mt-1">
+                              <input
+                                type="text"
+                                value={editingContent}
+                                onChange={(e) => setEditingContent(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSaveEdit();
+                                  if (e.key === 'Escape') handleCancelEdit();
+                                }}
+                                className="flex-1 bg-[#111319] text-xs text-white px-3 py-1.5 rounded-xl border border-rose-500/60 focus:outline-none"
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                onClick={handleSaveEdit}
+                                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                              >
+                                Salvar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleCancelEdit}
+                                className="px-3 py-1.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white text-xs rounded-xl transition-colors cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <div
+                                className={`text-[13px] leading-relaxed break-words ${
+                                  isDeleted
+                                    ? 'text-zinc-500 italic select-none'
+                                    : 'text-zinc-100'
+                                }`}
+                              >
+                                {msg.content}
+                              </div>
+                              {isGroupedWithPrev && (
+                                <span className="text-[10px] text-zinc-500 font-mono opacity-0 group-hover:opacity-100 transition-opacity select-none">
+                                  {time}
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Delivery Status Indicator for my messages */}
+                          {isAuthorMe && (
+                            <div className="flex items-center gap-1 mt-1">
+                              {msg.delivery_status === 'sending' && (
+                                <Tooltip content="Enviando...">
+                                  <Clock className="w-3 h-3 text-zinc-500 animate-spin" />
+                                </Tooltip>
+                              )}
+                              {msg.delivery_status === 'failed' && (
+                                <Tooltip content="Falha no envio">
+                                  <AlertCircle className="w-3 h-3 text-rose-400" />
+                                </Tooltip>
+                              )}
+                              {(!msg.delivery_status || msg.delivery_status === 'sent') && (
+                                <Tooltip content="Enviado ao servidor">
+                                  <Check className="w-3 h-3 text-zinc-500" />
+                                </Tooltip>
+                              )}
+                              {msg.delivery_status === 'delivered' && (
+                                <Tooltip content="Entregue ao dispositivo do destinatário">
+                                  <CheckCheck className="w-3 h-3 text-zinc-400" />
+                                </Tooltip>
+                              )}
+                              {(msg.read_at || msg.delivery_status === 'read') && (
+                                <Tooltip content="Lido pelo destinatário">
+                                  <CheckCheck className="w-3 h-3 text-rose-400" />
+                                </Tooltip>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Action buttons (Edit / Delete) for author */}
+                        {isAuthorMe && !isDeleted && !isEditing && (
+                          <div className="hidden group-hover:flex items-center gap-1 bg-[#141720] border border-white/[0.08] px-1.5 py-1 rounded-xl shadow-xl">
+                            <Tooltip content="Editar mensagem">
+                              <button
+                                type="button"
+                                onClick={() => handleStartEdit(msg)}
+                                className="p-1 text-zinc-400 hover:text-white hover:bg-white/[0.06] rounded-lg transition-colors cursor-pointer"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                            </Tooltip>
+                            <Tooltip content="Apagar mensagem">
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(msg.id)}
+                                className="p-1 text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </Tooltip>
+                          </div>
+                        )}
+                      </div>
+                    </React.Fragment>
+                  );
+                })
+              ) : (
+                /* RENDER MESSAGES: DEMO MODE */
+                demoMessages.map((msg, index) => {
+                  const prevMsg = demoMessages[index - 1];
+                  const showDateDivider = !prevMsg || prevMsg.dateKey !== msg.dateKey;
+                  const isGroupedWithPrev =
+                    !showDateDivider && prevMsg && prevMsg.authorId === msg.authorId;
+                  const isCurrentUser = msg.authorId === currentUser.id;
+
+                  return (
+                    <React.Fragment key={msg.id}>
+                      {showDateDivider && (
+                        <div className="flex items-center my-5">
+                          <div className="flex-1 border-t border-white/[0.05]" />
+                          <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#111319] border border-white/[0.06] rounded-full">
+                            {msg.dateKey}
+                          </span>
+                          <div className="flex-1 border-t border-white/[0.05]" />
+                        </div>
+                      )}
+
+                      <div
+                        className={`group flex items-start gap-3.5 hover:bg-white/[0.02] px-3 py-1 rounded-xl transition-all ${
+                          isGroupedWithPrev ? (compactMode ? 'mt-0.5 pl-[52px]' : 'mt-1 pl-[52px]') : 'mt-3.5'
+                        }`}
+                      >
+                        {!isGroupedWithPrev && (
+                          <Avatar
+                            name={msg.authorName}
+                            avatarUrl={isCurrentUser ? currentUser.avatarUrl : activePartnerAvatar}
+                            size="sm"
+                            shapeClassName="rounded-xl"
+                            className="shrink-0 mt-0.5"
+                            showStatus={false}
+                          />
+                        )}
+
+                        <div className="flex-1 min-w-0">
+                          {!isGroupedWithPrev && (
+                            <div className="flex items-center gap-2 mb-1">
+                              <span
+                                className={`text-xs font-semibold ${
+                                  isCurrentUser ? 'text-rose-400' : 'text-white'
+                                }`}
+                              >
+                                {msg.authorName}
+                              </span>
+                              <span className="text-[11px] text-zinc-500 font-mono">
+                                {msg.timestamp}
+                              </span>
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-2">
+                            <div className="text-[13px] text-zinc-100 leading-relaxed break-words">
+                              {msg.content}
+                            </div>
+                            {isGroupedWithPrev && (
+                              <span className="text-[10px] text-zinc-500 font-mono opacity-0 group-hover:opacity-100 transition-opacity select-none">
+                                {msg.timestamp}
                               </span>
                             )}
                           </div>
-                        )}
-
-                        {isEditing ? (
-                          <div className="flex items-center gap-2 mt-1">
-                            <input
-                              type="text"
-                              value={editingContent}
-                              onChange={(e) => setEditingContent(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleSaveEdit();
-                                if (e.key === 'Escape') handleCancelEdit();
-                              }}
-                              className="flex-1 bg-[#111319] text-xs text-white px-3 py-1.5 rounded-xl border border-rose-500/60 focus:outline-none"
-                              autoFocus
-                            />
-                            <button
-                              type="button"
-                              onClick={handleSaveEdit}
-                              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
-                            >
-                              Salvar
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleCancelEdit}
-                              className="px-3 py-1.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white text-xs rounded-xl transition-colors cursor-pointer"
-                            >
-                              Cancelar
-                            </button>
-                          </div>
-                        ) : (
-                          <div
-                            className={`text-xs leading-relaxed break-words ${
-                              isDeleted
-                                ? 'text-zinc-500 italic select-none'
-                                : 'text-zinc-200'
-                            }`}
-                          >
-                            {msg.content}
-                          </div>
-                        )}
-
-                        {/* Delivery Status Indicator for my messages */}
-                        {isAuthorMe && (
-                          <div className="flex items-center gap-1 mt-1">
-                            {msg.delivery_status === 'sending' && (
-                              <Tooltip content="Enviando...">
-                                <Clock className="w-3 h-3 text-zinc-500 animate-spin" />
-                              </Tooltip>
-                            )}
-                            {msg.delivery_status === 'failed' && (
-                              <Tooltip content="Falha no envio">
-                                <AlertCircle className="w-3 h-3 text-rose-400" />
-                              </Tooltip>
-                            )}
-                            {(!msg.delivery_status || msg.delivery_status === 'sent') && (
-                              <Tooltip content="Enviado ao servidor">
-                                <Check className="w-3 h-3 text-zinc-500" />
-                              </Tooltip>
-                            )}
-                            {msg.delivery_status === 'delivered' && (
-                              <Tooltip content="Entregue ao dispositivo do destinatário">
-                                <CheckCheck className="w-3 h-3 text-zinc-400" />
-                              </Tooltip>
-                            )}
-                            {(msg.read_at || msg.delivery_status === 'read') && (
-                              <Tooltip content="Lido pelo destinatário">
-                                <CheckCheck className="w-3 h-3 text-rose-400" />
-                              </Tooltip>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Action buttons (Edit / Delete) for author */}
-                      {isAuthorMe && !isDeleted && !isEditing && (
-                        <div className="hidden group-hover:flex items-center gap-1 bg-[#141720] border border-white/[0.08] px-1.5 py-1 rounded-xl shadow-xl">
-                          <Tooltip content="Editar mensagem">
-                            <button
-                              type="button"
-                              onClick={() => handleStartEdit(msg)}
-                              className="p-1 text-zinc-400 hover:text-white hover:bg-white/[0.06] rounded-lg transition-colors cursor-pointer"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
-                          </Tooltip>
-                          <Tooltip content="Apagar mensagem">
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(msg.id)}
-                              className="p-1 text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </Tooltip>
-                        </div>
-                      )}
-                    </div>
-                  </React.Fragment>
-                );
-              })
-            ) : (
-              /* RENDER MESSAGES: DEMO MODE */
-              demoMessages.map((msg, index) => {
-                const prevMsg = demoMessages[index - 1];
-                const showDateDivider = !prevMsg || prevMsg.dateKey !== msg.dateKey;
-                const isGroupedWithPrev =
-                  !showDateDivider && prevMsg && prevMsg.authorId === msg.authorId;
-                const isCurrentUser = msg.authorId === currentUser.id;
-
-                return (
-                  <React.Fragment key={msg.id}>
-                    {showDateDivider && (
-                      <div className="flex items-center my-5">
-                        <div className="flex-1 border-t border-white/[0.05]" />
-                        <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#111319] border border-white/[0.06] rounded-full">
-                          {msg.dateKey}
-                        </span>
-                        <div className="flex-1 border-t border-white/[0.05]" />
-                      </div>
-                    )}
-
-                    <div
-                      className={`group flex items-start gap-3.5 hover:bg-white/[0.02] px-3 py-1 rounded-xl transition-all ${
-                        isGroupedWithPrev ? (compactMode ? 'mt-0 pl-12' : 'mt-0.5 pl-12') : 'mt-2.5'
-                      }`}
-                    >
-                      {!isGroupedWithPrev && (
-                        <Avatar
-                          name={msg.authorName}
-                          avatarUrl={isCurrentUser ? currentUser.avatarUrl : activePartnerAvatar}
-                          size="sm"
-                          shapeClassName="rounded-xl"
-                          className="shrink-0 mt-0.5"
-                          showStatus={false}
-                        />
-                      )}
-
-                      <div className="flex-1 min-w-0">
-                        {!isGroupedWithPrev && (
-                          <div className="flex items-center gap-2 mb-1">
-                            <span
-                              className={`text-xs font-semibold ${
-                                isCurrentUser ? 'text-rose-400' : 'text-white'
-                              }`}
-                            >
-                              {msg.authorName}
-                            </span>
-                            <span className="text-[11px] text-zinc-500 font-mono">
-                              {msg.timestamp}
-                            </span>
-                          </div>
-                        )}
-
-                        <div className="text-xs text-zinc-200 leading-relaxed break-words">
-                          {msg.content}
                         </div>
                       </div>
-                    </div>
-                  </React.Fragment>
-                );
-              })
-            )}
+                    </React.Fragment>
+                  );
+                })
+              )}
 
-            <div ref={messagesEndRef} />
+              <div ref={messagesEndRef} />
+            </div>
           </div>
 
-          {/* Typing Composer Input Box */}
-          <div className="p-3.5 bg-[#090b10] border-t border-white/[0.06] shrink-0">
-            <div className="flex items-center gap-2 bg-[#0e1118]/90 border border-white/[0.08] focus-within:border-rose-500/50 rounded-2xl px-3.5 py-2 transition-all shadow-sm">
-              <Tooltip content="Anexar arquivo" position="top">
-                <button
-                  type="button"
-                  className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 cursor-pointer"
-                >
-                  <Paperclip className="w-4 h-4" />
-                </button>
-              </Tooltip>
+          {/* Typing Composer Input Box - Centered max-w-4xl */}
+          <div className="p-4 bg-[#090b10] border-t border-white/[0.06] shrink-0 flex justify-center">
+            <div className="w-full max-w-4xl space-y-2">
+              <div className="flex items-center gap-2.5 bg-[#0e1118]/90 border border-white/[0.08] focus-within:border-rose-500/50 rounded-2xl px-4 py-2.5 transition-all shadow-sm">
+                <Tooltip content="Anexar arquivo" position="top">
+                  <button
+                    type="button"
+                    className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 cursor-pointer"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </button>
+                </Tooltip>
 
-              <input
-                type="text"
-                value={draftMessage}
-                onChange={(e) => handleDraftChange(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={
-                  isOnline
-                    ? `Conversar com @${activePartnerUsername || activePartnerName}... (Pressione Enter)`
-                    : `Conversar com @${selectedDemoFriend?.name}... (Pressione Enter)`
-                }
-                className="flex-1 bg-transparent text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none py-1"
-              />
+                <input
+                  type="text"
+                  value={draftMessage}
+                  onChange={(e) => handleDraftChange(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    isOnline
+                      ? `Conversar com @${activePartnerUsername || activePartnerName}... (Pressione Enter)`
+                      : `Conversar com @${selectedDemoFriend?.name}... (Pressione Enter)`
+                  }
+                  className="flex-1 bg-transparent text-[13px] text-zinc-100 placeholder-zinc-500 focus:outline-none py-0.5"
+                />
 
-              <Tooltip content="Adicionar Emoji" position="top">
-                <button
-                  type="button"
-                  className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 cursor-pointer"
-                >
-                  <Smile className="w-4 h-4" />
-                </button>
-              </Tooltip>
+                <Tooltip content="Adicionar Emoji" position="top">
+                  <button
+                    type="button"
+                    className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 cursor-pointer"
+                  >
+                    <Smile className="w-4 h-4" />
+                  </button>
+                </Tooltip>
 
-              <Tooltip content="Enviar mensagem" position="top">
-                <button
-                  type="button"
-                  onClick={handleSendMessage}
-                  disabled={!draftMessage.trim() || isSendingDm}
-                  className={`p-2 rounded-xl transition-all cursor-pointer ${
-                    draftMessage.trim() && !isSendingDm
-                      ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm shadow-rose-950/60 active:scale-95'
-                      : 'bg-white/[0.04] text-zinc-600 cursor-not-allowed'
-                  }`}
-                >
-                  {isSendingDm ? (
-                    <RotateCw className="w-3.5 h-3.5 animate-spin text-white" />
-                  ) : (
-                    <Send className="w-3.5 h-3.5" />
-                  )}
-                </button>
-              </Tooltip>
-            </div>
-            <div className="flex items-center justify-between mt-1.5 px-2 text-[10px] text-zinc-500">
-              <span>Enter para enviar • Shift + Enter para quebra de linha</span>
-              <span className="flex items-center gap-1 font-mono">
-                {isOnline ? (
-                  <>
-                    <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Comunicação Privada Segura • Sincronização em Tempo Real (Gateway)</span>
-                  </>
-                ) : (
-                  <>
-                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Armazenamento Local SQLite • Modo Demonstração Offline</span>
-                  </>
-                )}
-              </span>
+                <Tooltip content="Enviar mensagem" position="top">
+                  <button
+                    type="button"
+                    onClick={handleSendMessage}
+                    disabled={!draftMessage.trim() || isSendingDm}
+                    className={`p-2 rounded-xl transition-all cursor-pointer ${
+                      draftMessage.trim() && !isSendingDm
+                        ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm shadow-rose-950/60 active:scale-95'
+                        : 'bg-white/[0.04] text-zinc-600 cursor-not-allowed'
+                    }`}
+                  >
+                    {isSendingDm ? (
+                      <RotateCw className="w-3.5 h-3.5 animate-spin text-white" />
+                    ) : (
+                      <Send className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </Tooltip>
+              </div>
+
+              {/* Clean Discreet Keyboard Hint */}
+              <div className="flex items-center justify-between px-2 text-[11px] text-zinc-500 font-normal">
+                <span>
+                  Pressione <kbd className="px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 font-mono text-[10px] border border-white/[0.06]">Enter</kbd> para enviar • <kbd className="px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 font-mono text-[10px] border border-white/[0.06]">Shift + Enter</kbd> para nova linha
+                </span>
+              </div>
             </div>
           </div>
         </div>
