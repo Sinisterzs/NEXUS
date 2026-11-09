@@ -12,19 +12,10 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
-import { APP_VERSION } from '../version';
 import { CurrentUserAvatar } from './Avatar';
 import { WindowControls } from './WindowControls';
 import { UserStatus } from '../lib/types';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-
-const tabTitles: Record<string, string> = {
-  home: 'Início',
-  messages: 'Mensagens',
-  communities: 'Comunidades',
-  calls: 'Chamadas',
-  settings: 'Configurações',
-};
 
 const statusOptions: Array<{
   value: UserStatus;
@@ -43,7 +34,6 @@ interface TitleBarProps {
 }
 
 export const TitleBar: React.FC<TitleBarProps> = () => {
-  const activeTab = useAppStore((state) => state.activeTab);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const authMode = useAppStore((state) => state.authMode);
   const currentUser = useAppStore((state) => state.currentUser);
@@ -168,8 +158,8 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
         onDoubleClick={handleHeaderDoubleClick}
         className="h-10 w-full bg-[#0B0C0E] border-b border-[#1E2026] flex items-center justify-between px-3 shrink-0 select-none text-xs relative z-30"
       >
-        {/* Left: Brand Monogram & Breadcrumb */}
-        <div className="flex items-center gap-2.5 shrink-0">
+        {/* Left: Brand Monogram with sleek curved red accent line */}
+        <div className="flex items-center gap-2.5 shrink-0 relative">
           <div className="flex items-center gap-2">
             <div className="w-5 h-5 rounded bg-gradient-to-br from-rose-500 to-rose-700 flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-rose-900/50 shrink-0">
               N
@@ -177,38 +167,52 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
             <span className="font-bold text-[13px] tracking-wide text-zinc-100">
               NEXUS
             </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-800 font-mono">
-              v{APP_VERSION}
-            </span>
           </div>
 
-          <span className="text-zinc-600 font-light">/</span>
-
-          <span className="text-zinc-300 font-medium text-xs tracking-tight">
-            {tabTitles[activeTab] || 'NEXUS'}
-          </span>
+          {/* Carmine glow swoosh extending right & curving to bottom edge */}
+          <div className="hidden sm:block pointer-events-none relative w-28 h-6 overflow-visible">
+            <svg
+              className="absolute top-1/2 -translate-y-1/2 left-0 w-28 h-6 overflow-visible"
+              viewBox="0 0 112 24"
+              fill="none"
+            >
+              <path
+                d="M 0 11 C 30 11 60 11 85 24"
+                stroke="url(#titlebar-red-swoosh)"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+              <defs>
+                <linearGradient id="titlebar-red-swoosh" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.8" />
+                  <stop offset="60%" stopColor="#e11d48" stopOpacity="0.4" />
+                  <stop offset="100%" stopColor="#e11d48" stopOpacity="0.0" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
         </div>
 
         {/* Center: Global Search Bar */}
         <div
           ref={searchContainerRef}
           data-tauri-drag-region="false"
-          className="relative flex-1 max-w-sm mx-4"
+          className="relative flex-1 max-w-md mx-4"
         >
           <div className="relative flex items-center">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 text-zinc-400 pointer-events-none" />
+            <Search className="w-3.5 h-3.5 absolute left-3 text-zinc-400 pointer-events-none" />
             <input
               ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => setIsSearchFocused(true)}
-              placeholder="Pesquisar canais, amigos ou mensagens (Ctrl+K)"
-              className="w-full bg-[#14161C] hover:bg-[#181A22] text-zinc-200 placeholder-zinc-400 text-xs pl-8 pr-16 py-1 rounded-md border border-zinc-800 hover:border-zinc-700 focus:border-rose-500/70 focus:bg-[#161820] focus:outline-none transition-colors"
+              placeholder="Pesquisar canais, amigos ou mensagens..."
+              className="w-full bg-[#111319]/90 hover:bg-[#151821] text-zinc-200 placeholder-zinc-400 text-xs pl-8 pr-16 py-1.5 rounded-full border border-white/[0.08] hover:border-white/[0.15] focus:border-rose-500/60 focus:bg-[#151821] focus:outline-none transition-colors"
             />
-            <div className="absolute right-2 flex items-center gap-1 pointer-events-none">
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-800/90 text-zinc-300 border border-zinc-700/60">
-                Ctrl K
+            <div className="absolute right-2.5 flex items-center gap-1 pointer-events-none">
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded-md bg-white/[0.06] text-zinc-400 border border-white/[0.08]">
+                Ctrl + K
               </span>
             </div>
           </div>
@@ -358,17 +362,28 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                   setIsProfileOpen(!isProfileOpen);
                   setIsNotificationsOpen(false);
                 }}
-                className={`flex items-center gap-2 pl-1 pr-2 py-0.5 rounded-lg transition-colors cursor-pointer border ${
+                className={`flex items-center gap-2 pl-1.5 pr-2.5 py-1 rounded-xl transition-all cursor-pointer border ${
                   isProfileOpen
                     ? 'bg-zinc-800/90 border-zinc-700 text-white'
-                    : 'bg-zinc-900/80 hover:bg-zinc-800/70 border-zinc-800 text-zinc-200 hover:text-white'
+                    : 'bg-[#111319]/80 hover:bg-[#161922] border-white/[0.06] text-zinc-200 hover:text-white'
                 }`}
               >
-                <CurrentUserAvatar size="xs" />
-                <span className="text-xs font-medium truncate max-w-[110px]">
-                  {onlineUser.displayName || onlineUser.username}
-                </span>
-                <ChevronDown className="w-3 h-3 text-zinc-400 shrink-0" />
+                <div className="relative">
+                  <CurrentUserAvatar size="xs" shapeClassName="rounded-md" className="ring-1 ring-rose-500/50" />
+                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-black" />
+                </div>
+                <div className="flex flex-col items-start text-left leading-tight">
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs font-semibold text-white truncate max-w-[90px]">
+                      {onlineUser.displayName || onlineUser.username}
+                    </span>
+                    <ChevronDown className="w-3 h-3 text-zinc-400 shrink-0" />
+                  </div>
+                  <span className="text-[10px] text-zinc-400 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                    Online
+                  </span>
+                </div>
               </button>
 
               {/* Profile Dropdown Menu */}

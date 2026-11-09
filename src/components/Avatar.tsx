@@ -8,8 +8,9 @@ export interface AvatarProps {
   name: string;
   avatarUrl?: string | null;
   status?: UserStatus;
-  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl';
   className?: string;
+  shapeClassName?: string;
   showStatus?: boolean;
 }
 
@@ -19,14 +20,16 @@ const sizeClasses = {
   md: 'w-9 h-9 text-sm',
   lg: 'w-11 h-11 text-base',
   xl: 'w-14 h-14 text-lg font-semibold',
+  '2xl': 'w-16 h-16 text-xl font-bold',
 };
 
-const statusSizeMap: Record<'xs' | 'sm' | 'md' | 'lg' | 'xl', 'sm' | 'md' | 'lg'> = {
+const statusSizeMap: Record<'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl', 'sm' | 'md' | 'lg'> = {
   xs: 'sm',
   sm: 'sm',
   md: 'md',
   lg: 'md',
   xl: 'lg',
+  '2xl': 'lg',
 };
 
 export function sanitizeAvatarUrl(url?: string | null): string | undefined {
@@ -66,6 +69,7 @@ export const Avatar: React.FC<AvatarProps> = ({
   status,
   size = 'md',
   className,
+  shapeClassName,
   showStatus = true,
 }) => {
   const [imgError, setImgError] = useState(false);
@@ -83,11 +87,15 @@ export const Avatar: React.FC<AvatarProps> = ({
     .join('')
     .toUpperCase() || '?';
 
+  const defaultRounding =
+    size === '2xl' ? 'rounded-2xl' : size === 'xl' || size === 'lg' ? 'rounded-xl' : 'rounded-lg';
+
   return (
     <div className={cn('relative inline-flex shrink-0 select-none', className)}>
       <div
         className={cn(
-          'rounded-lg bg-zinc-800/90 border border-zinc-700/60 flex items-center justify-center font-medium text-zinc-200 overflow-hidden shadow-inner',
+          shapeClassName || defaultRounding,
+          'bg-zinc-800/90 border border-zinc-700/60 flex items-center justify-center font-medium text-zinc-200 overflow-hidden shadow-inner',
           sizeClasses[size]
         )}
       >
@@ -120,10 +128,11 @@ export const Avatar: React.FC<AvatarProps> = ({
  * Reutiliza a foto real do usuário autenticado persistida no store, com fallback para iniciais.
  */
 export const CurrentUserAvatar: React.FC<{
-  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl';
   className?: string;
+  shapeClassName?: string;
   showStatus?: boolean;
-}> = ({ size = 'sm', className, showStatus = true }) => {
+}> = ({ size = 'sm', className, shapeClassName, showStatus = true }) => {
   const currentUser = useAppStore((state) => state.currentUser);
   const onlineUser = useAppStore((state) => state.onlineUser);
   const settingsAvatar = useAppStore((state) => state.settings?.profile?.avatarUrl);
@@ -138,6 +147,7 @@ export const CurrentUserAvatar: React.FC<{
       status={currentUser?.status}
       size={size}
       className={className}
+      shapeClassName={shapeClassName}
       showStatus={showStatus}
     />
   );

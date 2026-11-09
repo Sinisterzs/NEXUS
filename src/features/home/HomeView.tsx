@@ -4,21 +4,14 @@ import {
   Users,
   MessageSquare,
   Radio,
-  Clock,
-  ArrowRight,
   Hash,
   Search,
   UserPlus,
   MoreVertical,
   UserMinus,
   Ban,
-  ChevronDown,
-  Sparkles,
   Phone,
-  Compass,
-  PlusCircle,
   X,
-  Check,
 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { callService } from '../../services/CallService';
@@ -27,7 +20,6 @@ import { Avatar, CurrentUserAvatar } from '../../components/Avatar';
 import { Badge } from '../../components/Badge';
 import { Tooltip } from '../../components/Tooltip';
 import { AddFriendModal } from '../friends/AddFriendModal';
-import { UserStatus } from '../../lib/types';
 
 export const HomeView: React.FC = () => {
   const setActiveTab = useAppStore((state) => state.setActiveTab);
@@ -36,6 +28,7 @@ export const HomeView: React.FC = () => {
   const setActiveDm = useAppStore((state) => state.setActiveDm);
   const joinCall = useAppStore((state) => state.joinCall);
   const currentUser = useAppStore((state) => state.currentUser);
+  const onlineUser = useAppStore((state) => state.onlineUser);
   const authStatus = useAppStore((state) => state.authStatus);
   const friends = useAppStore((state) => state.friends);
   const friendRequests = useAppStore((state) => state.friendRequests);
@@ -48,13 +41,10 @@ export const HomeView: React.FC = () => {
   const openAddFriendModal = useAppStore((state) => state.openAddFriendModal);
   const removeFriend = useAppStore((state) => state.removeFriend);
   const blockUser = useAppStore((state) => state.blockUser);
-  const setUserStatus = useAppStore((state) => state.setUserStatus);
-  const openAuthModal = useAppStore((state) => state.openAuthModal);
 
   const [friendFilter, setFriendFilter] = useState<'all' | 'online' | 'gaming'>('all');
   const [friendSearch, setFriendSearch] = useState('');
   const [openFriendMenuId, setOpenFriendMenuId] = useState<string | null>(null);
-  const [isStatusMenuOpen, setIsStatusMenuOpen] = useState(false);
 
   const isAuthenticated = authStatus === 'authenticated';
   const incomingRequestsCount = friendRequests.incoming.length;
@@ -67,12 +57,6 @@ export const HomeView: React.FC = () => {
       loadConversations();
     }
   }, [isAuthenticated, loadFriends, loadFriendRequests, loadConversations]);
-
-  const onlineFriendsCount = friends.filter(
-    (f) => f.status === 'online' || f.status === 'idle' || f.status === 'dnd'
-  ).length;
-
-  const gamingFriendsCount = friends.filter((f) => f.activity?.startsWith('Em jogo')).length;
 
   const filteredFriends = friends.filter((f) => {
     const matchesFilter =
@@ -89,123 +73,93 @@ export const HomeView: React.FC = () => {
     return matchesFilter && matchesSearch;
   });
 
-  const statusOptions: { value: UserStatus; label: string; color: string; desc: string }[] = [
-    { value: 'online', label: 'Disponível', color: 'bg-emerald-500', desc: 'Disponível no NEXUS' },
-    { value: 'idle', label: 'Ausente', color: 'bg-amber-500', desc: 'Temporariamente ausente' },
-    { value: 'dnd', label: 'Não Perturbe', color: 'bg-rose-500', desc: 'Notificações silenciadas' },
-    { value: 'invisible', label: 'Invisível', color: 'bg-zinc-400', desc: 'Aparece offline aos amigos' },
-  ];
-
-  const currentStatusOption =
-    statusOptions.find((o) => o.value === currentUser.status) || statusOptions[0];
-
   const totalUnreadConversations = conversations.reduce(
     (acc, c) => acc + (c.unread_count || 0),
     0
   );
 
-  return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-6 select-none bg-[#0b0d12] text-zinc-100">
-      {/* 1. Top Welcome Banner - Redesenhado Premium */}
-      <section className="relative overflow-hidden rounded-2xl bg-[#12151c]/90 border border-zinc-800/80 p-5 shadow-xl">
-        {/* Fundo com sutil iluminação carmesim no topo */}
-        <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-rose-500/40 to-transparent" />
-        <div className="absolute -top-16 -left-16 w-48 h-48 bg-rose-500/[0.04] rounded-full blur-2xl pointer-events-none" />
+  const displayName = currentUser.displayName || onlineUser?.displayName || 'Kel';
+  const username = currentUser.username || onlineUser?.username || 'kelzyx';
 
-        <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-5">
-          {/* Lado Esquerdo: Identidade do Usuário */}
+  return (
+    <div className="flex-1 overflow-y-auto p-6 space-y-6 select-none bg-[#07080b] text-zinc-100">
+      {/* 1. Top Welcome Banner com Arco Celestial e Ações */}
+      <section className="relative overflow-hidden rounded-2xl bg-[#0d0f15]/90 border border-white/[0.07] px-6 py-5 shadow-2xl">
+        {/* Arco Celestial avermelhado (eclíptica/horizonte planetário com glow) */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden select-none">
+          {/* Ambient soft glow */}
+          <div className="absolute -top-10 right-1/4 w-96 h-48 bg-rose-600/[0.09] rounded-full blur-3xl" />
+          {/* SVG do horizonte celestial curvo */}
+          <svg
+            className="absolute inset-0 w-full h-full"
+            viewBox="0 0 1000 120"
+            preserveAspectRatio="none"
+            fill="none"
+          >
+            <defs>
+              <linearGradient id="celestialArcGrad" x1="0" y1="1" x2="1" y2="0">
+                <stop offset="0%" stopColor="#f43f5e" stopOpacity="0" />
+                <stop offset="30%" stopColor="#e11d48" stopOpacity="0.25" />
+                <stop offset="50%" stopColor="#f43f5e" stopOpacity="0.8" />
+                <stop offset="70%" stopColor="#ff4d6d" stopOpacity="0.95" />
+                <stop offset="90%" stopColor="#e11d48" stopOpacity="0.3" />
+                <stop offset="100%" stopColor="#e11d48" stopOpacity="0" />
+              </linearGradient>
+              <filter id="arcGlow" x="-20%" y="-50%" width="140%" height="200%">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="5" />
+              </filter>
+            </defs>
+            {/* Glow difuso */}
+            <path
+              d="M 450 130 C 580 80, 720 20, 950 -10"
+              stroke="url(#celestialArcGrad)"
+              strokeWidth="9"
+              filter="url(#arcGlow)"
+              opacity="0.5"
+            />
+            {/* Borda nítida e brilhante */}
+            <path
+              d="M 450 130 C 580 80, 720 20, 950 -10"
+              stroke="url(#celestialArcGrad)"
+              strokeWidth="2.2"
+              opacity="0.95"
+            />
+          </svg>
+        </div>
+
+        <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-5 z-10">
+          {/* Lado Esquerdo: Identidade do Usuário com Squircle maior */}
           <div className="flex items-center gap-4 min-w-0">
             <div className="relative shrink-0">
               <CurrentUserAvatar
-                size="lg"
-                className="ring-2 ring-zinc-700/70 shadow-md"
+                size="2xl"
+                shapeClassName="rounded-2xl"
+                className="ring-1 ring-rose-500/60 shadow-[0_0_16px_rgba(244,63,94,0.18)]"
               />
               <span
-                className={`absolute bottom-0.5 right-0.5 w-3.5 h-3.5 rounded-full border-2 border-[#12151c] ${currentStatusOption.color} shadow-sm`}
-                title={currentStatusOption.label}
+                className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-[#0d0f15] shadow-sm"
+                title="Online"
               />
             </div>
 
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <h1 className="text-base sm:text-lg font-bold text-zinc-100 tracking-tight truncate">
-                  Olá, {currentUser.displayName}
-                </h1>
-                {isAuthenticated ? (
-                  <span className="text-[11px] font-mono text-zinc-400 bg-zinc-900/80 border border-zinc-800/70 px-2 py-0.5 rounded-md">
-                    @{currentUser.username}
-                  </span>
-                ) : (
-                  currentUser.tag && (
-                    <span className="text-[11px] font-mono text-zinc-400 bg-zinc-900/80 border border-zinc-800/70 px-2 py-0.5 rounded-md">
-                      {currentUser.tag}
-                    </span>
-                  )
-                )}
-              </div>
-
-              {/* Seletor Rápido de Status */}
-              <div className="flex items-center gap-2.5 mt-1.5 flex-wrap">
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setIsStatusMenuOpen(!isStatusMenuOpen)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 text-xs font-medium text-zinc-300 border border-zinc-800 hover:border-zinc-700 transition-colors cursor-pointer"
-                  >
-                    <span className={`w-2 h-2 rounded-full ${currentStatusOption.color} shrink-0`} />
-                    <span className="text-zinc-200">{currentStatusOption.label}</span>
-                    <ChevronDown className="w-3 h-3 text-zinc-500" />
-                  </button>
-
-                  {isStatusMenuOpen && (
-                    <div
-                      className="absolute left-0 mt-1.5 w-52 rounded-xl bg-[#141720] border border-zinc-800 shadow-2xl py-1.5 z-40 animate-fadeIn"
-                      onMouseLeave={() => setIsStatusMenuOpen(false)}
-                    >
-                      <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-500">
-                        Alterar Presença
-                      </div>
-                      {statusOptions.map((opt) => {
-                        const isCurrent = currentUser.status === opt.value;
-                        return (
-                          <button
-                            key={opt.value}
-                            type="button"
-                            onClick={() => {
-                              setUserStatus(opt.value);
-                              setIsStatusMenuOpen(false);
-                            }}
-                            className={`w-full flex items-center justify-between px-3 py-1.5 text-xs text-left hover:bg-zinc-800/70 transition-colors cursor-pointer ${
-                              isCurrent ? 'text-white font-medium bg-zinc-800/40' : 'text-zinc-300'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className={`w-2 h-2 rounded-full shrink-0 ${opt.color}`} />
-                              <span>{opt.label}</span>
-                            </div>
-                            {isCurrent && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                <span className="text-xs text-zinc-400 truncate max-w-xs font-normal">
-                  {currentUser.customStatus || 'Disponível no NEXUS'}
-                </span>
-              </div>
+            <div className="min-w-0">
+              <h1 className="text-2xl font-bold text-white tracking-tight truncate">
+                Olá, {displayName}
+              </h1>
+              <p className="text-xs text-zinc-400 font-mono mt-0.5">
+                @{username}
+              </p>
             </div>
           </div>
 
-          {/* Lado Direito: Ações Rápidas de Navegação */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          {/* Lado Direito: Ações Rápidas em Pill Buttons */}
+          <div className="flex items-center gap-3 shrink-0 flex-wrap">
             <button
               type="button"
               onClick={() => setActiveTab('messages')}
-              className="relative inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs font-medium border border-zinc-800 hover:border-zinc-700/80 transition-colors cursor-pointer shadow-xs"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white text-xs font-medium border border-white/[0.08] hover:border-white/[0.15] transition-all cursor-pointer shadow-sm"
             >
-              <MessageSquare className="w-3.5 h-3.5 text-zinc-400" />
+              <MessageSquare className="w-4 h-4 text-zinc-300" />
               <span>Mensagens</span>
               {totalUnreadConversations > 0 && (
                 <span className="w-4 h-4 bg-rose-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center">
@@ -217,9 +171,9 @@ export const HomeView: React.FC = () => {
             <button
               type="button"
               onClick={() => setActiveTab('communities')}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs font-medium border border-zinc-800 hover:border-zinc-700/80 transition-colors cursor-pointer shadow-xs"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white text-xs font-medium border border-white/[0.08] hover:border-white/[0.15] transition-all cursor-pointer shadow-sm"
             >
-              <Users className="w-3.5 h-3.5 text-zinc-400" />
+              <Users className="w-4 h-4 text-zinc-300" />
               <span>Comunidades</span>
             </button>
 
@@ -229,9 +183,20 @@ export const HomeView: React.FC = () => {
                 joinCall('Rustaceans Hub • Sala de Voz 01');
                 setActiveTab('calls');
               }}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 hover:text-rose-200 text-xs font-semibold border border-rose-500/30 transition-colors cursor-pointer shadow-xs"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white text-xs font-medium border border-rose-500/40 hover:border-rose-500/60 transition-all cursor-pointer shadow-sm shadow-rose-950/50"
             >
-              <Radio className="w-3.5 h-3.5 text-rose-400" />
+              {/* Waveform icon fiel à referência */}
+              <svg
+                className="w-4 h-4 text-rose-400"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <rect x="2" y="7" width="2" height="6" rx="1" />
+                <rect x="6" y="4" width="2" height="12" rx="1" />
+                <rect x="10" y="2" width="2" height="16" rx="1" />
+                <rect x="14" y="5" width="2" height="10" rx="1" />
+                <rect x="18" y="8" width="2" height="4" rx="1" />
+              </svg>
               <span>Entrar em Voz</span>
             </button>
           </div>
@@ -239,32 +204,32 @@ export const HomeView: React.FC = () => {
       </section>
 
       {/* 2. Grid Principal: Conversas Recentes & Comunidades (Esq) vs Amigos (Dir) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Coluna Esquerda: Conversas Recentes & Comunidades (7 colunas) */}
-        <div className="lg:col-span-7 space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        {/* Coluna Esquerda: Conversas Recentes & Comunidades (7 colunas ~ 60%) */}
+        <div className="lg:col-span-7 space-y-5">
           {/* Card: Conversas Recentes */}
-          <section className="bg-[#12151c]/80 border border-zinc-800/80 rounded-2xl p-5 shadow-lg flex flex-col">
-            <div className="flex items-center justify-between mb-3.5 pb-2.5 border-b border-zinc-800/60">
+          <section className="bg-[#0d0f15]/90 border border-white/[0.07] rounded-2xl p-5 shadow-xl flex flex-col">
+            <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-rose-400" />
-                <h2 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
-                  Conversas Recentes
+                <MessageSquare className="w-4 h-4 text-rose-500" />
+                <h2 className="text-xs font-bold text-white uppercase tracking-wider">
+                  CONVERSAS RECENTES
                 </h2>
               </div>
               <button
                 type="button"
                 onClick={() => setActiveTab('messages')}
-                className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 font-medium transition-colors cursor-pointer"
+                className="text-xs text-rose-500 hover:text-rose-400 font-medium transition-colors flex items-center gap-1 cursor-pointer"
               >
                 <span>Ver todas</span>
-                <ArrowRight className="w-3 h-3" />
+                <span>&rarr;</span>
               </button>
             </div>
 
-            <div className="space-y-1.5">
+            <div>
               {isAuthenticated ? (
                 conversations.length === 0 ? (
-                  <div className="text-center py-8 px-4 rounded-xl bg-zinc-900/30 border border-dashed border-zinc-800/70 text-zinc-400 space-y-2">
+                  <div className="text-center py-8 px-4 rounded-xl bg-[#08090d]/60 border border-white/[0.05] text-zinc-400 space-y-2 mt-2">
                     <MessageSquare className="w-6 h-6 mx-auto text-zinc-500 opacity-60" />
                     <p className="text-xs font-semibold text-zinc-300">Nenhuma conversa recente</p>
                     <p className="text-[11px] text-zinc-500 max-w-xs mx-auto">
@@ -289,7 +254,7 @@ export const HomeView: React.FC = () => {
                           await selectConversation(conv.id);
                           setActiveTab('messages');
                         }}
-                        className="flex items-center justify-between p-3 rounded-xl hover:bg-zinc-900/70 border border-transparent hover:border-zinc-800/80 transition-all cursor-pointer group"
+                        className="flex items-center justify-between py-3 border-b border-white/[0.04] last:border-b-0 hover:bg-white/[0.02] px-2 rounded-xl transition-colors cursor-pointer group"
                       >
                         <div className="flex items-center gap-3.5 min-w-0">
                           <Avatar
@@ -297,17 +262,19 @@ export const HomeView: React.FC = () => {
                             avatarUrl={other.avatarUrl}
                             status={other.status}
                             size="md"
+                            shapeClassName="rounded-xl"
+                            showStatus={false}
                           />
                           <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-semibold text-zinc-200 group-hover:text-white truncate">
+                            <div className="flex items-center">
+                              <span className="text-sm font-semibold text-white group-hover:text-white truncate">
                                 {other.name}
                               </span>
-                              <span className="text-[11px] text-zinc-500 font-mono">
+                              <span className="text-xs text-zinc-400 font-mono ml-2">
                                 @{other.username || other.tag}
                               </span>
                             </div>
-                            <p className="text-xs text-zinc-400 group-hover:text-zinc-300 truncate max-w-sm mt-0.5">
+                            <p className="text-xs text-zinc-400 group-hover:text-zinc-300 truncate max-w-md mt-0.5">
                               {lastMsgContent}
                             </p>
                           </div>
@@ -315,22 +282,20 @@ export const HomeView: React.FC = () => {
 
                         <div className="flex items-center gap-3 shrink-0 ml-2">
                           {timeStr ? (
-                            <span className="text-[11px] text-zinc-500 font-mono">
+                            <span className="text-xs text-zinc-500 font-mono">
                               {timeStr}
                             </span>
                           ) : null}
                           {conv.unread_count > 0 ? (
                             <Badge count={conv.unread_count} />
-                          ) : (
-                            <MessageSquare className="w-3.5 h-3.5 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
-                          )}
+                          ) : null}
                         </div>
                       </div>
                     );
                   })
                 )
               ) : mockDirectMessages.length === 0 ? (
-                <div className="text-center py-8 px-4 rounded-xl bg-zinc-900/30 border border-dashed border-zinc-800/70 text-zinc-400 space-y-2">
+                <div className="text-center py-8 px-4 rounded-xl bg-[#08090d]/60 border border-white/[0.05] text-zinc-400 space-y-2 mt-2">
                   <MessageSquare className="w-6 h-6 mx-auto text-zinc-500 opacity-60" />
                   <p className="text-xs font-semibold text-zinc-300">Nenhuma conversa recente</p>
                   <p className="text-[11px] text-zinc-500">Inicie uma conversa direta pela lista de amigos.</p>
@@ -347,34 +312,39 @@ export const HomeView: React.FC = () => {
                         setActiveDm(friend.id);
                         setActiveTab('messages');
                       }}
-                      className="flex items-center justify-between p-3 rounded-xl hover:bg-zinc-900/70 border border-transparent hover:border-zinc-800/80 transition-all cursor-pointer group"
+                      className="flex items-center justify-between py-3 border-b border-white/[0.04] last:border-b-0 hover:bg-white/[0.02] px-2 rounded-xl transition-colors cursor-pointer group"
                     >
                       <div className="flex items-center gap-3.5 min-w-0">
-                        <Avatar name={friend.name} status={friend.status} size="md" />
+                        <Avatar
+                          name={friend.name}
+                          avatarUrl={friend.avatarUrl}
+                          status={friend.status}
+                          size="md"
+                          shapeClassName="rounded-xl"
+                          showStatus={false}
+                        />
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-semibold text-zinc-200 group-hover:text-white truncate">
+                          <div className="flex items-center">
+                            <span className="text-sm font-semibold text-white group-hover:text-white truncate">
                               {friend.name}
                             </span>
-                            <span className="text-[11px] text-zinc-500 font-mono">
+                            <span className="text-xs text-zinc-400 font-mono ml-2">
                               {friend.tag}
                             </span>
                           </div>
-                          <p className="text-xs text-zinc-400 group-hover:text-zinc-300 truncate max-w-sm mt-0.5">
+                          <p className="text-xs text-zinc-400 group-hover:text-zinc-300 truncate max-w-md mt-0.5">
                             {dm.lastMessage}
                           </p>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-3 shrink-0 ml-2">
-                        <span className="text-[11px] text-zinc-500 font-mono">
+                        <span className="text-xs text-zinc-500 font-mono">
                           {dm.timestamp}
                         </span>
                         {dm.unreadCount > 0 ? (
                           <Badge count={dm.unreadCount} />
-                        ) : (
-                          <MessageSquare className="w-3.5 h-3.5 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   );
@@ -384,12 +354,12 @@ export const HomeView: React.FC = () => {
           </section>
 
           {/* Card: Suas Comunidades com Estado Vazio Elegante */}
-          <section className="bg-[#12151c]/80 border border-zinc-800/80 rounded-2xl p-5 shadow-lg flex flex-col">
-            <div className="flex items-center justify-between mb-3.5 pb-2.5 border-b border-zinc-800/60">
+          <section className="bg-[#0d0f15]/90 border border-white/[0.07] rounded-2xl p-5 shadow-xl flex flex-col">
+            <div className="flex items-center justify-between mb-3.5">
               <div className="flex items-center gap-2">
-                <Users className="w-4 h-4 text-rose-400" />
-                <h2 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
-                  Suas Comunidades
+                <Users className="w-4 h-4 text-rose-500" />
+                <h2 className="text-xs font-bold text-white uppercase tracking-wider">
+                  SUAS COMUNIDADES
                 </h2>
               </div>
               <span className="text-xs text-zinc-500 font-mono">
@@ -398,42 +368,24 @@ export const HomeView: React.FC = () => {
             </div>
 
             {mockCommunities.length === 0 ? (
-              /* Estado Vazio Elegante para Comunidades */
-              <div className="text-center py-7 px-5 bg-zinc-900/40 rounded-xl border border-dashed border-zinc-800/80 flex flex-col items-center">
-                <div className="w-12 h-12 rounded-2xl bg-[#171a23] border border-zinc-800 flex items-center justify-center text-zinc-400 mb-3 shadow-inner">
-                  <Compass className="w-6 h-6 text-rose-400" />
+              /* Estado Vazio Minimalista e Elegante */
+              <div className="rounded-xl bg-[#08090d]/60 border border-white/[0.05] py-9 px-6 flex flex-col items-center justify-center text-center">
+                <div className="w-12 h-12 rounded-xl bg-white/[0.03] border border-white/[0.07] flex items-center justify-center text-zinc-400 mb-3 shadow-inner">
+                  <Users className="w-5 h-5 text-zinc-400" />
                 </div>
-                <h3 className="text-xs font-bold text-zinc-200">
-                  Nenhuma comunidade participando
+                <h3 className="text-sm font-semibold text-zinc-200">
+                  Nenhuma comunidade
                 </h3>
-                <p className="text-[11px] text-zinc-400 mt-1 max-w-sm">
-                  Crie seu próprio servidor ou explore hubs temáticos para reunir seus amigos e compartilhar canais de voz.
+                <p className="text-xs text-zinc-500 mt-1 max-w-xs">
+                  Você não participa de nenhuma comunidade no momento.
                 </p>
-                <div className="flex items-center gap-2.5 mt-4">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('communities')}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700/80 text-zinc-200 hover:text-white text-xs font-medium border border-zinc-700/60 transition-colors cursor-pointer"
-                  >
-                    <Compass className="w-3.5 h-3.5 text-zinc-400" />
-                    <span>Explorar Comunidades</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('communities')}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 hover:text-rose-200 text-xs font-semibold border border-rose-500/30 transition-colors cursor-pointer"
-                  >
-                    <PlusCircle className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Criar Comunidade</span>
-                  </button>
-                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 {mockCommunities.map((comm) => (
                   <div
                     key={comm.id}
-                    className="bg-zinc-900/60 border border-zinc-800/90 hover:border-zinc-700/80 rounded-xl p-3.5 transition-all flex flex-col justify-between group shadow-sm"
+                    className="bg-[#08090d]/80 border border-white/[0.06] hover:border-white/[0.12] rounded-xl p-3.5 transition-all flex flex-col justify-between group shadow-sm"
                   >
                     <div className="flex items-start justify-between gap-3 mb-2.5">
                       <div className="flex items-center gap-3 min-w-0">
@@ -459,7 +411,7 @@ export const HomeView: React.FC = () => {
                     </div>
 
                     {/* Atalhos para Canais Rápidos */}
-                    <div className="space-y-1 pt-2 border-t border-zinc-800/60">
+                    <div className="space-y-1 pt-2 border-t border-white/[0.05]">
                       {comm.channels.slice(0, 2).map((ch) => (
                         <button
                           key={ch.id}
@@ -469,7 +421,7 @@ export const HomeView: React.FC = () => {
                             setActiveChannel(ch.id);
                             setActiveTab('communities');
                           }}
-                          className="w-full flex items-center justify-between px-2.5 py-1 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 transition-colors text-left cursor-pointer"
+                          className="w-full flex items-center justify-between px-2.5 py-1 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04] transition-colors text-left cursor-pointer"
                         >
                           <span className="flex items-center gap-1.5 truncate">
                             {ch.type === 'text' ? (
@@ -489,118 +441,98 @@ export const HomeView: React.FC = () => {
           </section>
         </div>
 
-        {/* Coluna Direita: Lista de Amigos Refinada (5 colunas) */}
-        <div className="lg:col-span-5 space-y-4">
-          <section className="bg-[#12151c]/80 border border-zinc-800/80 rounded-2xl p-5 shadow-lg flex flex-col">
+        {/* Coluna Direita: Lista de Amigos Refinada (5 colunas ~ 40%) */}
+        <div className="lg:col-span-5">
+          <section className="bg-[#0d0f15]/90 border border-white/[0.07] rounded-2xl p-5 shadow-xl flex flex-col h-full">
             {/* Cabeçalho de Amigos */}
-            <div className="flex items-center justify-between mb-3.5 pb-2.5 border-b border-zinc-800/60">
+            <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <Gamepad2 className="w-4 h-4 text-emerald-400" />
-                <h2 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
-                  Amigos ({friends.length})
+                <h2 className="text-xs font-bold text-white uppercase tracking-wider">
+                  AMIGOS ({friends.length})
                 </h2>
               </div>
 
-              {/* Botão Adicionar Amigo */}
+              {/* Botão + Adicionar em Pill carmesim suave */}
               <button
                 type="button"
                 onClick={openAddFriendModal}
-                className="relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium transition-colors shadow-sm cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white text-xs font-medium border border-rose-500/40 hover:border-rose-500/60 transition-all cursor-pointer shadow-sm shadow-rose-950/50"
               >
-                <UserPlus className="w-3.5 h-3.5" />
+                <UserPlus className="w-3.5 h-3.5 text-rose-400" />
                 <span>Adicionar</span>
                 {incomingRequestsCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center animate-pulse">
+                  <span className="w-4 h-4 bg-rose-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center ml-1">
                     {incomingRequestsCount}
                   </span>
                 )}
               </button>
             </div>
 
-            {/* Aviso de Modo Demonstração (se não autenticado) */}
-            {!isAuthenticated && (
-              <div className="mb-3.5 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between gap-2 text-xs text-amber-200">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  <span>Modo Demonstração ativo</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={openAuthModal}
-                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold transition-colors text-[11px] cursor-pointer"
-                >
-                  Conectar
-                </button>
-              </div>
-            )}
-
-            {/* Filtros e Busca de Amigos */}
-            <div className="space-y-2.5 mb-3.5">
-              {/* Segmented Control de Filtro */}
-              <div className="flex items-center justify-between p-0.5 rounded-xl bg-zinc-900/90 border border-zinc-800/80 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setFriendFilter('all')}
-                  className={`flex-1 py-1 rounded-lg text-center transition-colors cursor-pointer ${
-                    friendFilter === 'all'
-                      ? 'bg-zinc-800 text-white font-medium shadow-xs'
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  Todos ({friends.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFriendFilter('online')}
-                  className={`flex-1 py-1 rounded-lg text-center transition-colors cursor-pointer ${
-                    friendFilter === 'online'
-                      ? 'bg-zinc-800 text-white font-medium shadow-xs'
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  Online ({onlineFriendsCount})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFriendFilter('gaming')}
-                  className={`flex-1 py-1 rounded-lg text-center transition-colors cursor-pointer ${
-                    friendFilter === 'gaming'
-                      ? 'bg-zinc-800 text-white font-medium shadow-xs'
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  Em Jogo ({gamingFriendsCount})
-                </button>
-              </div>
-
-              {/* Barra de Busca de Amigos */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                <input
-                  type="text"
-                  value={friendSearch}
-                  onChange={(e) => setFriendSearch(e.target.value)}
-                  placeholder="Buscar amigo por nome ou tag..."
-                  className="w-full bg-zinc-900/80 text-zinc-200 placeholder-zinc-500 text-xs pl-8.5 pr-8 py-2 rounded-xl border border-zinc-800 focus:border-rose-500/60 focus:outline-hidden transition-colors"
-                />
-                {friendSearch && (
-                  <button
-                    type="button"
-                    onClick={() => setFriendSearch('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 p-0.5 rounded cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
+            {/* Segmented Control de Filtro */}
+            <div className="flex items-center gap-1 p-1 rounded-xl bg-[#08090d]/80 border border-white/[0.05] mt-3">
+              <button
+                type="button"
+                onClick={() => setFriendFilter('all')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${
+                  friendFilter === 'all'
+                    ? 'bg-rose-950/40 border border-rose-500/40 text-white font-medium shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
+                }`}
+              >
+                Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setFriendFilter('online')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${
+                  friendFilter === 'online'
+                    ? 'bg-rose-950/40 border border-rose-500/40 text-white font-medium shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
+                }`}
+              >
+                Online
+              </button>
+              <button
+                type="button"
+                onClick={() => setFriendFilter('gaming')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${
+                  friendFilter === 'gaming'
+                    ? 'bg-rose-950/40 border border-rose-500/40 text-white font-medium shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
+                }`}
+              >
+                Em Jogo
+              </button>
             </div>
 
-            {/* Lista Rolável de Amigos */}
-            <div className="space-y-1 overflow-y-auto max-h-[500px] pr-1">
+            {/* Barra de Busca de Amigos em Pill */}
+            <div className="relative flex items-center mt-3 mb-2">
+              <Search className="w-3.5 h-3.5 absolute left-3 text-zinc-500 pointer-events-none" />
+              <input
+                type="text"
+                value={friendSearch}
+                onChange={(e) => setFriendSearch(e.target.value)}
+                placeholder="Buscar amigo por nome ou tag..."
+                className="w-full bg-[#08090d]/80 border border-white/[0.06] focus:border-rose-500/50 rounded-xl pl-9 pr-8 py-2 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none transition-colors"
+              />
+              {friendSearch && (
+                <button
+                  type="button"
+                  onClick={() => setFriendSearch('')}
+                  className="absolute right-2.5 text-zinc-500 hover:text-zinc-300 p-0.5 rounded cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Lista de Amigos com Divisores Finos e Ações */}
+            <div className="overflow-y-auto max-h-[520px]">
               {filteredFriends.length === 0 ? (
                 <div className="text-center py-10 px-4 space-y-3">
-                  <div className="w-12 h-12 rounded-2xl bg-zinc-900/60 border border-zinc-800 flex items-center justify-center mx-auto text-zinc-500">
-                    <Users className="w-6 h-6 text-rose-400/80" />
+                  <div className="w-12 h-12 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mx-auto text-zinc-500">
+                    <Users className="w-5 h-5 text-rose-400/80" />
                   </div>
                   <div className="space-y-1">
                     <h4 className="text-xs font-semibold text-zinc-300">
@@ -612,22 +544,12 @@ export const HomeView: React.FC = () => {
                         : 'Adicione amigos no NEXUS para chamadas de voz e mensagens diretas.'}
                     </p>
                   </div>
-                  {!friendSearch && (
-                    <button
-                      type="button"
-                      onClick={openAddFriendModal}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium transition-colors shadow-xs cursor-pointer"
-                    >
-                      <UserPlus className="w-3.5 h-3.5" />
-                      <span>Adicionar Amigo</span>
-                    </button>
-                  )}
                 </div>
               ) : (
                 filteredFriends.map((friend) => (
                   <div
                     key={friend.id}
-                    className="relative flex items-center justify-between p-2.5 rounded-xl hover:bg-zinc-900/70 border border-transparent hover:border-zinc-800/80 transition-all group"
+                    className="flex items-center justify-between py-3 border-b border-white/[0.04] last:border-b-0 hover:bg-white/[0.02] px-2 rounded-xl transition-colors group"
                   >
                     <div
                       onClick={() => {
@@ -645,29 +567,40 @@ export const HomeView: React.FC = () => {
                       }}
                       className="flex items-center gap-3 min-w-0 cursor-pointer flex-1"
                     >
-                      <Avatar name={friend.name} avatarUrl={friend.avatarUrl} status={friend.status} size="sm" />
+                      <Avatar
+                        name={friend.name}
+                        avatarUrl={
+                          friend.avatarUrl ||
+                          (friend.username?.toLowerCase() === currentUser.username?.toLowerCase() ||
+                           friend.name?.toLowerCase() === currentUser.username?.toLowerCase() ||
+                           friend.name === currentUser.displayName
+                            ? currentUser.avatarUrl
+                            : undefined)
+                        }
+                        status={friend.status}
+                        size="md"
+                        shapeClassName="rounded-xl"
+                        showStatus={false}
+                      />
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-semibold text-zinc-200 group-hover:text-white truncate">
+                        <div className="flex items-center">
+                          <span className="text-sm font-semibold text-white group-hover:text-white truncate">
                             {friend.name}
                           </span>
-                          <span className="text-[11px] text-zinc-500 font-mono">
-                            {friend.tag}
+                          <span className="text-xs text-zinc-400 font-mono ml-2">
+                            @{friend.username || friend.tag.replace('#', '')}
                           </span>
                         </div>
-                        <p className="text-[11px] truncate max-w-[170px] mt-0.5 text-zinc-400">
-                          {friend.activity ? (
-                            <span className="text-emerald-400 font-medium">
-                              {friend.activity}
-                            </span>
-                          ) : (
-                            friend.customStatus || 'Disponível'
-                          )}
-                        </p>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                          <span className="text-xs text-zinc-400 font-normal truncate">
+                            {friend.activity || friend.customStatus || 'Disponível'}
+                          </span>
+                        </div>
                       </div>
                     </div>
 
-                    {/* Botões de Ação de Amigos */}
+                    {/* Botões de Ação de Amigos (Telefone verde, Mensagem, Mais) */}
                     <div className="flex items-center gap-1 shrink-0 ml-2">
                       <Tooltip content="Iniciar Chamada" position="left">
                         <button
@@ -679,10 +612,10 @@ export const HomeView: React.FC = () => {
                               username: friend.username || friend.name,
                             });
                           }}
-                          className="p-1.5 rounded-lg text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/15 transition-colors cursor-pointer active:scale-95"
+                          className="p-2 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 rounded-lg transition-colors cursor-pointer"
                           title={`Ligar para ${friend.name}`}
                         >
-                          <Phone className="w-3.5 h-3.5" />
+                          <Phone className="w-4 h-4" />
                         </button>
                       </Tooltip>
 
@@ -698,9 +631,10 @@ export const HomeView: React.FC = () => {
                               setActiveTab('messages');
                             }
                           }}
-                          className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
+                          className="p-2 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors cursor-pointer"
+                          title="Enviar Mensagem"
                         >
-                          <MessageSquare className="w-3.5 h-3.5" />
+                          <MessageSquare className="w-4 h-4" />
                         </button>
                       </Tooltip>
 
@@ -714,10 +648,10 @@ export const HomeView: React.FC = () => {
                               openFriendMenuId === friend.id ? null : friend.id
                             );
                           }}
-                          className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
+                          className="p-2 text-zinc-500 hover:text-zinc-300 hover:bg-white/5 rounded-lg transition-colors cursor-pointer"
                           title="Mais Opções"
                         >
-                          <MoreVertical className="w-3.5 h-3.5" />
+                          <MoreVertical className="w-4 h-4" />
                         </button>
 
                         {openFriendMenuId === friend.id && (
@@ -750,7 +684,7 @@ export const HomeView: React.FC = () => {
                               }}
                               className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors text-left cursor-pointer"
                             >
-                              <UserMinus className="w-3.5 h-3.5" />
+                              <UserMinus className="w-3.5 h-3.5 text-rose-400" />
                               <span>Remover Amigo</span>
                             </button>
                             <button
@@ -761,7 +695,7 @@ export const HomeView: React.FC = () => {
                               }}
                               className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors text-left cursor-pointer"
                             >
-                              <Ban className="w-3.5 h-3.5" />
+                              <Ban className="w-3.5 h-3.5 text-rose-400" />
                               <span>Bloquear</span>
                             </button>
                           </div>

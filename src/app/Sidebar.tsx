@@ -50,14 +50,17 @@ export const Sidebar: React.FC = () => {
 
   return (
     <aside
-      className={`h-full bg-[#0e1015] border-r border-zinc-800/80 flex flex-col justify-between shrink-0 transition-all duration-200 select-none ${
+      className={`h-full bg-[#090b10] border-r border-white/[0.06] flex flex-col justify-between shrink-0 transition-all duration-200 select-none relative overflow-hidden ${
         isSidebarCollapsed ? 'w-16' : 'w-60'
       }`}
     >
+      {/* Sutil ambient glow avermelhado no canto inferior esquerdo */}
+      <div className="pointer-events-none absolute -bottom-10 -left-10 w-44 h-44 bg-rose-600/[0.07] rounded-full blur-3xl" />
+
       {/* Top Section: Nav items */}
-      <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="flex flex-col flex-1 overflow-hidden relative z-10">
         {/* Toggle Collapse Header */}
-        <div className="h-10 border-b border-zinc-800/60 px-3 flex items-center justify-between">
+        <div className="h-10 border-b border-white/[0.05] px-3.5 flex items-center justify-between">
           {!isSidebarCollapsed && (
             <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">
               Navegação
@@ -70,7 +73,7 @@ export const Sidebar: React.FC = () => {
             <button
               type="button"
               onClick={toggleSidebar}
-              className="p-1 rounded-lg hover:bg-zinc-800/80 text-zinc-400 hover:text-zinc-200 transition-colors mx-auto cursor-pointer"
+              className="p-1 rounded-lg hover:bg-white/[0.05] text-zinc-400 hover:text-zinc-200 transition-colors mx-auto cursor-pointer"
             >
               {isSidebarCollapsed ? (
                 <ChevronRight className="w-4 h-4" />
@@ -82,7 +85,7 @@ export const Sidebar: React.FC = () => {
         </div>
 
         {/* Primary Tabs */}
-        <div className="p-2 space-y-1">
+        <div className="p-2.5 space-y-1.5">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -97,16 +100,16 @@ export const Sidebar: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium transition-colors cursor-pointer ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
                     isActive
-                      ? 'bg-zinc-900/90 text-white border-l-2 border-rose-500 shadow-sm'
-                      : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
+                      ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white shadow-[0_0_15px_rgba(244,63,94,0.12)]'
+                      : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
                   } ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}
                 >
                   <div className="relative flex items-center justify-center">
                     <Icon
                       className={`w-4 h-4 shrink-0 ${
-                        isActive ? 'text-rose-400' : 'text-zinc-400'
+                        isActive ? 'text-rose-500' : 'text-zinc-400'
                       }`}
                     />
                     {isSidebarCollapsed && item.badge && item.badge > 0 ? (
@@ -130,15 +133,22 @@ export const Sidebar: React.FC = () => {
 
         {/* Lateral Communities Quick Library (Steam inspired) */}
         {!isSidebarCollapsed && (
-          <div className="flex-1 overflow-y-auto px-2 py-3 border-t border-zinc-800/60">
-            <div className="px-3 pb-2 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex items-center justify-between">
+          <div className="flex-1 overflow-y-auto px-2.5 py-3 border-t border-white/[0.05]">
+            <div className="px-2 pb-2 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex items-center justify-between">
               <span>Sua Biblioteca</span>
-              <span className="text-[10px] text-zinc-500 font-mono">{mockCommunities.length}</span>
+              <button
+                type="button"
+                onClick={() => setActiveTab('communities')}
+                title="Criar ou explorar comunidades"
+                className="w-4 h-4 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 border border-white/[0.06] flex items-center justify-center text-xs leading-none transition-colors cursor-pointer"
+              >
+                +
+              </button>
             </div>
 
             {mockCommunities.length === 0 ? (
-              <div className="px-3 py-4 text-center text-zinc-500">
-                <p className="text-[11px]">Nenhuma comunidade</p>
+              <div className="px-2 py-3 text-zinc-500">
+                <p className="text-xs text-zinc-500">Nenhuma comunidade</p>
               </div>
             ) : (
               <div className="space-y-1">
@@ -154,8 +164,8 @@ export const Sidebar: React.FC = () => {
                       }}
                       className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-xs transition-colors text-left cursor-pointer ${
                         isSelected
-                          ? 'bg-zinc-900 text-white font-medium border-l-2 border-rose-500'
-                          : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
+                          ? 'bg-rose-950/30 text-white font-medium border border-rose-500/30'
+                          : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'
                       }`}
                     >
                       <div
