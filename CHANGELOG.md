@@ -30,7 +30,7 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
   - Script síncrono no `<head>` do HTML que elimina completamente flashes do tema padrão ao inicializar.
 - **Seletor de Canais de Atualização (Stable & Beta):**
   - Opção no menu Sobre & Atualizações permitindo ao usuário alternar entre o canal **Estável (Padrão)** e o canal **Beta / Nightly**.
-  - Persistência protegida contra reinicializações e manifestos isolados assinados por chaves Minisign independentes (`latest.json` e `latest-nightly.json`).
+  - Persistência protegida contra reinicializações e manifestos isolados assinados com Minisign (`latest.json` e `latest-nightly.json`).
 - **Segurança Criptográfica TOFU Ed25519:**
   - Validação de integridade da chave pública do servidor AWS em conexões HTTPS/WSS.
   - Tela interativa `ServerApprovalView` para confirmação manual explícita pelo usuário caso ocorra alteração na identidade do servidor remoto.

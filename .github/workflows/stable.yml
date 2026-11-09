@@ -3,8 +3,13 @@ name: NEXUS Stable Release
 on:
   workflow_dispatch:
     inputs:
+      target_ref:
+        description: 'Branch ou Commit SHA oficial homologado para compilação'
+        required: true
+        default: 'release/v0.2.0'
+        type: string
       version:
-        description: 'Versão SemVer Oficial (ex: 0.2.0)'
+        description: 'Versão SemVer Oficial (deve ser estritamente 0.2.0)'
         required: true
         default: '0.2.0'
         type: string
@@ -27,10 +32,37 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Repository at Target Ref
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.inputs.target_ref }}
           fetch-depth: 0
+
+      - name: Strict Origin & Version Verification Guard
+        shell: pwsh
+        run: |
+          $expectedVersion = "${{ github.event.inputs.version }}".Trim()
+          if ($expectedVersion -ne "0.2.0") {
+            Write-Error "[FALHA CRÍTICA] A versão informada '$expectedVersion' não é 0.2.0! O workflow Stable v0.2.0 rejeita qualquer outra versão."
+            exit 1
+          }
+
+          $headSha = (git rev-parse HEAD).Trim()
+          Write-Host "[INFO] Commit HEAD sob compilação: $headSha"
+
+          $pkgJson = Get-Content package.json | ConvertFrom-Json
+          $tauriJson = Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json
+          $versionTs = Get-Content src/version.ts -Raw
+
+          Write-Host "[INFO] package.json version: $($pkgJson.version)"
+          Write-Host "[INFO] tauri.conf.json version: $($tauriJson.version)"
+
+          if ($pkgJson.version -ne "0.2.0" -or $tauriJson.version -ne "0.2.0" -or -not ($versionTs -match "APP_VERSION = '0.2.0'")) {
+            Write-Error "[FALHA CRÍTICA] Inconsistência nos metadados de versão do commit! Todos os arquivos devem estar sincronizados em 0.2.0 antes do build."
+            exit 1
+          }
+
+          Write-Host "[OK] Todas as verificações de guarda de origem e versionamento foram validadas com sucesso."
 
       - name: Setup Node.js (v22)
         uses: actions/setup-node@v4
@@ -51,8 +83,8 @@ jobs:
       - name: Install NPM Dependencies
         run: npm ci
 
-      - name: Apply Stable Version
-        run: node scripts/set-nightly-version.cjs "${{ github.event.inputs.version }}"
+      - name: Run Automated Test Verification
+        run: npm test
 
       - name: Build Frontend
         run: npm run build
@@ -83,6 +115,43 @@ jobs:
       - name: Strict Security Audit of Artifacts
         run: node scripts/audit-nightly-artifacts.cjs
 
+      - name: Validate Artifacts Integrity Before Publishing
+        shell: pwsh
+        run: |
+          $ver = "${{ github.event.inputs.version }}"
+          $nsisDir = "src-tauri/target/release/bundle/nsis"
+          $exeFiles = Get-ChildItem -Path $nsisDir -Filter "*$ver*-setup.exe"
+          $sigFiles = Get-ChildItem -Path $nsisDir -Filter "*$ver*-setup.exe.sig"
+
+          if ($exeFiles.Count -eq 0) {
+            Write-Error "[FALHA CRÍTICA] Instalador NSIS da versão $ver não foi encontrado em $nsisDir."
+            exit 1
+          }
+
+          $exe = $exeFiles[0]
+          if ($exe.Length -lt 10MB) {
+            Write-Error "[FALHA CRÍTICA] Instalador $($exe.Name) tem tamanho anormalmente baixo ($($exe.Length) bytes)."
+            exit 1
+          }
+
+          if ($sigFiles.Count -eq 0) {
+            Write-Error "[FALHA CRÍTICA] Arquivo de assinatura .sig da versão $ver não foi encontrado em $nsisDir."
+            exit 1
+          }
+
+          if (-not (Test-Path "latest.json")) {
+            Write-Error "[FALHA CRÍTICA] Manifesto latest.json não foi gerado na raiz."
+            exit 1
+          }
+
+          $manifest = Get-Content "latest.json" | ConvertFrom-Json
+          if ($manifest.version -ne $ver) {
+            Write-Error "[FALHA CRÍTICA] Versão do latest.json ($($manifest.version)) diverge de $ver."
+            exit 1
+          }
+
+          Write-Host "[OK] Artefatos validados: $($exe.Name) ($([math]::Round($exe.Length/1MB, 2)) MB), Assinatura e Manifesto prontos para publicação."
+
       - name: Prepare Markdown Release Notes Body
         shell: pwsh
         run: |
@@ -111,6 +180,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.event.inputs.version }}
+          target_commitish: ${{ github.sha }}
           name: NEXUS v${{ github.event.inputs.version }} (Stable)
           body_path: release-notes-body.md
           draft: false

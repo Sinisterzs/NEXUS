@@ -26,7 +26,7 @@ A interface foi reconstruída com foco em usabilidade e organização para Windo
 ### 3. Distribuição Dual: Seletor de Canais Stable & Beta
 - **Escolha Direta nas Configurações:** Os usuários podem escolher receber apenas versões de produção homologadas (**Canal Estável**) ou antecipar novidades e correções experimentais (**Canal Beta / Nightly**).
 - **Persistência Multi-Camada:** A preferência de canal é gravada de forma atômica no Tauri Store e mantida entre reinicializações, impedindo o retorno indesejado ao canal padrão.
-- **Manifestos Isolados com Minisign:** Cada canal possui seu próprio manifesto (`latest.json` para Stable e `latest-nightly.json` para Beta), assinados digitalmente por chaves criptográficas distintas.
+- **Manifestos Isolados com Minisign:** Cada canal possui seu próprio manifesto (`latest.json` para Stable e `latest-nightly.json` para Beta), ambos validados e assinados digitalmente pela chave pública oficial Minisign do projeto.
 
 ### 4. Segurança Criptográfica & Isolamento de Dados
 - **TOFU Ed25519 (Trust On First Use):** O cliente desktop valida criptograficamente a chave pública Ed25519 do backend AWS em toda conexão HTTPS/WSS. Qualquer alteração ou desvio na identidade é bloqueado preventivamente com a tela interativa `ServerApprovalView`.
