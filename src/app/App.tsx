@@ -29,7 +29,17 @@ export const App: React.FC = () => {
   const networkStatus = useAppStore((state) => state.networkStatus);
   const isAuthModalOpen = useAppStore((state) => state.isAuthModalOpen);
   const closeAuthModal = useAppStore((state) => state.closeAuthModal);
+  const checkSession = useAppStore((state) => state.checkSession);
   const [rustBackendReady, setRustBackendReady] = useState(false);
+  const [startupTimedOut, setStartupTimedOut] = useState(false);
+
+  useEffect(() => {
+    // Safety timer for startup splash (7 seconds) to prevent infinite loading
+    const timer = setTimeout(() => {
+      setStartupTimedOut(true);
+    }, 7000);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     // Apply appearance attributes to document element in real-time
@@ -94,8 +104,48 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTab]);
 
-  // 1. Splash / Carregamento Inicial (nunca piscar workspace desautenticado)
-  if (!isInitialized || authStatus === 'initializing') {
+  // 1. Splash / Carregamento Inicial (com timeout de segurança recuperável para evitar loading infinito)
+  if (!isInitialized || authStatus === 'initializing' || (networkStatus.server_reachability === 'connecting' && !onlineUser)) {
+    if (startupTimedOut) {
+      return (
+        <div className="flex flex-col items-center justify-center h-screen w-screen bg-nexus-bg text-nexus-text select-none p-6">
+          <div className="w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-xl shadow-lg mb-3">
+            !
+          </div>
+          <p className="text-xs font-semibold text-nexus-text">A inicialização está demorando mais do que o esperado</p>
+          <p className="text-[10px] text-nexus-muted mt-1 text-center max-w-xs font-mono">
+            Não foi possível concluir a verificação inicial de conectividade.
+          </p>
+          <div className="flex items-center gap-2 mt-4">
+            <button
+              onClick={() => {
+                setStartupTimedOut(false);
+                checkSession();
+              }}
+              className="px-3 py-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors cursor-pointer"
+            >
+              Tentar novamente
+            </button>
+            <button
+              onClick={() => {
+                useAppStore.setState({
+                  isInitialized: true,
+                  backendAvailable: false,
+                  networkStatus: {
+                    ...networkStatus,
+                    server_reachability: 'server_unreachable',
+                  },
+                });
+              }}
+              className="px-3 py-1.5 rounded-lg bg-nexus-accent hover:bg-rose-700 text-xs font-semibold text-white transition-colors cursor-pointer"
+            >
+              Abrir opções de rede
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-center justify-center h-screen w-screen bg-nexus-bg text-nexus-text select-none">
         <div className="w-12 h-12 rounded-xl bg-nexus-accent flex items-center justify-center text-white font-extrabold text-xl shadow-lg mb-3 animate-pulse">

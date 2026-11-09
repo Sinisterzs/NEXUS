@@ -40,44 +40,52 @@ export const ConnectionBanner: React.FC = () => {
 
   // 1. Private Network Disconnected (Tailscale not running, stopped, or needs login)
   if (networkStatus.server_reachability === 'network_disconnected') {
+    const isHttps = networkStatus.server_url.startsWith('https://');
     return (
       <div className="bg-rose-500/10 border-b border-rose-500/25 px-3 py-1.5 flex items-center justify-between text-xs text-rose-200 select-none animate-fadeIn">
         <div className="flex items-center gap-2">
           <WifiOff className="w-3.5 h-3.5 text-rose-400 shrink-0" />
           <span>
-            {networkStatus.tailscale_state === 'needs_login'
+            {isHttps
+              ? 'Sem conexão com a internet. Operando em modo offline com SQLite.'
+              : networkStatus.tailscale_state === 'needs_login'
               ? 'Autenticação necessária no Tailscale. Abra o aplicativo para autorizar seu dispositivo.'
               : 'Rede privada Tailscale desconectada. Operando em modo offline com SQLite.'}
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => openTailscale()}
-            className="flex items-center gap-1 text-[11px] font-semibold text-rose-200 hover:text-white underline cursor-pointer"
-          >
-            <ExternalLink className="w-3 h-3" />
-            {networkStatus.tailscale_state === 'needs_login' ? 'Entrar no Tailscale' : 'Abrir Tailscale'}
-          </button>
+          {!isHttps && (
+            <button
+              onClick={() => openTailscale()}
+              className="flex items-center gap-1 text-[11px] font-semibold text-rose-200 hover:text-white underline cursor-pointer"
+            >
+              <ExternalLink className="w-3 h-3" />
+              {networkStatus.tailscale_state === 'needs_login' ? 'Entrar no Tailscale' : 'Abrir Tailscale'}
+            </button>
+          )}
           <button
             onClick={() => checkSession()}
             className="flex items-center gap-1 text-[11px] font-semibold text-rose-300 hover:text-white underline cursor-pointer"
           >
             <RefreshCw className="w-3 h-3" />
-            Reconectar
+            {isHttps ? 'Tentar Reconectar' : 'Reconectar'}
           </button>
         </div>
       </div>
     );
   }
 
-  // 2. Server Unreachable (Tailscale is OK, but host backend is offline)
+  // 2. Server Unreachable
   if (networkStatus.server_reachability === 'server_unreachable') {
+    const isHttps = networkStatus.server_url.startsWith('https://');
     return (
       <div className="bg-amber-500/10 border-b border-amber-500/25 px-3 py-1.5 flex items-center justify-between text-xs text-amber-200 select-none animate-fadeIn">
         <div className="flex items-center gap-2">
           <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span>
-            Servidor NEXUS indisponível no computador principal. Suas mensagens e dados locais estão preservados no SQLite.
+            {isHttps
+              ? 'Servidor NEXUS indisponível pela internet. Suas mensagens e dados locais estão preservados no SQLite.'
+              : 'Servidor NEXUS indisponível no computador principal. Suas mensagens e dados locais estão preservados no SQLite.'}
           </span>
         </div>
         <button

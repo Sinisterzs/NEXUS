@@ -4,7 +4,7 @@ export const DEFAULT_NETWORK_STATUS: NetworkStatus = {
   tailscale_installed: false,
   tailscale_service_running: false,
   tailscale_authenticated: false,
-  tailscale_state: 'stopped',
+  tailscale_state: 'idle',
   tailscale_ips: [],
   tailscale_self_name: null,
   tailscale_auth_url: null,
@@ -41,7 +41,7 @@ class NetworkManager {
         console.log('[NetworkManager] Evento de rede OFFLINE disparado pelo sistema operacional.');
         this.updateStatus({
           ...this.lastStatus,
-          server_reachability: 'network_disconnected',
+          server_reachability: 'server_unreachable',
           server_latency_ms: null,
         });
       });
@@ -67,7 +67,7 @@ class NetworkManager {
     });
   }
 
-  async checkNetwork(): Promise<NetworkStatus> {
+  async checkNetwork(includeTailscale = false): Promise<NetworkStatus> {
     if (this.isChecking) {
       return this.lastStatus;
     }
@@ -75,7 +75,9 @@ class NetworkManager {
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      const status = await invoke<NetworkStatus>('network_get_status');
+      const status = await invoke<NetworkStatus>('network_get_status', {
+        includeTailscale,
+      });
       this.updateStatus(status);
 
       if (status.server_reachability === 'connected') {

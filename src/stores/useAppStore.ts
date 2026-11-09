@@ -291,7 +291,7 @@ interface AppState {
   clearAuthError: () => void;
 
   // Network & Tailscale Actions
-  checkNetwork: () => Promise<NetworkStatus>;
+  checkNetwork: (includeTailscale?: boolean) => Promise<NetworkStatus>;
   openTailscale: () => Promise<void>;
   setServerAddress: (url: string) => Promise<void>;
   approveServer: () => Promise<void>;
@@ -438,6 +438,8 @@ function createAuthenticatedState(
   };
 }
 
+let isCheckingSessionInProgress = false;
+
 export const useAppStore = create<AppState>((set, get) => ({
   isInitialized: false,
   authStatus: 'initializing',
@@ -570,8 +572,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           set({ backendAvailable: true });
           const currentMode = get().authMode;
           const currentStatus = get().authStatus;
-          if (currentMode === 'reconnecting' || currentStatus === 'offline') {
-            console.log('[useAppStore] Servidor restabelecido via Tailscale. Reconectando sessão...');
+          const isInitialized = get().isInitialized;
+          // Only trigger automatic reconnection if already initialized (background reconnect),
+          // avoiding duplicate/competing calls during startup sequence!
+          if (isInitialized && (currentMode === 'reconnecting' || currentStatus === 'offline')) {
+            console.log('[useAppStore] Conexão com o servidor restabelecida. Reconectando sessão...');
             get().checkSession();
           }
         } else {
@@ -583,7 +588,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
 
       // Restore session or determine connectivity status before marking as initialized
-      await get().checkSession();
+      // Guarded by a strict safety timeout (6s) to ensure initialization always concludes cleanly
+      await Promise.race([
+        get().checkSession(),
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            console.warn('[useAppStore] Timeout de segurança atingido na verificação inicial.');
+            resolve();
+          }, 6000);
+        }),
+      ]);
+
+      // If still connecting after session check/timeout, fallback to server_unreachable
+      if (get().networkStatus.server_reachability === 'connecting') {
+        set({
+          networkStatus: {
+            ...get().networkStatus,
+            server_reachability: 'server_unreachable',
+          },
+        });
+      }
     } catch (err) {
       console.error('[useAppStore] Error during initializeStore:', err);
       set({ authStatus: 'unauthenticated', authMode: 'offline_demo' });
@@ -593,8 +617,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  checkNetwork: async () => {
-    const status = await networkManager.checkNetwork();
+  checkNetwork: async (includeTailscale?: boolean) => {
+    const status = await networkManager.checkNetwork(includeTailscale);
     set({ networkStatus: status });
     return status;
   },
@@ -629,6 +653,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   checkSession: async () => {
+    if (isCheckingSessionInProgress) {
+      return;
+    }
+    isCheckingSessionInProgress = true;
     try {
       const netStatus = await networkManager.checkNetwork();
       set({ networkStatus: netStatus });
@@ -743,6 +771,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           },
         });
       }
+    } finally {
+      isCheckingSessionInProgress = false;
     }
   },
 

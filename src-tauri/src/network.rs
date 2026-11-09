@@ -277,15 +277,45 @@ pub fn save_persisted_server_url(url: &str) -> Result<(), String> {
     )
 }
 
+pub const OFFICIAL_SERVER_ID: &str =
+    "nexus-id-6a2d70e5c08d48566d6e1d7749359de11eba6dc8fa3743c01d59411b4d7e7092";
+
 pub fn load_persisted_server_url() -> Option<String> {
     if let Ok(lock) = PERSISTED_API_BASE.read() {
         if let Some(ref val) = *lock {
-            return Some(val.clone());
+            if val != "http://100.86.96.35:3001" {
+                return Some(val.clone());
+            }
         }
     }
     let config = load_persisted_network_config()?;
     let url = config.server_url?;
     let validated = validate_server_url(&url).ok()?;
+
+    // Automatic migration: If the persisted server is the old default Tailscale endpoint (100.86.96.35),
+    // ONLY migrate to DEFAULT_API_BASE if it corresponds to the official server (or unassigned/cold start),
+    // strictly preserving intentional custom private configurations.
+    if validated == "http://100.86.96.35:3001" {
+        let is_official_or_unassigned = match config.approved_server_id.as_deref() {
+            Some(id) => id == OFFICIAL_SERVER_ID,
+            None => true,
+        };
+
+        if is_official_or_unassigned {
+            let public_default = crate::auth::DEFAULT_API_BASE.to_string();
+            let _ = save_persisted_network_config(
+                &public_default,
+                config.approved_server_id.as_deref(),
+                config.approved_public_key.as_deref(),
+                config.approved_node_key.as_deref(),
+            );
+            if let Ok(mut lock) = PERSISTED_API_BASE.write() {
+                *lock = Some(public_default.clone());
+            }
+            return Some(public_default);
+        }
+    }
+
     if let Ok(mut lock) = PERSISTED_API_BASE.write() {
         *lock = Some(validated.clone());
     }
@@ -607,14 +637,31 @@ pub async fn verify_channel_bound_server_identity(
 }
 
 #[tauri::command]
-pub async fn network_get_status() -> Result<NetworkStatus, String> {
+pub async fn network_get_status(include_tailscale: Option<bool>) -> Result<NetworkStatus, String> {
+    // Determine current target server URL first
+    let current_base = crate::auth::get_api_base();
+    let mut active_url = current_base.clone();
+    let is_public_https = active_url.starts_with("https://");
+
+    // Only query Tailscale daemon if:
+    // 1) Explicitly requested by caller (e.g. settings / diagnostic refresh)
+    // 2) The user is explicitly configured with a private Tailscale / local address
+    let should_query_tailscale = match include_tailscale {
+        Some(explicit) => explicit,
+        None => !is_public_https,
+    };
+
     let cli_opt = find_tailscale_cli();
     let installed = cli_opt.is_some();
 
     let mut service_running = false;
     let mut authenticated = false;
     let mut state_str = if installed {
-        "stopped".to_string()
+        if should_query_tailscale {
+            "stopped".to_string()
+        } else {
+            "idle".to_string()
+        }
     } else {
         "not_installed".to_string()
     };
@@ -623,7 +670,7 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
     let mut auth_url: Option<String> = None;
     let mut detected_peers: Vec<TailscalePeerSummary> = Vec::new();
 
-    if installed {
+    if installed && should_query_tailscale {
         match query_tailscale_status_raw() {
             Ok(json) => {
                 service_running = true;
@@ -650,7 +697,6 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
                         }
                     }
                 }
-
 
                 // Parse peers to discover potential Nexus server
                 if let Some(peer_map) = json.get("Peer").and_then(|v| v.as_object()) {
@@ -729,9 +775,6 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
         }
     }
 
-    // Determine current target server URL
-    let current_base = crate::auth::get_api_base();
-    let mut active_url = current_base.clone();
     let mut server_latency: Option<u64> = None;
     let mut reachability = "server_unreachable".to_string();
     let mut pending_server_identity: Option<VerifiedServerIdentity> = None;
@@ -787,12 +830,9 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
         }
     }
 
-    if reachability != "connected" && reachability != "needs_approval" {
-        // 2. Fallback: Automatic discovery among potential candidates on private Tailnet / local:
-        // - Online Tailscale peers labeled as likely servers
-        // - Local Tailscale IPs of Self (backend running on local Tailscale interface)
-        // - Local loopback (backend running locally)
-        // - Other online Tailscale peers
+    // 2. Fallback: Only scan private candidates if configured server is on a private network!
+    // For users configured with public HTTPS, avoid unprompted scanning of private Tailscale peers.
+    if reachability != "connected" && reachability != "needs_approval" && !is_public_https {
         let mut candidates: Vec<String> = Vec::new();
 
         // Pass 0: Default public HTTPS server if not already active_url
@@ -1393,7 +1433,7 @@ pub(crate) mod tests {
         clear_persisted_server_url_for_tests();
 
         // When no server is approved yet:
-        let status = network_get_status().await.expect("network_get_status must succeed");
+        let status = network_get_status(None).await.expect("network_get_status must succeed");
         println!(
             "[Test] Live status reachability: {}, server_url: {}, pending_id: {:?}",
             status.server_reachability,
@@ -1416,12 +1456,99 @@ pub(crate) mod tests {
         assert_eq!(approved.server_id, pending.server_id);
 
         // After approval, network_get_status must report connected:
-        let status_after = network_get_status()
+        let status_after = network_get_status(None)
             .await
             .expect("network_get_status after approval must succeed");
         assert_eq!(status_after.server_reachability, "connected");
 
         // Cleanup
+        clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+    }
+
+    #[tokio::test]
+    async fn test_network_status_public_https_bypasses_tailscale_probe() {
+        use crate::auth::clear_authenticated_server_origin;
+
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+
+        // Default endpoint is https://nexus-api.dynv6.net
+        let status = network_get_status(None).await.expect("network_get_status must succeed");
+        assert!(status.server_url.starts_with("https://"));
+        // Tailscale state is idle because it was never queried or started
+        assert_eq!(status.tailscale_state, "idle");
+        assert!(status.detected_peers.is_empty(), "Private peers must not be queried for public HTTPS");
+    }
+
+    #[test]
+    fn test_legacy_tailscale_default_url_migration() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        clear_persisted_server_url_for_tests();
+
+        // Case 1: Migrate when corresponding to official server ID
+        let _ = save_persisted_network_config(
+            "http://100.86.96.35:3001",
+            Some(OFFICIAL_SERVER_ID),
+            Some("legacy-key"),
+            None,
+        );
+        let resolved_official = load_persisted_server_url().expect("Must resolve URL");
+        assert_eq!(resolved_official, crate::auth::DEFAULT_API_BASE);
+
+        clear_persisted_server_url_for_tests();
+
+        // Case 2: Migrate when unassigned (cold start / unapproved)
+        let _ = save_persisted_network_config(
+            "http://100.86.96.35:3001",
+            None,
+            None,
+            None,
+        );
+        let resolved_unassigned = load_persisted_server_url().expect("Must resolve URL");
+        assert_eq!(resolved_unassigned, crate::auth::DEFAULT_API_BASE);
+
+        clear_persisted_server_url_for_tests();
+
+        // Case 3: Preserve intentional custom private configuration
+        let _ = save_persisted_network_config(
+            "http://100.86.96.35:3001",
+            Some("custom-private-server-id"),
+            Some("custom-key"),
+            None,
+        );
+        let resolved_custom = load_persisted_server_url().expect("Must resolve URL");
+        assert_eq!(
+            resolved_custom, "http://100.86.96.35:3001",
+            "Intentional custom private configuration must be preserved"
+        );
+
+        clear_persisted_server_url_for_tests();
+    }
+
+    #[tokio::test]
+    async fn test_https_init_flow_with_tailscale_states() {
+        use crate::auth::clear_authenticated_server_origin;
+
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+
+        // 1. HTTPS default init: Tailscale is never queried or waited on (idle)
+        let status = network_get_status(None).await.expect("HTTPS status must succeed");
+        assert!(status.server_url.starts_with("https://"));
+        assert_eq!(status.tailscale_state, "idle");
+        assert!(status.detected_peers.is_empty());
+
+        // 2. Private endpoint when Tailscale is inactive: reports disconnected/unreachable
+        crate::network::set_dynamic_api_base("http://100.100.100.100:3001".to_string());
+        let private_status = network_get_status(None).await.expect("Private status must resolve");
+        assert_ne!(private_status.server_reachability, "connected");
+
         clear_authenticated_server_origin();
         clear_dynamic_api_base_for_tests();
         clear_persisted_server_url_for_tests();

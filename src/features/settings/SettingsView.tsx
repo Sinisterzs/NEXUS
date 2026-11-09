@@ -1326,7 +1326,7 @@ export const SettingsView: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => checkNetwork()}
+                    onClick={() => checkNetwork(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors cursor-pointer"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />

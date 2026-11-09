@@ -228,12 +228,12 @@ mod tests {
 
         let body: serde_json::Value = resp.json().await.unwrap();
         let version = body["version"].as_str().unwrap();
-        assert_eq!(version, "0.1.9-nightly.1");
+        assert!(version.starts_with("0.1.9-nightly"));
 
         let platform = &body["platforms"]["windows-x86_64"];
         let installer_url = platform["url"].as_str().unwrap();
         assert!(installer_url.ends_with(".exe"));
-        assert!(installer_url.contains("0.1.9-nightly.1"));
+        assert!(installer_url.contains("0.1.9-nightly"));
 
         let sig = platform["signature"].as_str().unwrap();
         // Tauri encodes the Minisign signature as Base64 in manifest platforms

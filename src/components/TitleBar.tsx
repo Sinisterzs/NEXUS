@@ -64,14 +64,19 @@ const NetworkStatusBadge: React.FC = () => {
   }
 
   if (reachability === 'network_disconnected') {
+    const isHttps = networkStatus.server_url.startsWith('https://');
     return (
       <button
-        onClick={() => openTailscale()}
-        title="Rede privada Tailscale desconectada. Clique para abrir o Tailscale."
+        onClick={() => (isHttps ? checkSession() : openTailscale())}
+        title={
+          isHttps
+            ? 'Sem conexão com a internet. Clique para tentar reconectar.'
+            : 'Rede privada Tailscale desconectada. Clique para abrir o Tailscale.'
+        }
         className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/40 text-[10px] text-rose-300 hover:text-white hover:bg-rose-500/25 transition-colors cursor-pointer select-none"
       >
         <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
-        <span>Rede privada desconectada</span>
+        <span>{isHttps ? 'Sem conexão' : 'Rede privada desconectada'}</span>
       </button>
     );
   }

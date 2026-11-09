@@ -111,7 +111,7 @@ export const ServerOfflineView: React.FC = () => {
             <h2 className="text-lg font-bold text-nexus-text">Servidor NEXUS Indisponível</h2>
             <p className="text-xs text-nexus-muted mt-1 max-w-md mx-auto">
               {networkStatus.server_url.startsWith('https://')
-                ? 'Não foi possível conectar ao servidor NEXUS pela internet (verifique sua conexão ou se o serviço está em manutenção).'
+                ? 'Não foi possível conectar ao servidor NEXUS pela internet. Verifique sua conexão com a internet ou tente novamente.'
                 : isTailscaleNeedsLogin
                 ? 'Sua rede privada Tailscale precisa de autenticação para alcançar o backend.'
                 : isNetworkDisconnected
@@ -152,7 +152,9 @@ export const ServerOfflineView: React.FC = () => {
           <div className="p-4 rounded-xl bg-nexus-panel/60 border border-nexus-border/60 space-y-3">
             <div>
               <label className="block text-[11px] font-semibold text-nexus-text mb-1">
-                Endereço do Servidor (HTTPS Público ou Tailscale)
+                {networkStatus.server_url.startsWith('https://')
+                  ? 'Endereço do Servidor (HTTPS)'
+                  : 'Endereço do Servidor (MagicDNS ou IP Tailscale)'}
               </label>
               <div className="flex gap-2">
                 <input
@@ -184,10 +186,12 @@ export const ServerOfflineView: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-[11px] text-nexus-muted pt-1">
-              <span>Status Tailscale (Opcional): <strong>{networkStatus.tailscale_installed ? (networkStatus.tailscale_state === 'running' ? 'Ativo' : networkStatus.tailscale_state) : 'Não instalado'}</strong></span>
-              <span>IP Local: <code className="font-mono text-nexus-text">{networkStatus.tailscale_ips[0] || 'Nenhum'}</code></span>
-            </div>
+            {!networkStatus.server_url.startsWith('https://') && (
+              <div className="flex items-center justify-between text-[11px] text-nexus-muted pt-1">
+                <span>Status Tailscale: <strong>{networkStatus.tailscale_installed ? (networkStatus.tailscale_state === 'running' ? 'Ativo' : networkStatus.tailscale_state) : 'Não instalado'}</strong></span>
+                <span>IP Local: <code className="font-mono text-nexus-text">{networkStatus.tailscale_ips[0] || 'Nenhum'}</code></span>
+              </div>
+            )}
           </div>
 
           {/* Action Buttons */}
@@ -202,7 +206,22 @@ export const ServerOfflineView: React.FC = () => {
               <span>{isReconnecting ? 'Reconectando...' : 'Tentar Reconectar'}</span>
             </button>
 
-            {networkStatus.tailscale_installed ? (
+            {networkStatus.server_url.startsWith('https://') ? (
+              addressInput.trim() !== 'https://nexus-api.dynv6.net' ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setAddressInput('https://nexus-api.dynv6.net');
+                    await setServerAddress('https://nexus-api.dynv6.net');
+                    await checkSession();
+                  }}
+                  className="py-2.5 px-4 rounded-xl bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Restaurar Padrão (HTTPS)</span>
+                </button>
+              ) : null
+            ) : networkStatus.tailscale_installed ? (
               <button
                 type="button"
                 onClick={() => openTailscale()}
@@ -211,20 +230,7 @@ export const ServerOfflineView: React.FC = () => {
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>Abrir Tailscale</span>
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={async () => {
-                  setAddressInput('https://nexus-api.dynv6.net');
-                  await setServerAddress('https://nexus-api.dynv6.net');
-                  await checkSession();
-                }}
-                className="py-2.5 px-4 rounded-xl bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Restaurar Padrão (HTTPS)</span>
-              </button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>
