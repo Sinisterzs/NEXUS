@@ -114,10 +114,10 @@ flowchart TD
     end
 
     subgraph Rede P2P ["Comunicação Direta P2P"]
-        Media <-->|Áudio e Tela P2P (DTLS-SRTP)| Peer["Outro Cliente NEXUS"]
+        Media <-->|"Áudio e Tela P2P (DTLS-SRTP)"| Peer
     end
 
-    Store <-->|HTTPS / WSS (Validado com TOFU Ed25519)| Caddy
+    Store <-->|"HTTPS / WSS (Validado com TOFU Ed25519)"| Caddy
     Updater <-->|Verificação de Manifesto e Assinatura| GitHub["GitHub Releases"]
 ```
 
