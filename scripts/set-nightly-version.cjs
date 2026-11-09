@@ -51,7 +51,16 @@ console.log(`[OK] src-tauri/Cargo.toml: version = "${version}"`);
 
 // 4. src/version.ts
 const versionTsPath = path.join(rootDir, 'src', 'version.ts');
-fs.writeFileSync(versionTsPath, `export const APP_VERSION = '${version}';\n`, 'utf8');
+let versionTsContent = fs.readFileSync(versionTsPath, 'utf8');
+if (/export const APP_VERSION = ['"][^'"]+['"];/.test(versionTsContent)) {
+  versionTsContent = versionTsContent.replace(
+    /export const APP_VERSION = ['"][^'"]+['"];/,
+    `export const APP_VERSION = '${version}';`
+  );
+} else {
+  versionTsContent = `export const APP_VERSION = '${version}';\n` + versionTsContent;
+}
+fs.writeFileSync(versionTsPath, versionTsContent, 'utf8');
 console.log(`[OK] src/version.ts: APP_VERSION = '${version}'`);
 
 console.log(`\n[SUCESSO] Todos os arquivos atualizados para ${version}`);
