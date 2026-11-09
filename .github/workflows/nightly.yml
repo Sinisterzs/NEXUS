@@ -68,11 +68,11 @@ jobs:
           }
           Write-Host "Chave de assinatura detectada no repositório."
 
-      - name: Build Native Windows Release with Tauri (NSIS + MSI)
+      - name: Build Native Windows Release with Tauri (NSIS)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx tauri build
+        run: npx tauri build --bundles nsis
 
       - name: Generate Nightly Updater Manifest (latest-nightly.json)
         run: node scripts/generate-nightly-manifest.cjs "${{ github.event.inputs.version }}" "${{ github.event.inputs.release_notes }}"
@@ -109,8 +109,6 @@ jobs:
             src-tauri/target/release/nexus.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe.sig
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/msi/*.msi.sig
             latest-nightly.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
