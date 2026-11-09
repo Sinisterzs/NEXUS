@@ -65,7 +65,7 @@ for (const dir of searchDirs) {
 }
 
 // Verifica também arquivos na raiz que possam ser vinculados
-const rootFiles = ['latest-nightly.json'];
+const rootFiles = ['latest-nightly.json', 'latest.json'];
 for (const file of rootFiles) {
   const fullPath = path.join(rootDir, file);
   if (fs.existsSync(fullPath)) {
