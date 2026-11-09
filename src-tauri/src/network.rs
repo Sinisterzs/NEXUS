@@ -255,6 +255,9 @@ pub fn load_persisted_network_config() -> Option<PersistedNetworkConfig> {
             return Some(val.clone());
         }
     }
+    if cfg!(test) && std::env::var("NEXUS_APP_DATA_DIR").is_err() {
+        return None;
+    }
     let path = get_network_config_path();
     if !path.exists() {
         return None;
@@ -329,8 +332,10 @@ pub fn clear_persisted_server_url_for_tests() {
     if let Ok(mut lock) = PERSISTED_CONFIG_CACHE.write() {
         *lock = None;
     }
-    let path = get_network_config_path();
-    let _ = std::fs::remove_file(path);
+    if std::env::var("NEXUS_APP_DATA_DIR").is_ok() {
+        let path = get_network_config_path();
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

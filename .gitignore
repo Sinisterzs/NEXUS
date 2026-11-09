@@ -38,6 +38,9 @@ logs/
 nexus-server/logs/
 scratch/
 test_homologation_profile/
+test_updater_stage/
+backup_registry_and_config/
+installer/
 backups/
 *.dump
 npm-debug.log*
