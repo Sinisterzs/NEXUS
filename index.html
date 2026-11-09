@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NEXUS</title>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('nexus_theme');
+          if (t === 'midnight-black' || t === 'cyber-slate' || t === 'nexus-dark') {
+            document.documentElement.setAttribute('data-theme', t);
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body class="bg-nexus-bg text-nexus-text antialiased select-none overflow-hidden m-0 p-0 font-sans">
     <div id="root" class="h-screen w-screen flex flex-col"></div>

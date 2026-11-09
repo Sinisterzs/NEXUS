@@ -35,6 +35,18 @@ export const mockCommunityMessages: Record<string, ChatMessage[]> = {};
 
 export const mockCallParticipants: CallParticipant[] = [];
 
+export function getInitialTheme(): 'nexus-dark' | 'midnight-black' | 'cyber-slate' {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const saved = window.localStorage.getItem('nexus_theme');
+      if (saved === 'midnight-black' || saved === 'cyber-slate' || saved === 'nexus-dark') {
+        return saved;
+      }
+    } catch {}
+  }
+  return 'nexus-dark';
+}
+
 export const initialAppSettings: AppSettings = {
   profile: {
     displayName: 'Alex Vance',
@@ -44,7 +56,7 @@ export const initialAppSettings: AppSettings = {
     customStatus: 'Compilando Rust 1.99 no Windows 11',
   },
   appearance: {
-    theme: 'nexus-dark',
+    theme: getInitialTheme(),
     compactMode: false,
     fontSize: 'base',
   },

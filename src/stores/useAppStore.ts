@@ -14,6 +14,7 @@ import {
   DirectConversationDto,
   DirectMessageDto,
   NetworkStatus,
+  PersistedPreferences,
 } from '../lib/types';
 import {
   mockCurrentUser,
@@ -383,7 +384,8 @@ const getInitialTab = (): MainTab => {
 function createAuthenticatedState(
   state: AppState,
   user: AuthUserProfile,
-  accountAvatarUrl?: string
+  accountAvatarUrl?: string,
+  accountPrefs?: PersistedPreferences
 ) {
   const normUser = normalizeAuthUser(user);
   const previousAccountId = state.onlineUser?.id;
@@ -395,6 +397,60 @@ function createAuthenticatedState(
     (!isDifferentAccount ? state.settings?.profile?.avatarUrl : undefined);
 
   syncAccountRepositories(normUser.id);
+
+  const updatedSettings = accountPrefs
+    ? {
+        profile: {
+          ...state.settings.profile,
+          username: normUser.username,
+          displayName: normUser.displayName || normUser.username,
+          tag: undefined,
+          bio: normUser.bio || '',
+          customStatus: normUser.customStatus || '',
+          avatarUrl: resolvedAvatar,
+        },
+        appearance: {
+          theme: accountPrefs.theme || state.settings.appearance.theme,
+          compactMode: accountPrefs.compactMode ?? state.settings.appearance.compactMode,
+          fontSize: accountPrefs.fontSize || state.settings.appearance.fontSize,
+        },
+        audioVideo: {
+          ...state.settings.audioVideo,
+          inputDevice: accountPrefs.inputDevice || state.settings.audioVideo.inputDevice,
+          outputDevice: accountPrefs.outputDevice || state.settings.audioVideo.outputDevice,
+          inputSensitivity: accountPrefs.inputSensitivity ?? state.settings.audioVideo.inputSensitivity,
+          outputVolume: accountPrefs.outputVolume ?? state.settings.audioVideo.outputVolume,
+          noiseSuppression: accountPrefs.noiseSuppression ?? state.settings.audioVideo.noiseSuppression,
+          echoCancellation: accountPrefs.echoCancellation ?? state.settings.audioVideo.echoCancellation,
+        },
+        notifications: {
+          desktopAlerts: accountPrefs.desktopAlerts ?? state.settings.notifications.desktopAlerts,
+          soundEffects: accountPrefs.soundEffects ?? state.settings.notifications.soundEffects,
+          mentionsOnly: accountPrefs.mentionsOnly ?? state.settings.notifications.mentionsOnly,
+          dndMode: accountPrefs.dndMode ?? state.settings.notifications.dndMode,
+        },
+        privacy: {
+          allowDmsFrom: accountPrefs.allowDmsFrom || state.settings.privacy.allowDmsFrom,
+          showGameActivity: accountPrefs.showGameActivity ?? state.settings.privacy.showGameActivity,
+          streamerMode: accountPrefs.streamerMode ?? state.settings.privacy.streamerMode,
+        },
+      }
+    : {
+        ...state.settings,
+        profile: {
+          ...state.settings.profile,
+          username: normUser.username,
+          displayName: normUser.displayName || normUser.username,
+          tag: undefined,
+          bio: normUser.bio || '',
+          customStatus: normUser.customStatus || '',
+          avatarUrl: resolvedAvatar,
+        },
+      };
+
+  if (typeof document !== 'undefined' && updatedSettings.appearance.theme) {
+    document.documentElement.setAttribute('data-theme', updatedSettings.appearance.theme);
+  }
 
   return {
     authStatus: 'authenticated' as const,
@@ -428,18 +484,7 @@ function createAuthenticatedState(
       hasPassword: normUser.hasPassword,
       hasGoogle: normUser.hasGoogle,
     },
-    settings: {
-      ...state.settings,
-      profile: {
-        ...state.settings.profile,
-        username: normUser.username,
-        displayName: normUser.displayName || normUser.username,
-        tag: undefined,
-        bio: normUser.bio || '',
-        customStatus: normUser.customStatus || '',
-        avatarUrl: resolvedAvatar,
-      },
-    },
+    settings: updatedSettings,
     isAuthModalOpen: false,
     authError: null,
   };
@@ -525,6 +570,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       updateService.setChannel(channel);
 
       const prefs = await settingsRepository.loadPreferences();
+
+      // Immediately apply authoritative theme and font attributes to prevent flashes
+      if (typeof document !== 'undefined' && prefs.theme) {
+        document.documentElement.setAttribute('data-theme', prefs.theme);
+        if (prefs.fontSize) document.documentElement.setAttribute('data-font-size', prefs.fontSize);
+        if (typeof prefs.compactMode === 'boolean') {
+          document.documentElement.setAttribute('data-compact', String(prefs.compactMode));
+        }
+      }
 
       // Check if URL search param exists
       const urlTab = typeof window !== 'undefined'
@@ -711,7 +765,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (user) {
         await settingsRepository.flushSave();
         const accPrefs = await settingsRepository.loadPreferences(user.id);
-        set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl));
+        set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs));
 
         // Initialize social friends & real-time presence
         get().loadFriends();
@@ -805,7 +859,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await settingsRepository.flushSave();
       const user = await authRepository.login(login, password);
       const accPrefs = await settingsRepository.loadPreferences(user.id);
-      set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl));
+      set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs));
 
       // Initialize friends & real-time presence
       get().loadFriends();
@@ -827,7 +881,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await settingsRepository.flushSave();
       const user = await authRepository.register(username, email, password, displayName);
       const accPrefs = await settingsRepository.loadPreferences(user.id);
-      set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl));
+      set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs));
 
       // Initialize friends & real-time presence
       get().loadFriends();
@@ -850,7 +904,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const user = await authRepository.loginGoogle();
       const accPrefs = await settingsRepository.loadPreferences(user.id);
       set((state) => ({
-        ...createAuthenticatedState(state, user, accPrefs.avatarUrl),
+        ...createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs),
         isGoogleLoading: false,
       }));
 
@@ -1837,6 +1891,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updateAppearance: (appearanceUpdate) => {
+    const currentTheme = get().settings.appearance.theme;
+    const newTheme = (appearanceUpdate.theme ?? currentTheme) as 'nexus-dark' | 'midnight-black' | 'cyber-slate';
+
+    if (appearanceUpdate.theme) {
+      if (typeof document !== 'undefined') {
+        document.documentElement.setAttribute('data-theme', newTheme);
+      }
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          window.localStorage.setItem('nexus_theme', newTheme);
+        } catch {}
+      }
+    }
+
     set((state) => ({
       settings: {
         ...state.settings,
@@ -1844,7 +1912,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
     }));
     settingsRepository.savePreferences({
-      theme: appearanceUpdate.theme ?? get().settings.appearance.theme,
+      theme: newTheme,
       compactMode: appearanceUpdate.compactMode ?? get().settings.appearance.compactMode,
       fontSize: appearanceUpdate.fontSize ?? get().settings.appearance.fontSize,
     });

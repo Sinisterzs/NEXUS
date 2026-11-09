@@ -5,6 +5,11 @@ const STORE_FILENAME = 'nexus_settings.json';
 const MAX_AVATAR_STORAGE_CHARS = 262_144; // 256 KB cap for local preference storage
 const APP_UPDATE_CHANNEL_KEY = 'app_update_channel';
 const LOCAL_STORAGE_CHANNEL_KEY = 'nexus_app_update_channel';
+const APP_THEME_KEY = 'app_theme';
+const LOCAL_STORAGE_THEME_KEY = 'nexus_theme';
+
+export type ThemeId = 'nexus-dark' | 'midnight-black' | 'cyber-slate';
+const VALID_THEMES: ThemeId[] = ['nexus-dark', 'midnight-black', 'cyber-slate'];
 
 export const DEFAULT_PREFERENCES: PersistedPreferences = {
   theme: initialAppSettings.appearance.theme,
@@ -156,6 +161,119 @@ class SettingsRepository {
   }
 
   /**
+   * Retrieves the persisted global theme ('nexus-dark' | 'midnight-black' | 'cyber-slate')
+   * with installation-wide scope, checking top-level store, account prefs, and localStorage fallback.
+   */
+  async getTheme(): Promise<ThemeId> {
+    try {
+      const store = await this.getStore();
+      if (store && this.isTauri) {
+        // 1. Top-level store key has highest precedence for installation-wide theme
+        const topLevel = (await store.get(APP_THEME_KEY)) as string | null;
+        if (topLevel && VALID_THEMES.includes(topLevel as ThemeId)) {
+          return topLevel as ThemeId;
+        }
+
+        // 2. Check current account or offline_demo preference
+        const accKey = this.getStoreKey();
+        const accSaved = (await store.get(accKey)) as Partial<PersistedPreferences> | null;
+        if (accSaved?.theme && VALID_THEMES.includes(accSaved.theme as ThemeId)) {
+          return accSaved.theme as ThemeId;
+        }
+
+        // 3. Check legacy preferences key
+        const legacy = (await store.get('preferences')) as Partial<PersistedPreferences> | null;
+        if (legacy?.theme && VALID_THEMES.includes(legacy.theme as ThemeId)) {
+          return legacy.theme as ThemeId;
+        }
+
+        // 4. Inspect any existing account preference in store (e.g. from previously logged-in session)
+        try {
+          const allKeys = await store.keys();
+          for (const k of allKeys) {
+            if (typeof k === 'string' && k.startsWith('preferences:')) {
+              const item = (await store.get(k)) as Partial<PersistedPreferences> | null;
+              if (item?.theme && VALID_THEMES.includes(item.theme as ThemeId)) {
+                return item.theme as ThemeId;
+              }
+            }
+          }
+        } catch {}
+      }
+
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const topLevelLocal = window.localStorage.getItem(LOCAL_STORAGE_THEME_KEY);
+        if (topLevelLocal && VALID_THEMES.includes(topLevelLocal as ThemeId)) {
+          return topLevelLocal as ThemeId;
+        }
+
+        const accLocalKey = this.getLocalStorageKey();
+        const accRaw = window.localStorage.getItem(accLocalKey);
+        if (accRaw) {
+          try {
+            const parsed = JSON.parse(accRaw);
+            if (parsed.theme && VALID_THEMES.includes(parsed.theme as ThemeId)) {
+              return parsed.theme as ThemeId;
+            }
+          } catch {}
+        }
+
+        const legacyLocal = window.localStorage.getItem('nexus_preferences');
+        if (legacyLocal) {
+          try {
+            const parsed = JSON.parse(legacyLocal);
+            if (parsed.theme && VALID_THEMES.includes(parsed.theme as ThemeId)) {
+              return parsed.theme as ThemeId;
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.warn('[SettingsRepository] Error retrieving theme, defaulting to nexus-dark:', err);
+    }
+
+    return (DEFAULT_PREFERENCES.theme as ThemeId) || 'nexus-dark';
+  }
+
+  /**
+   * Persists the theme both at top-level installation scope and syncs to account preferences and localStorage
+   */
+  async setTheme(theme: ThemeId): Promise<void> {
+    const validTheme: ThemeId = VALID_THEMES.includes(theme) ? theme : 'nexus-dark';
+
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-theme', validTheme);
+    }
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        window.localStorage.setItem(LOCAL_STORAGE_THEME_KEY, validTheme);
+      } catch {}
+    }
+
+    try {
+      const store = await this.getStore();
+      if (store && this.isTauri) {
+        // 1. Write installation-level key
+        await store.set(APP_THEME_KEY, validTheme);
+
+        // 2. Also update current account preferences
+        const acc = this.resolveAccount();
+        const currentPrefs = await this.loadPreferences(acc);
+        const merged = this.validateAndMerge({ ...currentPrefs, theme: validTheme });
+        await store.set(this.getStoreKey(acc), merged);
+        await store.save();
+      } else if (typeof window !== 'undefined') {
+        const acc = this.resolveAccount();
+        const currentPrefs = await this.loadPreferences(acc);
+        const merged = this.validateAndMerge({ ...currentPrefs, theme: validTheme });
+        window.localStorage.setItem(this.getLocalStorageKey(acc), JSON.stringify(merged));
+      }
+    } catch (err) {
+      console.error('[SettingsRepository] Error persisting theme:', err);
+    }
+  }
+
+  /**
    * Loads persisted preferences scoped by accountId with safe default validation
    */
   async loadPreferences(accountId?: string): Promise<PersistedPreferences> {
@@ -164,16 +282,20 @@ class SettingsRepository {
     const localKey = this.getLocalStorageKey(acc);
 
     try {
+      const globalTheme = await this.getTheme();
+      const globalChannel = await this.getUpdateChannel();
+
       const store = await this.getStore();
 
       if (store && this.isTauri) {
-        const globalChannel = (await store.get(APP_UPDATE_CHANNEL_KEY)) as 'stable' | 'beta' | null;
-
         const saved = (await store.get(storeKey)) as Partial<PersistedPreferences> | null;
         if (saved && typeof saved === 'object') {
           const merged = this.validateAndMerge(saved);
           if (globalChannel === 'beta' || globalChannel === 'stable') {
             merged.updateChannel = globalChannel;
+          }
+          if (globalTheme) {
+            merged.theme = globalTheme;
           }
           return merged;
         }
@@ -184,20 +306,27 @@ class SettingsRepository {
             if (globalChannel === 'beta' || globalChannel === 'stable') {
               merged.updateChannel = globalChannel;
             }
+            if (globalTheme) {
+              merged.theme = globalTheme;
+            }
             return merged;
           }
         }
-        if (globalChannel === 'beta' || globalChannel === 'stable') {
-          return { ...DEFAULT_PREFERENCES, updateChannel: globalChannel };
-        }
+        return {
+          ...DEFAULT_PREFERENCES,
+          theme: globalTheme,
+          updateChannel: globalChannel,
+        };
       } else if (typeof window !== 'undefined') {
-        const globalLocal = window.localStorage.getItem(LOCAL_STORAGE_CHANNEL_KEY) as 'stable' | 'beta' | null;
         const raw = window.localStorage.getItem(localKey);
         if (raw) {
           const parsed = JSON.parse(raw);
           const merged = this.validateAndMerge(parsed);
-          if (globalLocal === 'beta' || globalLocal === 'stable') {
-            merged.updateChannel = globalLocal;
+          if (globalChannel === 'beta' || globalChannel === 'stable') {
+            merged.updateChannel = globalChannel;
+          }
+          if (globalTheme) {
+            merged.theme = globalTheme;
           }
           return merged;
         }
@@ -205,21 +334,27 @@ class SettingsRepository {
           const legacyRaw = window.localStorage.getItem('nexus_preferences');
           if (legacyRaw) {
             const merged = this.validateAndMerge(JSON.parse(legacyRaw));
-            if (globalLocal === 'beta' || globalLocal === 'stable') {
-              merged.updateChannel = globalLocal;
+            if (globalChannel === 'beta' || globalChannel === 'stable') {
+              merged.updateChannel = globalChannel;
+            }
+            if (globalTheme) {
+              merged.theme = globalTheme;
             }
             return merged;
           }
         }
-        if (globalLocal === 'beta' || globalLocal === 'stable') {
-          return { ...DEFAULT_PREFERENCES, updateChannel: globalLocal };
-        }
+        return {
+          ...DEFAULT_PREFERENCES,
+          theme: globalTheme,
+          updateChannel: globalChannel,
+        };
       }
     } catch (err) {
       console.warn('[SettingsRepository] Error loading preferences, falling back to defaults:', err);
     }
 
-    return { ...DEFAULT_PREFERENCES };
+    const fallbackTheme = (typeof window !== 'undefined' && window.localStorage?.getItem(LOCAL_STORAGE_THEME_KEY) as ThemeId) || DEFAULT_PREFERENCES.theme;
+    return { ...DEFAULT_PREFERENCES, theme: fallbackTheme };
   }
 
   /**
@@ -234,6 +369,18 @@ class SettingsRepository {
       ...(this.pendingByAccount[acc] || {}),
       ...updates,
     };
+
+    // Synchronously sync critical UI tokens immediately to DOM and localStorage
+    if (updates.theme && VALID_THEMES.includes(updates.theme as ThemeId)) {
+      if (typeof document !== 'undefined') {
+        document.documentElement.setAttribute('data-theme', updates.theme);
+      }
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          window.localStorage.setItem(LOCAL_STORAGE_THEME_KEY, updates.theme);
+        } catch {}
+      }
+    }
 
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
@@ -274,11 +421,17 @@ class SettingsRepository {
           if (toSave.updateChannel === 'beta' || toSave.updateChannel === 'stable') {
             await store.set(APP_UPDATE_CHANNEL_KEY, toSave.updateChannel);
           }
+          if (toSave.theme && VALID_THEMES.includes(toSave.theme as ThemeId)) {
+            await store.set(APP_THEME_KEY, toSave.theme);
+          }
           await store.set(this.getStoreKey(acc), merged);
           await store.save();
         } else if (typeof window !== 'undefined') {
           if (toSave.updateChannel === 'beta' || toSave.updateChannel === 'stable') {
             window.localStorage.setItem(LOCAL_STORAGE_CHANNEL_KEY, toSave.updateChannel);
+          }
+          if (toSave.theme && VALID_THEMES.includes(toSave.theme as ThemeId)) {
+            window.localStorage.setItem(LOCAL_STORAGE_THEME_KEY, toSave.theme);
           }
           window.localStorage.setItem(this.getLocalStorageKey(acc), JSON.stringify(merged));
         }
