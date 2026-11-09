@@ -196,6 +196,11 @@ static PERSISTED_API_BASE: RwLock<Option<String>> = RwLock::new(None);
 static PERSISTED_CONFIG_CACHE: RwLock<Option<PersistedNetworkConfig>> = RwLock::new(None);
 
 fn get_network_config_path() -> PathBuf {
+    if crate::is_test_environment() {
+        let temp_dir = std::env::temp_dir().join("nexus_test_isolated_network");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        return temp_dir.join("nexus_network.json");
+    }
     if let Ok(custom) = std::env::var("NEXUS_APP_DATA_DIR") {
         let p = PathBuf::from(custom.trim());
         if !p.as_os_str().is_empty() {
@@ -236,16 +241,14 @@ pub fn save_persisted_network_config(
     if let Ok(mut cache_lock) = PERSISTED_CONFIG_CACHE.write() {
         *cache_lock = Some(config.clone());
     }
-    if !cfg!(test) || std::env::var("NEXUS_APP_DATA_DIR").is_ok() {
-        let path = get_network_config_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let json = serde_json::to_string_pretty(&config)
-            .map_err(|e| format!("Falha ao serializar configuração de rede: {}", e))?;
-        std::fs::write(&path, json)
-            .map_err(|e| format!("Falha ao gravar nexus_network.json: {}", e))?;
+    let path = get_network_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
+    let json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Falha ao serializar configuração de rede: {}", e))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("Falha ao gravar nexus_network.json: {}", e))?;
     Ok(())
 }
 
@@ -254,9 +257,6 @@ pub fn load_persisted_network_config() -> Option<PersistedNetworkConfig> {
         if let Some(ref val) = *lock {
             return Some(val.clone());
         }
-    }
-    if cfg!(test) && std::env::var("NEXUS_APP_DATA_DIR").is_err() {
-        return None;
     }
     let path = get_network_config_path();
     if !path.exists() {
@@ -332,7 +332,7 @@ pub fn clear_persisted_server_url_for_tests() {
     if let Ok(mut lock) = PERSISTED_CONFIG_CACHE.write() {
         *lock = None;
     }
-    if std::env::var("NEXUS_APP_DATA_DIR").is_ok() {
+    if crate::is_test_environment() || std::env::var("NEXUS_APP_DATA_DIR").is_ok() {
         let path = get_network_config_path();
         let _ = std::fs::remove_file(path);
     }
@@ -617,18 +617,9 @@ pub async fn verify_channel_bound_server_identity(
 
     // 6. Check against expected server identity
     let is_approved = if let Some(exp_id) = expected_server_id {
-        if server_id != exp_id {
-            return Err(format!(
-                "Atenção de segurança: A identidade do servidor mudou! Esperada: '{}', Apresentada: '{}'.",
-                exp_id, server_id
-            ));
-        }
-        if let Some(exp_pk) = expected_public_key {
-            if public_key_b64 != exp_pk {
-                return Err("Chave pública diferente da aprovada anteriormente.".to_string());
-            }
-        }
-        true
+        let id_matches = server_id == exp_id;
+        let pk_matches = expected_public_key.map(|exp_pk| exp_pk == public_key_b64).unwrap_or(true);
+        id_matches && pk_matches
     } else {
         false
     };

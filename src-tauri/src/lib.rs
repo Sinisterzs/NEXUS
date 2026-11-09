@@ -13,6 +13,49 @@ use tauri::Manager;
 
 static CALL_MIC_CONSENT: AtomicBool = AtomicBool::new(false);
 static SCREEN_CAPTURE_CONSENT: AtomicBool = AtomicBool::new(false);
+static TEST_ENVIRONMENT_OVERRIDE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_test_environment_override(is_test: bool) {
+    TEST_ENVIRONMENT_OVERRIDE.store(is_test, Ordering::SeqCst);
+    if is_test {
+        std::env::set_var("NEXUS_TEST_ENV", "1");
+    }
+}
+
+pub fn is_test_environment() -> bool {
+    // 1. Rust unit tests within the library
+    if cfg!(test) {
+        return true;
+    }
+    // 2. Cargo test binaries located in target/debug/deps or target/release/deps
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_str = exe.to_string_lossy().to_lowercase();
+        if exe_str.contains("target\\debug\\deps")
+            || exe_str.contains("target/debug/deps")
+            || exe_str.contains("target\\release\\deps")
+            || exe_str.contains("target/release/deps")
+        {
+            return true;
+        }
+    }
+    // 3. Cargo test temporary directory set by cargo test harness
+    if std::env::var("CARGO_TARGET_TMPDIR").is_ok() {
+        return true;
+    }
+    // 4. Overrides exclusively allowed in debug/development environments (never in production release)
+    #[cfg(debug_assertions)]
+    {
+        if TEST_ENVIRONMENT_OVERRIDE.load(Ordering::SeqCst) {
+            return true;
+        }
+        if let Ok(val) = std::env::var("NEXUS_TEST_ENV") {
+            if val == "1" || val.eq_ignore_ascii_case("true") {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 pub fn reset_mic_consent() {
     CALL_MIC_CONSENT.store(false, Ordering::SeqCst);

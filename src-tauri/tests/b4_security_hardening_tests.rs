@@ -111,6 +111,7 @@ static TEST_KEYRING_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[test]
 fn test_b4_07_token_origin_binding_prevents_leak_to_unknown_server() {
     let _guard = TEST_KEYRING_MUTEX.lock().unwrap();
+    nexus_lib::set_test_environment_override(true);
     use nexus_lib::auth::{
         clear_authenticated_server_origin, delete_secure_token, get_secure_token,
         record_authenticated_server_origin, save_secure_token,
@@ -151,6 +152,7 @@ fn test_b4_07_token_origin_binding_prevents_leak_to_unknown_server() {
 #[test]
 fn test_b4_08_persisted_origin_binding_survives_cold_start_and_blocks_fake_server() {
     let _guard = TEST_KEYRING_MUTEX.lock().unwrap();
+    nexus_lib::set_test_environment_override(true);
     use nexus_lib::auth::{
         clear_authenticated_server_origin, delete_secure_token, get_secure_token,
         save_secure_token,

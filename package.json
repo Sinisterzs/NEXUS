@@ -1,7 +1,7 @@
 {
   "name": "nexus",
   "private": true,
-  "version": "0.1.9-nightly.4",
+  "version": "0.1.9-nightly.5",
   "type": "module",
   "scripts": {
     "dev": "vite",

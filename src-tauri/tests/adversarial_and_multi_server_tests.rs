@@ -4,6 +4,7 @@ static TEST_MUTEX: Mutex<()> = Mutex::new(());
 #[test]
 fn test_adversarial_relay_proxy_blocked_by_channel_binding() {
     let _guard = TEST_MUTEX.lock().unwrap();
+    nexus_lib::set_test_environment_override(true);
     use base64::prelude::*;
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
@@ -89,6 +90,7 @@ fn test_adversarial_in_path_mitm_demonstration_why_tls_is_required() {
 #[test]
 fn test_two_servers_simulation_rogue_server_never_receives_tokens() {
     let _guard = TEST_MUTEX.lock().unwrap();
+    nexus_lib::set_test_environment_override(true);
     use nexus_lib::auth::{
         clear_authenticated_server_origin, delete_secure_token, get_secure_token,
         record_authenticated_server_identity, save_secure_token_for_origin,

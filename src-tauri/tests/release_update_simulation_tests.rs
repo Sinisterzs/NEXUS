@@ -145,6 +145,7 @@ fn setup_v014_schema_v2_database(db_path: &PathBuf) {
 #[test]
 fn test_sim_01_v014_to_v015_clean_read_without_auto_migration() {
     let _guard = SIMULATION_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    nexus_lib::set_test_environment_override(true);
     let db_path = create_temp_db_path("sim_clean_read");
     setup_v014_schema_v2_database(&db_path);
 
@@ -200,6 +201,7 @@ fn test_sim_01_v014_to_v015_clean_read_without_auto_migration() {
 #[test]
 fn test_sim_02_v014_to_v015_controlled_migration_v2_to_v3() {
     let _guard = SIMULATION_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    nexus_lib::set_test_environment_override(true);
     let db_path = create_temp_db_path("sim_migration_v3");
     setup_v014_schema_v2_database(&db_path);
 
@@ -292,6 +294,7 @@ fn test_sim_02_v014_to_v015_controlled_migration_v2_to_v3() {
 #[test]
 fn test_sim_03_downgrade_and_rollback_recovery() {
     let _guard = SIMULATION_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    nexus_lib::set_test_environment_override(true);
     let db_path = create_temp_db_path("sim_rollback");
     setup_v014_schema_v2_database(&db_path);
 
@@ -323,6 +326,7 @@ fn test_sim_03_downgrade_and_rollback_recovery() {
 #[test]
 fn test_sim_04_token_origin_binding_and_csp() {
     let _guard = SIMULATION_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    nexus_lib::set_test_environment_override(true);
     std::env::set_var("NEXUS_KEYRING_KEY", "test_sim_keyring");
 
     // 1. Token origin binding

@@ -71,20 +71,43 @@ pub fn resolve_and_validate_account_id(
 
 const SERVICE_NAME: &str = "nexus_desktop";
 
+static MOCK_KEYRING: std::sync::RwLock<Option<std::collections::HashMap<String, String>>> =
+    std::sync::RwLock::new(None);
+
+fn mock_keyring_get(key: &str) -> Option<String> {
+    let guard = MOCK_KEYRING.read().ok()?;
+    guard.as_ref().and_then(|m| m.get(key).cloned())
+}
+
+fn mock_keyring_set(key: &str, val: String) {
+    if let Ok(mut guard) = MOCK_KEYRING.write() {
+        if guard.is_none() {
+            *guard = Some(std::collections::HashMap::new());
+        }
+        if let Some(ref mut m) = *guard {
+            m.insert(key.to_string(), val);
+        }
+    }
+}
+
+fn mock_keyring_delete(key: &str) {
+    if let Ok(mut guard) = MOCK_KEYRING.write() {
+        if let Some(ref mut m) = *guard {
+            m.remove(key);
+        }
+    }
+}
+
 pub fn get_session_user_key() -> &'static str {
+    if crate::is_test_environment() {
+        return "session_token_isolated_test";
+    }
     if let Ok(key) = std::env::var("NEXUS_KEYRING_KEY") {
         if key == "test_homologation" {
             return "session_token_homologation_rc1";
         }
     }
-    #[cfg(not(test))]
-    {
-        "session_token"
-    }
-    #[cfg(test)]
-    {
-        "session_token_test_b0_isolated"
-    }
+    "session_token"
 }
 pub const DEFAULT_API_BASE: &str = "https://nexus-api.dynv6.net";
 const DEFAULT_GOOGLE_CLIENT_ID: &str =
@@ -280,6 +303,11 @@ pub fn save_secure_token_for_origin(token: &str, origin: &str) -> Result<(), Str
     let payload = serde_json::to_string(&cred)
         .map_err(|e| format!("Falha ao serializar credencial de sessão: {}", e))?;
 
+    if crate::is_test_environment() {
+        mock_keyring_set(get_session_user_key(), payload);
+        return Ok(());
+    }
+
     let entry = Entry::new(SERVICE_NAME, get_session_user_key())
         .map_err(|e| format!("Falha ao acessar Windows Credential Manager: {}", e))?;
     entry
@@ -306,8 +334,12 @@ pub fn get_secure_token() -> Option<String> {
         }
     }
 
-    let entry = Entry::new(SERVICE_NAME, get_session_user_key()).ok()?;
-    let raw_payload = entry.get_password().ok()?;
+    let raw_payload = if crate::is_test_environment() {
+        mock_keyring_get(get_session_user_key())?
+    } else {
+        let entry = Entry::new(SERVICE_NAME, get_session_user_key()).ok()?;
+        entry.get_password().ok()?
+    };
     let trimmed = raw_payload.trim();
     if trimmed.is_empty() {
         return None;
@@ -390,6 +422,10 @@ pub fn get_secure_token() -> Option<String> {
 /// Deletes stored session token from OS Keyring
 pub fn delete_secure_token() -> Result<(), String> {
     clear_authenticated_server_origin();
+    if crate::is_test_environment() {
+        mock_keyring_delete(get_session_user_key());
+        return Ok(());
+    }
     if let Ok(entry) = Entry::new(SERVICE_NAME, get_session_user_key()) {
         let _ = entry.delete_credential();
     }
