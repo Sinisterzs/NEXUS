@@ -21,7 +21,6 @@ import {
 import { useAppStore } from '../../stores/useAppStore';
 import { mockFriends, mockDirectMessages } from '../../mocks';
 import { Avatar } from '../../components/Avatar';
-import { EmptyState } from '../../components/EmptyState';
 import { Badge } from '../../components/Badge';
 import { Tooltip } from '../../components/Tooltip';
 import { ChatMessage, DbMessage, DirectMessageSummary, DirectMessageDto } from '../../lib/types';
@@ -136,7 +135,7 @@ export const MessagesView: React.FC = () => {
     if (isOnline) {
       loadConversations();
     }
-  }, [isOnline]);
+  }, [isOnline, loadConversations]);
 
   // Select active conversation partner
   const selectedOnlineConv = conversations.find((c) => c.id === activeConversationId);
@@ -237,7 +236,7 @@ export const MessagesView: React.FC = () => {
     }
 
     loadDemoData();
-  }, [isOnline, selectedDemoFriend?.id]);
+  }, [isOnline, selectedDemoFriend, currentUser.displayName]);
 
   // -------------------------------------------------------------
   // Message Sending
@@ -372,28 +371,50 @@ export const MessagesView: React.FC = () => {
     return friend.name.toLowerCase().includes(searchFilter.toLowerCase());
   });
 
+  const activePartnerName = isOnline
+    ? selectedOnlineConv?.other_user.name
+    : selectedDemoFriend?.name;
+
+  const activePartnerUsername = isOnline
+    ? selectedOnlineConv?.other_user.username || selectedOnlineConv?.other_user.tag
+    : selectedDemoFriend?.username || selectedDemoFriend?.tag;
+
+  const activePartnerAvatar = isOnline
+    ? selectedOnlineConv?.other_user.avatarUrl || (selectedOnlineConv?.other_user.username === currentUser.username ? currentUser.avatarUrl : undefined)
+    : selectedDemoFriend?.avatarUrl || (selectedDemoFriend?.username === currentUser.username ? currentUser.avatarUrl : undefined);
+
+  const activePartnerStatus = isOnline
+    ? selectedOnlineConv?.other_user.status
+    : selectedDemoFriend?.status;
+
+  const activePartnerActivity = isOnline
+    ? selectedOnlineConv?.other_user.activity || selectedOnlineConv?.other_user.customStatus || 'Disponível'
+    : selectedDemoFriend?.activity || selectedDemoFriend?.customStatus || 'Disponível';
+
   return (
-    <div className="flex-1 flex overflow-hidden">
-      {/* Lateral Direct Messages List */}
-      <div className="w-64 bg-nexus-surface border-r border-nexus-border flex flex-col shrink-0 select-none">
-        <div className="p-3 border-b border-nexus-border space-y-2">
+    <div className="flex-1 flex overflow-hidden select-none bg-[#07080b] text-zinc-100">
+      {/* 1. Lateral Conversations Column (Width: 288px / w-72) */}
+      <div className="w-72 bg-[#090b10] border-r border-white/[0.06] flex flex-col shrink-0 select-none">
+        {/* Search & New Conversation Header */}
+        <div className="p-3.5 border-b border-white/[0.05] space-y-2.5">
           <div className="relative flex items-center">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 text-nexus-muted pointer-events-none" />
+            <Search className="w-3.5 h-3.5 absolute left-3 text-zinc-500 pointer-events-none" />
             <input
               type="text"
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
               placeholder="Filtrar conversas..."
-              className="w-full bg-nexus-bg text-nexus-text text-xs pl-8 pr-2.5 py-1.5 rounded border border-nexus-border focus:border-nexus-accent focus:outline-none transition-nexus"
+              className="w-full bg-[#0e1118]/80 text-zinc-200 placeholder-zinc-500 text-xs pl-8.5 pr-3 py-2 rounded-xl border border-white/[0.06] focus:border-rose-500/50 focus:outline-none transition-colors"
             />
           </div>
 
           {isOnline && (
             <button
+              type="button"
               onClick={() => setShowFriendsList(!showFriendsList)}
-              className="w-full flex items-center justify-center gap-1.5 py-1 px-2 rounded bg-nexus-panel hover:bg-nexus-panel/80 border border-nexus-border text-xs text-nexus-text font-medium transition-nexus cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white border border-rose-500/40 hover:border-rose-500/60 text-xs font-medium transition-all shadow-sm shadow-rose-950/40 cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5 text-nexus-accent" />
+              <Plus className="w-3.5 h-3.5 text-rose-400" />
               <span>Nova Conversa</span>
             </button>
           )}
@@ -401,31 +422,39 @@ export const MessagesView: React.FC = () => {
 
         {/* Modal/Dropdown for selecting a friend to start a DM */}
         {showFriendsList && isOnline && (
-          <div className="p-2 border-b border-nexus-border bg-nexus-bg space-y-1 max-h-48 overflow-y-auto">
-            <div className="px-2 py-1 text-[10px] font-bold text-nexus-muted uppercase tracking-wider flex justify-between items-center">
+          <div className="p-2.5 border-b border-white/[0.06] bg-[#0c0e14] space-y-1 max-h-52 overflow-y-auto animate-fadeIn">
+            <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex justify-between items-center">
               <span>Selecione um amigo</span>
               <button
+                type="button"
                 onClick={() => setShowFriendsList(false)}
-                className="text-nexus-muted hover:text-white"
+                className="text-zinc-500 hover:text-white p-0.5 rounded cursor-pointer"
               >
                 <X className="w-3 h-3" />
               </button>
             </div>
             {friends.length === 0 ? (
-              <p className="text-[11px] text-nexus-muted px-2 py-2">
-                Nenhum amigo online ou adicionado ainda.
+              <p className="text-xs text-zinc-500 px-2 py-3 text-center">
+                Nenhum amigo adicionado ainda.
               </p>
             ) : (
               friends.map((f) => (
                 <button
                   key={f.id}
+                  type="button"
                   onClick={() => handleStartWithFriend(f.id)}
-                  className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-nexus-panel text-left text-xs text-nexus-text transition-nexus cursor-pointer"
+                  className="w-full flex items-center gap-2.5 p-2 rounded-xl hover:bg-white/[0.04] text-left text-xs text-zinc-200 transition-colors cursor-pointer group"
                 >
-                  <Avatar name={f.name} status={f.status} size="sm" />
+                  <Avatar
+                    name={f.name}
+                    avatarUrl={f.avatarUrl || (f.username === currentUser.username ? currentUser.avatarUrl : undefined)}
+                    status={f.status}
+                    size="sm"
+                    shapeClassName="rounded-xl"
+                  />
                   <div className="flex-1 min-w-0">
-                    <p className="font-semibold truncate">{f.name}</p>
-                    <p className="text-[10px] text-nexus-muted font-mono">{f.tag}</p>
+                    <p className="font-semibold text-white group-hover:text-white truncate">{f.name}</p>
+                    <p className="text-[11px] text-zinc-400 font-mono">@{f.username || f.tag}</p>
                   </div>
                 </button>
               ))
@@ -433,65 +462,82 @@ export const MessagesView: React.FC = () => {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          <div className="px-2 py-1 text-[10px] font-bold text-nexus-muted uppercase tracking-wider flex items-center justify-between">
-            <span>Mensagens Diretas</span>
+        {/* Conversations List */}
+        <div className="flex-1 overflow-y-auto p-2.5 space-y-1">
+          <div className="px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex items-center justify-between">
+            <span>Conversas Diretas</span>
             {isOnline && (
-              <span className="text-[9px] text-emerald-400 font-normal">Ao vivo</span>
+              <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono font-normal">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Ao vivo
+              </span>
             )}
           </div>
 
           {/* ONLINE REAL CONVERSATIONS */}
           {isOnline ? (
             filteredOnlineConvs.length === 0 ? (
-              <div className="px-2 py-6 text-center text-xs text-nexus-muted">
+              <div className="px-3 py-8 text-center text-xs text-zinc-500 space-y-1">
                 {isLoadingConversations ? (
                   <p>Carregando conversas...</p>
                 ) : (
-                  <p>Nenhuma conversa ativa ainda. Clique em "Nova Conversa" para falar com um amigo.</p>
+                  <>
+                    <p className="font-semibold text-zinc-400">Nenhuma conversa ativa</p>
+                    <p className="text-[11px] text-zinc-500">Clique em "Nova Conversa" para falar com um amigo.</p>
+                  </>
                 )}
               </div>
             ) : (
               filteredOnlineConvs.map((conv) => {
                 const isSelected = activeConversationId === conv.id;
+                const other = conv.other_user;
                 const lastMsg = conv.last_message;
                 const lastMsgPreview = lastMsg
                   ? lastMsg.deleted_at
                     ? '[Mensagem apagada]'
                     : lastMsg.content
-                  : 'Nenhuma mensagem';
+                  : 'Nenhuma mensagem recente';
 
                 const timePreview = lastMsg
                   ? formatDateKey(lastMsg.created_at).time
                   : '';
 
+                const effectiveAvatar =
+                  other.avatarUrl ||
+                  (other.username?.toLowerCase() === currentUser.username?.toLowerCase() || other.name === currentUser.displayName
+                    ? currentUser.avatarUrl
+                    : undefined);
+
                 return (
                   <button
                     key={conv.id}
+                    type="button"
                     onClick={() => selectConversation(conv.id)}
-                    className={`w-full flex items-center gap-2.5 p-2 rounded text-left transition-nexus cursor-pointer ${
+                    className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all cursor-pointer group ${
                       isSelected
-                        ? 'bg-nexus-panel text-white border-l-2 border-nexus-accent'
-                        : 'text-nexus-muted hover:bg-nexus-panel/60 hover:text-nexus-text'
+                        ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                        : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 border border-transparent'
                     }`}
                   >
                     <Avatar
-                      name={conv.other_user.name}
-                      status={conv.other_user.status}
-                      size="sm"
+                      name={other.name}
+                      avatarUrl={effectiveAvatar}
+                      status={other.status}
+                      size="md"
+                      shapeClassName="rounded-xl"
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold truncate text-nexus-text">
-                          {conv.other_user.name}
+                        <span className="text-xs font-semibold text-white group-hover:text-white truncate">
+                          {other.name}
                         </span>
                         {timePreview && (
-                          <span className="text-[10px] text-nexus-muted shrink-0 font-mono">
+                          <span className="text-[10px] text-zinc-500 font-mono shrink-0 ml-1">
                             {timePreview}
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] truncate text-nexus-muted">
+                      <p className="text-[11px] text-zinc-400 group-hover:text-zinc-300 truncate mt-0.5">
                         {lastMsgPreview}
                       </p>
                     </div>
@@ -510,26 +556,35 @@ export const MessagesView: React.FC = () => {
               return (
                 <button
                   key={dm.id}
+                  type="button"
                   onClick={() => {
                     setActiveDm(friend.id);
                   }}
-                  className={`w-full flex items-center gap-2.5 p-2 rounded text-left transition-nexus cursor-pointer ${
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all cursor-pointer group ${
                     isSelected
-                      ? 'bg-nexus-panel text-white border-l-2 border-nexus-accent'
-                      : 'text-nexus-muted hover:bg-nexus-panel/60 hover:text-nexus-text'
+                      ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                      : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 border border-transparent'
                   }`}
                 >
-                  <Avatar name={friend.name} status={friend.status} size="sm" />
+                  <Avatar
+                    name={friend.name}
+                    avatarUrl={friend.avatarUrl}
+                    status={friend.status}
+                    size="md"
+                    shapeClassName="rounded-xl"
+                  />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold truncate text-nexus-text">
+                      <span className="text-xs font-semibold text-white group-hover:text-white truncate">
                         {friend.name}
                       </span>
-                      <span className="text-[10px] text-nexus-muted shrink-0">
+                      <span className="text-[10px] text-zinc-500 font-mono shrink-0 ml-1">
                         {dm.timestamp}
                       </span>
                     </div>
-                    <p className="text-[11px] truncate text-nexus-muted">{dm.lastMessage}</p>
+                    <p className="text-[11px] text-zinc-400 group-hover:text-zinc-300 truncate mt-0.5">
+                      {dm.lastMessage}
+                    </p>
                   </div>
                   {dm.unreadCount > 0 && <Badge count={dm.unreadCount} />}
                 </button>
@@ -539,59 +594,49 @@ export const MessagesView: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Conversation Pane */}
+      {/* 2. Main Conversation Pane */}
       {(isOnline && selectedOnlineConv) || (!isOnline && selectedDemoFriend) ? (
-        <div className="flex-1 flex flex-col bg-nexus-bg overflow-hidden">
-          {/* Header */}
-          <div className="h-12 border-b border-nexus-border px-4 flex items-center justify-between bg-nexus-surface shrink-0">
-            <div className="flex items-center gap-3">
+        <div className="flex-1 flex flex-col bg-[#07080b] overflow-hidden">
+          {/* Header Bar */}
+          <div className="h-14 border-b border-white/[0.06] px-5 flex items-center justify-between bg-[#0d0f15]/90 backdrop-blur shrink-0">
+            <div className="flex items-center gap-3.5 min-w-0">
               <Avatar
-                name={
-                  isOnline
-                    ? selectedOnlineConv!.other_user.name
-                    : selectedDemoFriend.name
-                }
-                status={
-                  isOnline
-                    ? selectedOnlineConv!.other_user.status
-                    : selectedDemoFriend.status
-                }
-                size="sm"
+                name={activePartnerName || 'Usuário'}
+                avatarUrl={activePartnerAvatar}
+                status={activePartnerStatus}
+                size="md"
+                shapeClassName="rounded-xl"
+                className="ring-1 ring-white/10"
               />
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-bold text-nexus-text">
-                    {isOnline
-                      ? selectedOnlineConv!.other_user.name
-                      : selectedDemoFriend.name}
+              <div className="min-w-0">
+                <div className="flex items-center">
+                  <h3 className="text-sm font-bold text-white tracking-tight truncate">
+                    {activePartnerName}
                   </h3>
-                  <span className="text-[10px] text-nexus-muted font-mono">
-                    {isOnline
-                      ? selectedOnlineConv!.other_user.tag
-                      : selectedDemoFriend.tag}
+                  {activePartnerUsername && (
+                    <span className="text-xs text-zinc-400 font-mono ml-2 truncate">
+                      @{activePartnerUsername}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                  <span className="text-[11px] text-zinc-400 font-normal truncate">
+                    {activePartnerActivity}
                   </span>
                 </div>
-                <p className="text-[10px] text-nexus-muted truncate">
-                  {isOnline
-                    ? selectedOnlineConv!.other_user.activity ||
-                      selectedOnlineConv!.other_user.customStatus ||
-                      'Disponível'
-                    : selectedDemoFriend.activity ||
-                      selectedDemoFriend.customStatus ||
-                      'Disponível'}
-                </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* Header Actions */}
+            <div className="flex items-center gap-2.5 shrink-0">
               <button
+                type="button"
                 onClick={startQuickCall}
-                className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white font-semibold text-xs transition-nexus shadow-sm shadow-emerald-950/40 cursor-pointer active:scale-95"
-                title={`Iniciar chamada de voz P2P via Tailscale com ${
-                  isOnline ? selectedOnlineConv!.other_user.name : selectedDemoFriend?.name
-                }`}
+                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white text-xs font-medium border border-rose-500/40 hover:border-rose-500/60 transition-all cursor-pointer shadow-sm shadow-rose-950/40 active:scale-95"
+                title={`Iniciar chamada com ${activePartnerName}`}
               >
-                <Phone className="w-3.5 h-3.5" />
+                <Phone className="w-3.5 h-3.5 text-emerald-400" />
                 <span>Ligar</span>
               </button>
             </div>
@@ -599,14 +644,15 @@ export const MessagesView: React.FC = () => {
 
           {/* Real Error Banner */}
           {(localError || dmError) && (
-            <div className="bg-red-500/15 border-b border-red-500/30 px-4 py-2 flex items-center justify-between text-xs text-red-300 shrink-0">
+            <div className="bg-rose-950/40 border-b border-rose-500/30 px-5 py-2.5 flex items-center justify-between text-xs text-rose-200 shrink-0 animate-fadeIn">
               <div className="flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
                 <span>{localError || dmError}</span>
               </div>
               <button
+                type="button"
                 onClick={() => setLocalError(null)}
-                className="text-[11px] text-red-400 hover:text-white underline ml-2 cursor-pointer"
+                className="text-xs text-rose-300 hover:text-white underline ml-2 cursor-pointer"
               >
                 Dispensar
               </button>
@@ -614,14 +660,15 @@ export const MessagesView: React.FC = () => {
           )}
 
           {/* Messages History Pane */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="flex-1 overflow-y-auto p-5 space-y-3.5">
             {/* Online load older messages pagination */}
             {isOnline && activeConversationMessages.length >= 25 && (
               <div className="flex justify-center pb-2">
                 <button
+                  type="button"
                   onClick={() => loadOlderMessages()}
                   disabled={isLoadingMessages}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-nexus-surface hover:bg-nexus-panel border border-nexus-border text-[11px] text-nexus-muted hover:text-nexus-text transition-nexus cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
                 >
                   <ChevronUp className="w-3.5 h-3.5" />
                   <span>Carregar mensagens anteriores</span>
@@ -629,26 +676,22 @@ export const MessagesView: React.FC = () => {
               </div>
             )}
 
-            {/* Header intro */}
-            <div className="flex flex-col items-center justify-center py-6 border-b border-nexus-border/30">
+            {/* Conversation Intro Header */}
+            <div className="flex flex-col items-center justify-center py-8 mb-4 border-b border-white/[0.04] text-center">
               <Avatar
-                name={
-                  isOnline
-                    ? selectedOnlineConv!.other_user.name
-                    : selectedDemoFriend.name
-                }
-                size="lg"
-                className="mb-2"
+                name={activePartnerName || 'Usuário'}
+                avatarUrl={activePartnerAvatar}
+                size="xl"
+                shapeClassName="rounded-2xl"
+                className="mb-3 ring-1 ring-rose-500/50 shadow-[0_0_16px_rgba(244,63,94,0.18)]"
               />
-              <h4 className="text-sm font-bold text-nexus-text">
-                {isOnline
-                  ? selectedOnlineConv!.other_user.name
-                  : selectedDemoFriend.name}
+              <h4 className="text-base font-bold text-white tracking-tight">
+                {activePartnerName}
               </h4>
-              <p className="text-xs text-nexus-muted">
+              <p className="text-xs text-zinc-400 mt-1 max-w-sm">
                 {isOnline
-                  ? `Início da sua conversa privada com @${selectedOnlineConv!.other_user.username}`
-                  : `Histórico local de demonstração com @${selectedDemoFriend.name}`}
+                  ? `Início da sua conversa privada e segura com @${activePartnerUsername}`
+                  : `Histórico local de demonstração com @${activePartnerName}`}
               </p>
             </div>
 
@@ -666,50 +709,53 @@ export const MessagesView: React.FC = () => {
                 const isEditing = editingMessageId === msg.id;
                 const isDeleted = Boolean(msg.deleted_at);
 
+                const authorAvatar = isAuthorMe
+                  ? currentUser.avatarUrl
+                  : activePartnerAvatar;
+
                 return (
                   <React.Fragment key={msg.id}>
                     {showDateDivider && (
-                      <div className="flex items-center my-4">
-                        <div className="flex-1 border-t border-nexus-border/50"></div>
-                        <span className="px-3 text-[10px] font-semibold uppercase tracking-wider text-nexus-muted bg-nexus-panel/60 py-0.5 rounded-full border border-nexus-border/40">
+                      <div className="flex items-center my-5">
+                        <div className="flex-1 border-t border-white/[0.05]" />
+                        <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#111319] border border-white/[0.06] rounded-full">
                           {dateKey}
                         </span>
-                        <div className="flex-1 border-t border-nexus-border/50"></div>
+                        <div className="flex-1 border-t border-white/[0.05]" />
                       </div>
                     )}
 
                     <div
-                      className={`group relative flex items-start gap-3 hover:bg-nexus-surface/30 px-2 rounded transition-nexus ${
-                        compactMode ? 'py-0.5' : 'py-1'
-                      } ${
-                        isGroupedWithPrev
-                          ? compactMode ? 'mt-0 pl-11' : 'mt-0.5 pl-12'
-                          : compactMode ? 'mt-1' : 'mt-2'
+                      className={`group relative flex items-start gap-3.5 hover:bg-white/[0.02] px-3 py-1 rounded-xl transition-all ${
+                        isGroupedWithPrev ? (compactMode ? 'mt-0 pl-12' : 'mt-0.5 pl-12') : 'mt-2.5'
                       }`}
                     >
                       {!isGroupedWithPrev && (
                         <Avatar
-                          name={isAuthorMe ? currentUser.displayName : selectedOnlineConv!.other_user.name}
+                          name={isAuthorMe ? currentUser.displayName : (activePartnerName || 'Usuário')}
+                          avatarUrl={authorAvatar}
                           size="sm"
+                          shapeClassName="rounded-xl"
                           className="shrink-0 mt-0.5"
+                          showStatus={false}
                         />
                       )}
 
                       <div className="flex-1 min-w-0">
                         {!isGroupedWithPrev && (
-                          <div className="flex items-center gap-2 mb-0.5">
+                          <div className="flex items-center gap-2 mb-1">
                             <span
-                              className={`text-xs font-bold ${
-                                isAuthorMe ? 'text-nexus-accent' : 'text-nexus-text'
+                              className={`text-xs font-semibold ${
+                                isAuthorMe ? 'text-rose-400' : 'text-white'
                               }`}
                             >
-                              {isAuthorMe ? currentUser.displayName : selectedOnlineConv!.other_user.name}
+                              {isAuthorMe ? currentUser.displayName : activePartnerName}
                             </span>
-                            <span className="text-[10px] text-nexus-muted font-mono">
+                            <span className="text-[11px] text-zinc-500 font-mono">
                               {time}
                             </span>
                             {msg.edited_at && !isDeleted && (
-                              <span className="text-[9px] text-nexus-muted italic">
+                              <span className="text-[10px] text-zinc-500 italic">
                                 (editado)
                               </span>
                             )}
@@ -726,18 +772,20 @@ export const MessagesView: React.FC = () => {
                                 if (e.key === 'Enter') handleSaveEdit();
                                 if (e.key === 'Escape') handleCancelEdit();
                               }}
-                              className="flex-1 bg-nexus-surface text-xs text-nexus-text px-2.5 py-1 rounded border border-nexus-accent focus:outline-none"
+                              className="flex-1 bg-[#111319] text-xs text-white px-3 py-1.5 rounded-xl border border-rose-500/60 focus:outline-none"
                               autoFocus
                             />
                             <button
+                              type="button"
                               onClick={handleSaveEdit}
-                              className="px-2 py-1 bg-nexus-accent text-white text-[10px] font-bold rounded"
+                              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
                             >
                               Salvar
                             </button>
                             <button
+                              type="button"
                               onClick={handleCancelEdit}
-                              className="px-2 py-1 bg-nexus-panel text-nexus-muted text-[10px] rounded hover:text-white"
+                              className="px-3 py-1.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white text-xs rounded-xl transition-colors cursor-pointer"
                             >
                               Cancelar
                             </button>
@@ -746,8 +794,8 @@ export const MessagesView: React.FC = () => {
                           <div
                             className={`text-xs leading-relaxed break-words ${
                               isDeleted
-                                ? 'text-nexus-muted italic select-none'
-                                : 'text-nexus-text/95'
+                                ? 'text-zinc-500 italic select-none'
+                                : 'text-zinc-200'
                             }`}
                           >
                             {msg.content}
@@ -756,30 +804,30 @@ export const MessagesView: React.FC = () => {
 
                         {/* Delivery Status Indicator for my messages */}
                         {isAuthorMe && (
-                          <div className="flex items-center gap-1 mt-0.5">
+                          <div className="flex items-center gap-1 mt-1">
                             {msg.delivery_status === 'sending' && (
                               <Tooltip content="Enviando...">
-                                <Clock className="w-3 h-3 text-nexus-muted animate-spin" />
+                                <Clock className="w-3 h-3 text-zinc-500 animate-spin" />
                               </Tooltip>
                             )}
                             {msg.delivery_status === 'failed' && (
                               <Tooltip content="Falha no envio">
-                                <AlertCircle className="w-3 h-3 text-red-400" />
+                                <AlertCircle className="w-3 h-3 text-rose-400" />
                               </Tooltip>
                             )}
                             {(!msg.delivery_status || msg.delivery_status === 'sent') && (
                               <Tooltip content="Enviado ao servidor">
-                                <Check className="w-3 h-3 text-nexus-muted" />
+                                <Check className="w-3 h-3 text-zinc-500" />
                               </Tooltip>
                             )}
                             {msg.delivery_status === 'delivered' && (
                               <Tooltip content="Entregue ao dispositivo do destinatário">
-                                <CheckCheck className="w-3 h-3 text-nexus-muted" />
+                                <CheckCheck className="w-3 h-3 text-zinc-400" />
                               </Tooltip>
                             )}
                             {(msg.read_at || msg.delivery_status === 'read') && (
                               <Tooltip content="Lido pelo destinatário">
-                                <CheckCheck className="w-3 h-3 text-nexus-accent" />
+                                <CheckCheck className="w-3 h-3 text-rose-400" />
                               </Tooltip>
                             )}
                           </div>
@@ -788,21 +836,23 @@ export const MessagesView: React.FC = () => {
 
                       {/* Action buttons (Edit / Delete) for author */}
                       {isAuthorMe && !isDeleted && !isEditing && (
-                        <div className="hidden group-hover:flex items-center gap-1 bg-nexus-surface border border-nexus-border px-1 py-0.5 rounded shadow-sm">
+                        <div className="hidden group-hover:flex items-center gap-1 bg-[#141720] border border-white/[0.08] px-1.5 py-1 rounded-xl shadow-xl">
                           <Tooltip content="Editar mensagem">
                             <button
+                              type="button"
                               onClick={() => handleStartEdit(msg)}
-                              className="p-1 text-nexus-muted hover:text-nexus-text hover:bg-nexus-panel rounded transition-nexus"
+                              className="p-1 text-zinc-400 hover:text-white hover:bg-white/[0.06] rounded-lg transition-colors cursor-pointer"
                             >
-                              <Edit2 className="w-3 h-3" />
+                              <Edit2 className="w-3.5 h-3.5" />
                             </button>
                           </Tooltip>
                           <Tooltip content="Apagar mensagem">
                             <button
+                              type="button"
                               onClick={() => handleDelete(msg.id)}
-                              className="p-1 text-nexus-muted hover:text-red-400 hover:bg-nexus-panel rounded transition-nexus"
+                              className="p-1 text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
                             >
-                              <Trash2 className="w-3 h-3" />
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </Tooltip>
                         </div>
@@ -823,49 +873,48 @@ export const MessagesView: React.FC = () => {
                 return (
                   <React.Fragment key={msg.id}>
                     {showDateDivider && (
-                      <div className="flex items-center my-4">
-                        <div className="flex-1 border-t border-nexus-border/50"></div>
-                        <span className="px-3 text-[10px] font-semibold uppercase tracking-wider text-nexus-muted bg-nexus-panel/60 py-0.5 rounded-full border border-nexus-border/40">
+                      <div className="flex items-center my-5">
+                        <div className="flex-1 border-t border-white/[0.05]" />
+                        <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#111319] border border-white/[0.06] rounded-full">
                           {msg.dateKey}
                         </span>
-                        <div className="flex-1 border-t border-nexus-border/50"></div>
+                        <div className="flex-1 border-t border-white/[0.05]" />
                       </div>
                     )}
 
                     <div
-                      className={`group flex items-start gap-3 hover:bg-nexus-surface/30 px-2 rounded transition-nexus ${
-                        compactMode ? 'py-0.5' : 'py-1'
-                      } ${
-                        isGroupedWithPrev
-                          ? compactMode ? 'mt-0 pl-11' : 'mt-0.5 pl-12'
-                          : compactMode ? 'mt-1' : 'mt-2'
+                      className={`group flex items-start gap-3.5 hover:bg-white/[0.02] px-3 py-1 rounded-xl transition-all ${
+                        isGroupedWithPrev ? (compactMode ? 'mt-0 pl-12' : 'mt-0.5 pl-12') : 'mt-2.5'
                       }`}
                     >
                       {!isGroupedWithPrev && (
                         <Avatar
                           name={msg.authorName}
+                          avatarUrl={isCurrentUser ? currentUser.avatarUrl : activePartnerAvatar}
                           size="sm"
+                          shapeClassName="rounded-xl"
                           className="shrink-0 mt-0.5"
+                          showStatus={false}
                         />
                       )}
 
                       <div className="flex-1 min-w-0">
                         {!isGroupedWithPrev && (
-                          <div className="flex items-center gap-2 mb-0.5">
+                          <div className="flex items-center gap-2 mb-1">
                             <span
-                              className={`text-xs font-bold ${
-                                isCurrentUser ? 'text-nexus-accent' : 'text-nexus-text'
+                              className={`text-xs font-semibold ${
+                                isCurrentUser ? 'text-rose-400' : 'text-white'
                               }`}
                             >
                               {msg.authorName}
                             </span>
-                            <span className="text-[10px] text-nexus-muted font-mono">
+                            <span className="text-[11px] text-zinc-500 font-mono">
                               {msg.timestamp}
                             </span>
                           </div>
                         )}
 
-                        <div className="text-xs text-nexus-text/95 leading-relaxed break-words">
+                        <div className="text-xs text-zinc-200 leading-relaxed break-words">
                           {msg.content}
                         </div>
                       </div>
@@ -878,11 +927,14 @@ export const MessagesView: React.FC = () => {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Typing Input Box */}
-          <div className="p-3 bg-nexus-surface border-t border-nexus-border shrink-0">
-            <div className="flex items-center gap-2 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 focus-within:border-nexus-accent transition-nexus">
+          {/* Typing Composer Input Box */}
+          <div className="p-3.5 bg-[#090b10] border-t border-white/[0.06] shrink-0">
+            <div className="flex items-center gap-2 bg-[#0e1118]/90 border border-white/[0.08] focus-within:border-rose-500/50 rounded-2xl px-3.5 py-2 transition-all shadow-sm">
               <Tooltip content="Anexar arquivo" position="top">
-                <button className="text-nexus-muted hover:text-nexus-text transition-nexus">
+                <button
+                  type="button"
+                  className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 cursor-pointer"
+                >
                   <Paperclip className="w-4 h-4" />
                 </button>
               </Tooltip>
@@ -894,46 +946,52 @@ export const MessagesView: React.FC = () => {
                 onKeyDown={handleKeyDown}
                 placeholder={
                   isOnline
-                    ? `Conversar com @${selectedOnlineConv!.other_user.username}... (Pressione Enter)`
-                    : `Conversar com @${selectedDemoFriend.name}... (Pressione Enter)`
+                    ? `Conversar com @${activePartnerUsername || activePartnerName}... (Pressione Enter)`
+                    : `Conversar com @${selectedDemoFriend?.name}... (Pressione Enter)`
                 }
-                className="flex-1 bg-transparent text-xs text-nexus-text placeholder-nexus-muted focus:outline-none"
+                className="flex-1 bg-transparent text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none py-1"
               />
 
               <Tooltip content="Adicionar Emoji" position="top">
-                <button className="text-nexus-muted hover:text-nexus-text transition-nexus">
+                <button
+                  type="button"
+                  className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 cursor-pointer"
+                >
                   <Smile className="w-4 h-4" />
                 </button>
               </Tooltip>
 
               <Tooltip content="Enviar mensagem" position="top">
                 <button
+                  type="button"
                   onClick={handleSendMessage}
                   disabled={!draftMessage.trim() || isSendingDm}
-                  className={`p-1.5 rounded transition-nexus cursor-pointer ${
+                  className={`p-2 rounded-xl transition-all cursor-pointer ${
                     draftMessage.trim() && !isSendingDm
-                      ? 'bg-nexus-accent text-white hover:bg-nexus-accent-hover'
-                      : 'bg-nexus-panel text-nexus-muted cursor-not-allowed'
+                      ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm shadow-rose-950/60 active:scale-95'
+                      : 'bg-white/[0.04] text-zinc-600 cursor-not-allowed'
                   }`}
                 >
                   {isSendingDm ? (
-                    <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                    <RotateCw className="w-3.5 h-3.5 animate-spin text-white" />
                   ) : (
                     <Send className="w-3.5 h-3.5" />
                   )}
                 </button>
               </Tooltip>
             </div>
-            <div className="flex items-center justify-between mt-1 px-1 text-[10px] text-nexus-muted">
+            <div className="flex items-center justify-between mt-1.5 px-2 text-[10px] text-zinc-500">
               <span>Enter para enviar • Shift + Enter para quebra de linha</span>
               <span className="flex items-center gap-1 font-mono">
                 {isOnline ? (
                   <>
-                    <CheckCheck className="w-3 h-3 text-emerald-400" /> Comunicação Privada Segura • Sincronização em Tempo Real (Gateway)
+                    <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Comunicação Privada Segura • Sincronização em Tempo Real (Gateway)</span>
                   </>
                 ) : (
                   <>
-                    <HardDrive className="w-3 h-3 text-emerald-400" /> Armazenamento Local SQLite • Modo Demonstração Offline
+                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Armazenamento Local SQLite • Modo Demonstração Offline</span>
                   </>
                 )}
               </span>
@@ -941,15 +999,30 @@ export const MessagesView: React.FC = () => {
           </div>
         </div>
       ) : (
-        <EmptyState
-          icon={MessageSquare}
-          title="Nenhuma conversa selecionada"
-          description={
-            isOnline
+        /* Empty State */
+        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-[#07080b]">
+          <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center text-zinc-400 mb-4 shadow-inner">
+            <MessageSquare className="w-7 h-7 text-rose-500" />
+          </div>
+          <h3 className="text-base font-bold text-white mb-1.5">
+            Nenhuma conversa selecionada
+          </h3>
+          <p className="text-xs text-zinc-400 max-w-sm leading-relaxed mb-4">
+            {isOnline
               ? "Selecione uma conversa ao lado ou clique em 'Nova Conversa' para falar com um amigo."
-              : "Selecione um contato na lista lateral para abrir o histórico de mensagens ou iniciar uma conversa direta."
-          }
-        />
+              : "Selecione um contato na lista lateral para abrir o histórico de mensagens ou iniciar uma conversa direta."}
+          </p>
+          {isOnline && (
+            <button
+              type="button"
+              onClick={() => setShowFriendsList(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white border border-rose-500/40 hover:border-rose-500/60 text-xs font-medium transition-all shadow-sm shadow-rose-950/40 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5 text-rose-400" />
+              <span>Nova Conversa</span>
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
