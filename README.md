@@ -20,12 +20,12 @@
 
 ## 🧭 Visão Geral
 
-O **NEXUS** é um aplicativo desktop de comunicação em tempo real desenvolvido especificamente para o ecossistema Windows 11. Combinando a robustez e eficiência do **Rust** com a reatividade do **React 19**, o NEXUS foi projetado para oferecer alta performance com consumo de recursos significativamente menor que clientes convencionais baseados em Electron.
+O **NEXUS** é um aplicativo desktop de comunicação em tempo real desenvolvido especificamente para o ecossistema Windows 11. Combinando a robustez do **Rust** com a agilidade do **React 19**, o NEXUS foi projetado para oferecer baixo consumo de recursos de memória e CPU quando comparado a soluções de mensagens baseadas em Electron.
 
-Sua arquitetura foi desenhada em torno de três princípios fundamentais:
-- **Desempenho Extremo:** Inicialização rápida, renderização acelerada por GPU via WebView2 e empacotamento nativo em Tauri 2.
-- **Design Imersivo:** Estética escura refinada com detalhes em carmesim, transições sutis e três temas adaptativos oficiais.
-- **Segurança Verificável:** Proteção criptográfica de endpoints com TOFU Ed25519, guarda de tokens no Windows Credential Manager e atualizações assinadas por Minisign.
+Sua arquitetura é fundamentada em três pilares:
+- **Eficiência Nativa:** Renderização acelerada por GPU via WebView2 e empacotamento nativo com Tauri 2.
+- **Design Imersivo:** Estética escura refinada com três temas adaptativos oficiais harmonizados por tokens semânticos.
+- **Segurança Verificável:** Proteção criptográfica de endpoints com TOFU Ed25519, armazenamento seguro de tokens no Windows Credential Manager e atualizações assinadas por Minisign.
 
 ---
 
@@ -35,8 +35,8 @@ O NEXUS conta com canais de distribuição oficiais gerenciados diretamente nas 
 
 | Canal | Versão | Status | Instalador Windows | Manifesto de Atualização |
 | :--- | :---: | :---: | :--- | :--- |
-| **Estável (Stable Atual)** | `v0.1.8` | Produção Homologada | [Download nexus-0.1.8-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.8/nexus-0.1.8-setup.exe) | [`latest.json`](https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json) |
-| **Pré-lançamento (Nightly / Beta)** | `v0.1.9-nightly.7` | Candidata à v0.2.0 | [Download v0.1.9-nightly.7](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/nexus-0.1.9-nightly.7-setup.exe) | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/latest-nightly.json) |
+| **Estável (Stable Atual)** | `v0.1.8` | Produção Homologada | [Download nexus_0.1.8_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.8/nexus_0.1.8_x64-setup.exe) | [`latest.json`](https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json) |
+| **Pré-lançamento (Nightly / Beta)** | `v0.1.9-nightly.7` | Candidata à v0.2.0 | [Download nexus_0.1.9-nightly.7_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/nexus_0.1.9-nightly.7_x64-setup.exe) | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/latest-nightly.json) |
 | **Próxima Estável (Em Preparação)** | **`v0.2.0`** | Homologação Final | *Aguardando publicação oficial* | *Promoverá latest.json para v0.2.0* |
 
 > [!TIP]
@@ -46,39 +46,33 @@ O NEXUS conta com canais de distribuição oficiais gerenciados diretamente nas 
 
 ## ⚡ Principais Funcionalidades
 
-- 🚀 **Arquitetura Nativa Ultraleve:** Desenvolvido em Tauri 2 e Rust, consumindo significativamente menos recursos de memória e CPU que clientes de mensagens convencionais.
-- 🎨 **Sistema Global de Temas Dinâmicos:** Suporte completo aos temas **NEXUS Dark**, **Midnight Black** e **Cyber Slate**, com aplicação instantânea e sem flashes brancos no carregamento.
-- 🛡️ **Segurança TOFU Ed25519:** Verificação criptográfica automática do backend oficial na nuvem AWS, com bloqueio imediato e aprovação visual manual caso a chave do servidor mude.
-- 🎙️ **Voz e Tela P2P de Baixa Latência:** Chamadas de áudio 1on1 de altíssima fidelidade com supressão de ruído Opus e compartilhamento de tela com criptografia DTLS-SRTP direta.
+- 🚀 **Arquitetura Nativa:** Desenvolvido em Tauri 2 e Rust, consumindo significativamente menos recursos que clientes de mensagens convencionais.
+- 🎨 **Sistema Global de Temas Dinâmicos:** Suporte completo aos temas **NEXUS Dark** (carmesim), **Midnight Black** (azul elétrico) e **Cyber Slate** (ciano), com aplicação instantânea e sem flashes brancos no carregamento.
+- 🛡️ **Segurança TOFU Ed25519:** Verificação criptográfica automática do backend oficial na nuvem AWS, com bloqueio preventivo e aprovação visual manual via `ServerApprovalView`.
+- 🎙️ **Voz e Tela P2P Diretos:** Chamadas de áudio 1on1 com codec Opus e compartilhamento de tela com criptografia DTLS-SRTP direta.
 - 💾 **Histórico Local e Modo Offline:** Banco SQLite v3 local com escrita atômica (WAL), permitindo ler e redigir mensagens mesmo com perda temporária de conexão.
-- 🔄 **Atualizador Automático com Minisign:** Pacotes de atualização NSIS verificados criptograficamente por chave pública oficial antes de qualquer execução no sistema operacional.
+- 🔄 **Atualizador Automático com Minisign:** Pacotes de atualização NSIS verificados criptograficamente por chave pública oficial antes da instalação.
 
 ---
 
 ## 🖥️ Visão Geral da UI 2.0
 
-A interface do NEXUS foi inteiramente reconstruída na versão **v0.2.0** com foco em ergonomia e foco visual:
+A interface do NEXUS foi inteiramente reconstruída na versão **v0.2.0** com organização em três áreas estruturadas:
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│  ⚡ NEXUS   [ 🔍 Buscar conversas, amigos ou comandos... ]   [-] [□] [✕] │
-├──────┬────────────────────────────────┬────────────────────────────────┤
-│      │  👋 Bem-vindo de volta!        │  Direct Message                │
-│  🏠  │  ┌──────────────────────────┐  │  ┌──────────────────────────┐  │
-│      │  │ kelzyx • Online           │  │  │ [Avatar] kelzyx         │  │
-│  💬  │  │ 🎙️ Entrar no Canal Rápido │  │  │ Olá! Build v0.2.0 OK.    │  │
-│      │  └──────────────────────────┘  │  └──────────────────────────┘  │
-│  👥  │  AMIGOS ONLINE (4)             │                                │
-│      │  • Alice   (Em chamada)        │  ┌──────────────────────────┐  │
-│  ⚙️  │  • Bob     (Disponível)        │  │ Escreva uma mensagem...  │  │
-│      │  • Carol   (Ausente)           │  └──────────────────────────┘  │
-└──────┴────────────────────────────────┴────────────────────────────────┘
-```
+- **TitleBar Nativa Integrada:** Barra superior contínua e sem bordas nativas do Windows, com controles de janela nativos (minimizar, maximizar, restaurar e fechar), campo de busca global e menu de perfil.
+- **Sidebar & Home Hub:** Barra lateral de navegação rápida e painel inicial contextual com status em tempo real, canais de voz acessíveis em um clique e lista de amigos estruturada por abas (Todos, Online, Pendentes e Bloqueados).
+- **Mensagens Diretas Pixel-Perfect:** Histórico contínuo com agrupamento automático de mensagens sucessivas (`pl-[52px]`), cabeçalho de conversa estilizado com squircle suave, preservação de rolagem e compositor com suporte a atalhos de envio (`Enter`) e nova linha (`Shift + Enter`).
+- **Configurações em Abas Tipo Pill:** Gestão modular de dispositivos de áudio e vídeo, seleção instantânea de temas visuais e controle do canal de atualizações.
 
-1. **TitleBar Nativa Integrada:** Barra superior contínua e sem bordas do Windows, com controle de janela nativo por comandos do Rust, campo de busca global e acesso rápido ao perfil.
-2. **Home Hub & Boas-Vindas:** Painel inicial contextual com status em tempo real, canais de voz acessíveis em um clique e lista de amigos estruturada por abas (Todos, Online, Pendentes e Bloqueados).
-3. **Mensagens Diretas Pixel-Perfect:** Histórico contínuo com agrupamento automático de mensagens sucessivas, preservação da posição de rolagem e compositor inferior com suporte a atalhos de envio (`Enter`) e nova linha (`Shift + Enter`).
-4. **Configurações em Abas Tipo Pill:** Gestão limpa de dispositivos de áudio e vídeo, seleção instantânea de temas visuais e controle do canal de atualizações.
+---
+
+## 📌 Limitações Conhecidas de Mídia e Janela
+
+- **Chamadas de Voz:** Operam em conexão direta ponto a ponto (WebRTC Opus / DTLS-SRTP 1on1). Canais de voz em salas comunitárias funcionam como atalhos para chamadas diretas; conferências simultâneas com múltiplos participantes na mesma sala (multi-party) ainda não utilizam servidor SFU centralizado nesta versão estável.
+- **Transmissão de Tela (Screen Share):** Limitada a 720p a 30fps (`max: 30` fps) em canal direto P2P individual, sem relay SFU ou retransmissão para múltiplos espectadores simultâneos.
+- **Áudio do Sistema na Transmissão:** O compartilhamento de tela não inclui áudio interno do sistema operacional (captura exclusivamente a faixa do microfone).
+- **Processamento de Áudio:** Cancelamento de eco e supressão de ruído utilizam flags nativas do WebRTC/WebView2, porém ainda não foram formalmente calibrados em testes com múltiplos dispositivos físicos de microfone.
+- **Modo Tela Cheia (Fullscreen):** Devido ao uso de uma TitleBar personalizada sem molduras nativas do SO, a alternância de tela cheia possui particularidades de sobreposição da barra de tarefas do Windows e em configurações com múltiplos monitores com escalas de DPI divergentes.
 
 ---
 
@@ -188,8 +182,8 @@ npm run build
 ## 📜 Histórico de Versões e Changelog
 
 Para conferir o histórico completo de lançamentos, migrações e notas detalhadas de cada atualização:
-- Consulte o [**CHANGELOG.md**](file:///c:/Users/kelma/Documents/Tropa/CHANGELOG.md) para o resumo estruturado de versões.
-- Leia o documento de [**Release Notes da v0.2.0**](file:///c:/Users/kelma/Documents/Tropa/scripts/release-notes-v0.2.0.md) com a análise profunda deste marco.
+- Consulte o [**CHANGELOG.md**](CHANGELOG.md) para o resumo estruturado de versões.
+- Leia o documento de [**Release Notes da v0.2.0**](scripts/release-notes-v0.2.0.md) com a análise profunda deste marco.
 - Acesse a página oficial de [**Releases no GitHub**](https://github.com/Sinisterzs/NEXUS/releases) para baixar artefatos e instaladores anteriores.
 
 ---

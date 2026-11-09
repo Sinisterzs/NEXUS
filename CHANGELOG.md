@@ -24,7 +24,7 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
   - **Preservação de Rolagem:** Carregamento fluido do histórico antigo de mensagens preservando a posição visual do usuário.
   - **Configurações em Abas Tipo Pill:** Navegação intuitiva entre Aparência, Áudio & Vídeo, Notificações, Privacidade e Sobre & Atualizações.
 - **Sistema Global de Temas com Zero-Flash:**
-  - 3 temas nativos elegantes: **NEXUS Dark** (carmesim), **Midnight Black** (ciano OLED) e **Cyber Slate** (violeta).
+  - 3 temas nativos elegantes: **NEXUS Dark** (carmesim `#B8495A`), **Midnight Black** (azul elétrico `#3b82f6`) e **Cyber Slate** (ciano tecnológico `#06b6d4`).
   - Harmonização com tokens CSS semânticos em 100% dos botões, ícones, seleções e estados de hover/foco.
   - Persistência multi-camada em disco (`app_theme` em `nexus_settings.json` e `nexus_theme` no `localStorage`).
   - Script síncrono no `<head>` do HTML que elimina completamente flashes do tema padrão ao inicializar.
@@ -42,9 +42,13 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 - Borda quadrada vermelha rígida ao redor de avatares na Home e na TitleBar, substituída por acabamento suave com glow sutil.
 - Isolamento estrito de testes em Rust para proteger dados reais de usuário no `%APPDATA%`, chaves do registro e credenciais do Windows Keyring.
 
-### Limitações Conhecidas
-- Chamadas de áudio e compartilhamento de tela operam exclusivamente em modo P2P direto (WebRTC Opus / DTLS-SRTP 1on1).
-- Canais de voz em grupo nas salas e comunidades funcionam como atalhos para comunicação direta, sem roteamento SFU centralizado para conferências multi-party nesta versão estável.
+### Limitações Conhecidas (Comunicação Transparente)
+- **Chamadas de Voz:** Operam exclusivamente em conexão direta ponto a ponto (WebRTC Opus / DTLS-SRTP 1on1).
+- **Transmissão de Tela (Screen Share):** Limitada a 720p a 30fps (`max: 30` fps) em conexão direta P2P sem retransmissão por relay SFU.
+- **Áudio do Sistema na Transmissão:** O compartilhamento de tela não inclui captura do áudio interno do sistema operacional (captura exclusivamente a faixa do microfone).
+- **Processamento de Áudio:** Cancelamento de eco e supressão de ruído habilitados via flags do WebRTC/WebView2, porém ainda não formalmente calibrados ou validados em testes com múltiplos dispositivos de microfone físicos.
+- **Modo Tela Cheia (Fullscreen):** Devido à TitleBar customizada sem molduras nativas do SO, a alternância de tela cheia possui limitações de interação com a barra de tarefas do Windows e em múltiplos monitores com diferentes escalas de DPI.
+- **Áudio em Salas e Comunidades:** Canais de voz em salas comunitárias funcionam como atalhos para comunicação direta, sem roteamento SFU centralizado para conferências multi-party simultâneas nesta versão estável.
 
 ---
 
@@ -56,8 +60,8 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 - **Eliminação de Flash no Início:** Inserido script síncrono no `<head>` do `index.html` e `getInitialTheme()` no Zustand para aplicação imediata do atributo `data-theme` no primeiro frame de pintura do WebView2.
 
 ### Adicionado
-- Suíte completa de testes automatizados de persistência de temas ([`tests/theme_persistence.test.ts`](file:///c:/Users/kelma/Documents/Tropa/tests/theme_persistence.test.ts)) cobrindo os 3 temas e reinicializações simuladas.
-- Documento de Release Notes da Nightly.7 ([`scripts/release-notes-v0.1.9-nightly.7.md`](file:///c:/Users/kelma/Documents/Tropa/scripts/release-notes-v0.1.9-nightly.7.md)).
+- Suíte completa de testes automatizados de persistência de temas ([`tests/theme_persistence.test.ts`](tests/theme_persistence.test.ts)) cobrindo os 3 temas e reinicializações simuladas.
+- Documento de Release Notes da Nightly.7 ([`scripts/release-notes-v0.1.9-nightly.7.md`](scripts/release-notes-v0.1.9-nightly.7.md)).
 
 ---
 
