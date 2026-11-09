@@ -6,17 +6,45 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 
 ---
 
-## [Unreleased] — Futura Versão Estável v0.2.0 (Planejada)
+## [Unreleased]
+
+---
+
+## [0.2.0] — 2026-11-09
 
 > [!NOTE]
-> Esta versão consolida o marco do **Redesign UI 2.0** para o canal estável (`latest.json`). Não está publicada ainda.
+> Esta versão oficial consolida o marco do **Redesign UI 2.0**, **Harmonização e Persistência Global de Temas**, **Seletor de Canais de Atualização**, e **Segurança Criptográfica TOFU** para o canal de distribuição Estável (`latest.json`).
 
-### Recursos Previstos para a v0.2.0 Stable
-- **UI 2.0 Estável:** Nova TitleBar nativa integrada com controle de janela, busca global, Home renovada com perfil ativo e canais de voz integrados, e tela de Mensagens de alta ergonomia.
-- **Harmonização de Temas:** Aplicação dos três temas oficiais (NEXUS Dark, Midnight Black, Cyber Slate) em todos os componentes nativos.
-- **Seletor de Canais Integrado:** Escolha flexível entre canal Estável (padrão de produção) e Beta (recebimento antecipado de nightlies).
-- **Conectividade de Alta Disponibilidade:** Conexão primária HTTPS/WSS com o cluster AWS e descoberta secundária resiliente via Tailscale Mesh P2P.
-- **Segurança TOFU Ed25519:** Verificação criptográfica de integridade de endpoints e isolamento local de credenciais.
+### Adicionado
+- **NEXUS UI 2.0 Oficial:** Interface de usuário completamente redesenhada para Windows 11:
+  - **TitleBar Nativa Integrada:** Barra superior sem bordas com controles nativos de janela (minimizar, maximizar, restaurar e fechar com microinterações suaves), busca global integrada e menu de perfil.
+  - **Home Renovada:** Cabeçalho com o perfil ativo, status de presença e atalhos rápidos para canais de voz.
+  - **Lista de Amigos Aprimorada:** Filtros intuitivos (Todos, Online, Pendentes, Bloqueados) com avatares dinâmicos sem molduras rígidas.
+  - **Mensagens Diretas Pixel-Perfect:** Agrupamento contínuo de mensagens de mesmo remetente (`pl-[52px]`), cabeçalho de conversa estilizado e compositor com atalhos inteligentes (`Enter` para envio e `Shift + Enter` para quebra de linha).
+  - **Preservação de Rolagem:** Carregamento fluido do histórico antigo de mensagens preservando a posição visual do usuário.
+  - **Configurações em Abas Tipo Pill:** Navegação intuitiva entre Aparência, Áudio & Vídeo, Notificações, Privacidade e Sobre & Atualizações.
+- **Sistema Global de Temas com Zero-Flash:**
+  - 3 temas nativos elegantes: **NEXUS Dark** (carmesim), **Midnight Black** (ciano OLED) e **Cyber Slate** (violeta).
+  - Harmonização com tokens CSS semânticos em 100% dos botões, ícones, seleções e estados de hover/foco.
+  - Persistência multi-camada em disco (`app_theme` em `nexus_settings.json` e `nexus_theme` no `localStorage`).
+  - Script síncrono no `<head>` do HTML que elimina completamente flashes do tema padrão ao inicializar.
+- **Seletor de Canais de Atualização (Stable & Beta):**
+  - Opção no menu Sobre & Atualizações permitindo ao usuário alternar entre o canal **Estável (Padrão)** e o canal **Beta / Nightly**.
+  - Persistência protegida contra reinicializações e manifestos isolados assinados por chaves Minisign independentes (`latest.json` e `latest-nightly.json`).
+- **Segurança Criptográfica TOFU Ed25519:**
+  - Validação de integridade da chave pública do servidor AWS em conexões HTTPS/WSS.
+  - Tela interativa `ServerApprovalView` para confirmação manual explícita pelo usuário caso ocorra alteração na identidade do servidor remoto.
+  - Armazenamento de credenciais de sessão isolado no Windows Credential Manager.
+
+### Corrigido
+- Persistência do canal de atualização que retornava ao padrão após reiniciar o aplicativo.
+- Perda do tema selecionado após cold restart do aplicativo ou restauração de sessão.
+- Borda quadrada vermelha rígida ao redor de avatares na Home e na TitleBar, substituída por acabamento suave com glow sutil.
+- Isolamento estrito de testes em Rust para proteger dados reais de usuário no `%APPDATA%`, chaves do registro e credenciais do Windows Keyring.
+
+### Limitações Conhecidas
+- Chamadas de áudio e compartilhamento de tela operam exclusivamente em modo P2P direto (WebRTC Opus / DTLS-SRTP 1on1).
+- Canais de voz em grupo nas salas e comunidades funcionam como atalhos para comunicação direta, sem roteamento SFU centralizado para conferências multi-party nesta versão estável.
 
 ---
 

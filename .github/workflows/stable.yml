@@ -1,0 +1,125 @@
+name: NEXUS Stable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão SemVer Oficial (ex: 0.2.0)'
+        required: true
+        default: '0.2.0'
+        type: string
+      release_notes:
+        description: 'Resumo das notas de lançamento para o manifesto do updater'
+        required: false
+        default: 'NEXUS v0.2.0 — Versão Estável Oficial com Redesign UI 2.0, Temas Globais e Segurança TOFU.'
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish-stable:
+    name: Build & Publish Stable (Windows Release)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js (v22)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Setup Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install NPM Dependencies
+        run: npm ci
+
+      - name: Apply Stable Version
+        run: node scripts/set-nightly-version.cjs "${{ github.event.inputs.version }}"
+
+      - name: Build Frontend
+        run: npm run build
+
+      - name: Verify Signing Key Configuration
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY)) {
+            Write-Error "O GitHub Secret 'TAURI_SIGNING_PRIVATE_KEY' não está configurado. A chave privada é necessária para assinar o instalador de atualização."
+            exit 1
+          }
+          Write-Host "Chave de assinatura detectada no repositório."
+
+      - name: Build Native Windows Release with Tauri (NSIS)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --bundles nsis
+
+      - name: Generate Stable Updater Manifest (latest.json)
+        run: node scripts/generate-stable-manifest.cjs "${{ github.event.inputs.version }}" "${{ github.event.inputs.release_notes }}"
+        env:
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Strict Security Audit of Artifacts
+        run: node scripts/audit-nightly-artifacts.cjs
+
+      - name: Prepare Markdown Release Notes Body
+        shell: pwsh
+        run: |
+          $ver = "${{ github.event.inputs.version }}"
+          $customNotesFile = "scripts/release-notes-v$ver.md"
+          if (Test-Path $customNotesFile) {
+            Write-Host "Encontradas notas ricas em Markdown: $customNotesFile"
+            Copy-Item $customNotesFile -Destination "release-notes-body.md"
+          } else {
+            Write-Host "Utilizando notas padrão informadas no input do workflow."
+            $defaultBody = @"
+          ## 🚀 NEXUS Stable Release — v$ver
+
+          ${{ github.event.inputs.release_notes }}
+
+          ---
+
+          ### Artefatos de Instalação:
+          - **Instalador NSIS:** Instalador oficial assinado com Minisign.
+          - **Manifesto de Atualização:** ``latest.json``
+          "@
+            Set-Content -Path "release-notes-body.md" -Value $defaultBody -Encoding utf8
+          }
+
+      - name: Publish GitHub Release (Stable Channel)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: NEXUS v${{ github.event.inputs.version }} (Stable)
+          body_path: release-notes-body.md
+          draft: false
+          prerelease: false
+          make_latest: 'true'
+          files: |
+            src-tauri/target/release/nexus.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+            latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
