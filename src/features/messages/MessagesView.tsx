@@ -4,8 +4,6 @@ import {
   Search,
   Send,
   Phone,
-  Smile,
-  Paperclip,
   ChevronUp,
   AlertCircle,
   Check,
@@ -127,6 +125,10 @@ export const MessagesView: React.FC = () => {
   const [showFriendsList, setShowFriendsList] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const isOlderLoadingRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
+  const prevConvIdRef = useRef<string | null>(null);
+  const prevMessagesCountRef = useRef<number>(0);
   const currentDraftRef = useRef<string>('');
 
   // Initial load for online mode
@@ -140,10 +142,45 @@ export const MessagesView: React.FC = () => {
   const selectedOnlineConv = conversations.find((c) => c.id === activeConversationId);
   const selectedDemoFriend = allDemoFriends.find((f) => f.id === activeDmId) || allDemoFriends[0];
 
-  // Auto-scroll on new messages
+  // Controlled scroll management: initial open, load older messages, new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeConversationMessages.length, demoMessages.length]);
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    // Se acabou de carregar mensagens anteriores (prepend), preserva a posição de rolagem exata
+    if (isOlderLoadingRef.current) {
+      const heightDiff = container.scrollHeight - isOlderLoadingRef.current.prevHeight;
+      container.scrollTop = isOlderLoadingRef.current.prevTop + heightDiff;
+      isOlderLoadingRef.current = null;
+      return;
+    }
+
+    const currentConvId = isOnline ? activeConversationId : (selectedDemoFriend?.id || null);
+    const messagesCount = isOnline ? activeConversationMessages.length : demoMessages.length;
+
+    // Se trocou de conversa ou abriu pela primeira vez, rola para as mensagens mais recentes
+    if (currentConvId !== prevConvIdRef.current) {
+      prevConvIdRef.current = currentConvId;
+      prevMessagesCountRef.current = messagesCount;
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      return;
+    }
+
+    // Se novas mensagens foram recebidas ou enviadas, rola suavemente para o fim
+    if (messagesCount > prevMessagesCountRef.current) {
+      prevMessagesCountRef.current = messagesCount;
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [isOnline, activeConversationId, selectedDemoFriend?.id, activeConversationMessages, demoMessages]);
+
+  const handleLoadOlder = async () => {
+    if (!scrollContainerRef.current || isLoadingMessages) return;
+    isOlderLoadingRef.current = {
+      prevHeight: scrollContainerRef.current.scrollHeight,
+      prevTop: scrollContainerRef.current.scrollTop,
+    };
+    await loadOlderMessages();
+  };
 
   // -------------------------------------------------------------
   // Draft Management (Scoped per Account & Conversation)
@@ -666,14 +703,20 @@ export const MessagesView: React.FC = () => {
           )}
 
           {/* Messages History Pane - Bounded max-w-4xl for comfortable readability on 1080p */}
-          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-3 flex flex-col items-center">
-            <div className="w-full max-w-4xl space-y-3 flex-1 flex flex-col justify-end">
+          <div
+            ref={scrollContainerRef}
+            className="flex-1 overflow-y-auto px-6 py-5 flex flex-col items-center"
+          >
+            <div className="w-full max-w-4xl space-y-3 min-h-full flex flex-col">
+              {/* Spacer flex-1 empurra a conversa para baixo quando há poucas mensagens */}
+              <div className="flex-1" />
+
               {/* Online load older messages pagination */}
               {isOnline && activeConversationMessages.length >= 25 && (
                 <div className="flex justify-center pb-2">
                   <button
                     type="button"
-                    onClick={() => loadOlderMessages()}
+                    onClick={handleLoadOlder}
                     disabled={isLoadingMessages}
                     className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
                   >
@@ -952,16 +995,7 @@ export const MessagesView: React.FC = () => {
           {/* Typing Composer Input Box - Centered max-w-4xl */}
           <div className="p-4 bg-[#090b10] border-t border-white/[0.06] shrink-0 flex justify-center">
             <div className="w-full max-w-4xl space-y-2">
-              <div className="flex items-center gap-2.5 bg-[#0e1118]/90 border border-white/[0.08] focus-within:border-rose-500/50 rounded-2xl px-4 py-2.5 transition-all shadow-sm">
-                <Tooltip content="Anexar arquivo" position="top">
-                  <button
-                    type="button"
-                    className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 cursor-pointer"
-                  >
-                    <Paperclip className="w-4 h-4" />
-                  </button>
-                </Tooltip>
-
+              <div className="flex items-center gap-2.5 bg-[#0e1118]/90 border border-white/[0.08] focus-within:border-rose-500/50 rounded-2xl px-4 py-2 transition-all shadow-sm">
                 <input
                   type="text"
                   value={draftMessage}
@@ -972,17 +1006,8 @@ export const MessagesView: React.FC = () => {
                       ? `Conversar com @${activePartnerUsername || activePartnerName}... (Pressione Enter)`
                       : `Conversar com @${selectedDemoFriend?.name}... (Pressione Enter)`
                   }
-                  className="flex-1 bg-transparent text-[13px] text-zinc-100 placeholder-zinc-500 focus:outline-none py-0.5"
+                  className="flex-1 bg-transparent text-[13px] text-zinc-100 placeholder-zinc-500 focus:outline-none py-1"
                 />
-
-                <Tooltip content="Adicionar Emoji" position="top">
-                  <button
-                    type="button"
-                    className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 cursor-pointer"
-                  >
-                    <Smile className="w-4 h-4" />
-                  </button>
-                </Tooltip>
 
                 <Tooltip content="Enviar mensagem" position="top">
                   <button
