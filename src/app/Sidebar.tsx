@@ -15,7 +15,6 @@ import { useAppStore } from '../stores/useAppStore';
 import { MainTab } from '../lib/types';
 import { mockCommunities, mockDirectMessages } from '../mocks';
 import { callService } from '../services/CallService';
-import { Avatar } from '../components/Avatar';
 import { Badge } from '../components/Badge';
 import { Tooltip } from '../components/Tooltip';
 
@@ -24,7 +23,6 @@ export const Sidebar: React.FC = () => {
   const isSidebarCollapsed = useAppStore((state) => state.isSidebarCollapsed);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const toggleSidebar = useAppStore((state) => state.toggleSidebar);
-  const currentUser = useAppStore((state) => state.currentUser);
   const authStatus = useAppStore((state) => state.authStatus);
   const isMicMuted = useAppStore((state) => state.isMicMuted);
   const isDeafened = useAppStore((state) => state.isDeafened);
@@ -176,45 +174,15 @@ export const Sidebar: React.FC = () => {
         )}
       </div>
 
-      {/* Bottom User Profile & Audio Dock */}
+      {/* Bottom Audio & Quick Controls Dock */}
       <div className="p-2 border-t border-nexus-border bg-nexus-panel/40 shrink-0">
         <div
-          className={`flex items-center gap-2 ${
-            isSidebarCollapsed ? 'flex-col justify-center' : 'justify-between'
+          className={`flex items-center ${
+            isSidebarCollapsed ? 'flex-col gap-1 justify-center' : 'justify-between px-1'
           }`}
         >
-          {/* User info */}
-          <Tooltip
-            content={`${currentUser.displayName} (${currentUser.status})`}
-            position="right"
-          >
-            <div
-              onClick={() => setActiveTab('settings')}
-              className={`flex items-center gap-2 p-1 rounded-lg hover:bg-nexus-panel cursor-pointer min-w-0 transition-nexus ${
-                isSidebarCollapsed ? 'justify-center' : 'flex-1'
-              }`}
-            >
-              <Avatar
-                name={currentUser.displayName}
-                avatarUrl={currentUser.avatarUrl}
-                status={currentUser.status}
-                size={isSidebarCollapsed ? 'sm' : 'md'}
-              />
-              {!isSidebarCollapsed && (
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-nexus-text truncate">
-                    {currentUser.displayName}
-                  </p>
-                  <p className="text-[10px] text-nexus-muted truncate">
-                    {currentUser.customStatus || (authStatus === 'authenticated' ? `@${currentUser.username}` : currentUser.tag)}
-                  </p>
-                </div>
-              )}
-            </div>
-          </Tooltip>
-
           {/* Quick Mic / Headphone controls */}
-          <div className={`flex items-center ${isSidebarCollapsed ? 'flex-col gap-1' : 'gap-1'}`}>
+          <div className="flex items-center gap-1">
             <Tooltip
               content={isMicMuted ? 'Ativar Microfone' : 'Mutar Microfone'}
               position="top"
@@ -223,11 +191,11 @@ export const Sidebar: React.FC = () => {
                 onClick={() => callService.toggleMute()}
                 className={`p-1.5 rounded-lg transition-nexus cursor-pointer ${
                   isMicMuted
-                    ? 'bg-rose-500/20 text-rose-400'
+                    ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
                     : 'text-nexus-muted hover:bg-nexus-panel hover:text-nexus-text'
                 }`}
               >
-                {isMicMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                {isMicMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
               </button>
             </Tooltip>
 
@@ -239,16 +207,32 @@ export const Sidebar: React.FC = () => {
                 onClick={() => callService.toggleDeafen()}
                 className={`p-1.5 rounded-lg transition-nexus cursor-pointer ${
                   isDeafened
-                    ? 'bg-rose-500/20 text-rose-400'
+                    ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
                     : 'text-nexus-muted hover:bg-nexus-panel hover:text-nexus-text'
                 }`}
               >
                 <Headphones
-                  className={`w-3.5 h-3.5 ${isDeafened ? 'text-rose-400' : ''}`}
+                  className={`w-4 h-4 ${isDeafened ? 'text-rose-400' : ''}`}
                 />
               </button>
             </Tooltip>
           </div>
+
+          {/* Quick Settings Action (quando expandido) */}
+          {!isSidebarCollapsed && (
+            <Tooltip content="Configurações" position="top">
+              <button
+                onClick={() => setActiveTab('settings')}
+                className={`p-1.5 rounded-lg transition-nexus cursor-pointer ${
+                  activeTab === 'settings'
+                    ? 'bg-nexus-panel text-nexus-text'
+                    : 'text-nexus-muted hover:bg-nexus-panel hover:text-nexus-text'
+                }`}
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+            </Tooltip>
+          )}
         </div>
       </div>
     </aside>

@@ -52,13 +52,13 @@ async function main() {
 
   // Aguarda WebView2 iniciar e expor porta 9222
   let wsUrl = null;
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 30; i++) {
     await sleep(1000);
     try {
       const res = await fetch('http://localhost:9222/json');
       if (res.ok) {
         const list = await res.json();
-        const page = list.find((item) => item.type === 'page' && item.webSocketDebuggerUrl);
+        const page = list.find((item) => item.type === 'page' && item.webSocketDebuggerUrl && item.url.includes('1420'));
         if (page) {
           wsUrl = page.webSocketDebuggerUrl;
           console.log('[Validation] Página WebView2 encontrada:', page.title, page.url);
@@ -82,6 +82,9 @@ async function main() {
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
+      if (data.method === 'Runtime.consoleAPICalled') {
+        console.log('[Browser Console]', data.params.type, data.params.args.map(a => a.value !== undefined ? a.value : a.description).join(' '));
+      }
       if (data.id && pending.has(data.id)) {
         const { resolve, reject } = pending.get(data.id);
         pending.delete(data.id);
@@ -112,13 +115,13 @@ async function main() {
 
   console.log('[Validation] Aguardando sessão e renderização da tela principal...');
   let mainReady = false;
-  for (let i = 0; i < 25; i++) {
+  for (let i = 0; i < 35; i++) {
     await sleep(1000);
     const state = await send('Runtime.evaluate', {
       expression: `Boolean(document.querySelector('header input[placeholder*="Pesquisar"]'))`,
       returnByValue: true,
     });
-    if (state.result.value) {
+    if (state?.result?.value) {
       mainReady = true;
       console.log(`[Validation] Tela principal com TitleBar carregada após ${i + 1}s!`);
       break;
@@ -126,7 +129,12 @@ async function main() {
   }
 
   if (!mainReady) {
-    console.warn('[Validation] Tela principal não carregou após 25s, tentando prosseguir...');
+    console.warn('[Validation] Tela principal não carregou após 35s, inspecionando DOM...');
+    const bodyEval = await send('Runtime.evaluate', {
+      expression: `document.body.innerText`,
+      returnByValue: true,
+    });
+    console.log('[Validation] Body text:', bodyEval?.result?.value);
   }
 
   await sleep(1500);
@@ -149,20 +157,31 @@ async function main() {
       const winControls = document.querySelectorAll('header button[title="Minimizar"], header button[title="Maximizar"], header button[title="Fechar"]');
       const avatarImg = document.querySelector('header img');
       const titleText = header ? header.innerText.replace(/\\s+/g, ' ') : '';
+      const store = window.__NEXUS_STORE__ ? window.__NEXUS_STORE__.getState() : null;
       return {
         hasHeader: Boolean(header),
         hasSearch: Boolean(search),
         hasProfile: Boolean(profileBtn),
         profileBtnText: profileBtn ? profileBtn.innerText : '',
         hasAvatarImg: Boolean(avatarImg),
-        avatarSrc: avatarImg ? avatarImg.src : null,
+        avatarSrc: avatarImg ? avatarImg.src.substring(0, 50) : null,
         windowControlsCount: winControls.length,
-        headerText: titleText
+        headerText: titleText,
+        storeInfo: store ? {
+          authStatus: store.authStatus,
+          authMode: store.authMode,
+          currentUserStatus: store.currentUser.status,
+          currentUserName: store.currentUser.displayName,
+          currentUserAvatarLen: store.currentUser.avatarUrl ? store.currentUser.avatarUrl.length : null,
+          currentUserAvatarPrefix: store.currentUser.avatarUrl ? store.currentUser.avatarUrl.substring(0, 35) : null,
+          onlineUserAvatar: store.onlineUser ? store.onlineUser.avatarUrl : null,
+          settingsAvatarLen: store.settings.profile.avatarUrl ? store.settings.profile.avatarUrl.length : null,
+        } : 'NO_STORE'
       };
     })()`,
     returnByValue: true,
   });
-  console.log('[Validation] Inspeção do DOM da TitleBar:', domInspection.result.value);
+  console.log('[Validation] Inspeção do DOM da TitleBar e Store:', JSON.stringify(domInspection.result.value, null, 2));
 
   // 2. Captura 1: Tela Inicial com a nova TitleBar integrada
   await captureScreenshot('screenshot_1_initial_titlebar.png');
@@ -250,10 +269,13 @@ async function main() {
   // 8. Captura 4: Janela Restaurada
   await captureScreenshot('screenshot_4_restored.png');
 
-  // Encerra WebSocket, nexus.exe e Vite
-  ws.close();
-  proc.kill();
-  viteProc.kill();
+  // Encerra WebSocket, nexus.exe e Vite de forma limpa
+  try { ws.close(); } catch {}
+  try {
+    spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { stdio: 'ignore' });
+    spawn('taskkill', ['/F', '/T', '/PID', String(viteProc.pid)], { stdio: 'ignore' });
+    spawn('taskkill', ['/F', '/IM', 'nexus.exe'], { stdio: 'ignore' });
+  } catch {}
   console.log('[Validation] Validação visual concluída com sucesso!');
 }
 

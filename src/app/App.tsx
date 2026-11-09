@@ -60,6 +60,9 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__NEXUS_STORE__ = useAppStore;
+    }
     // Global voice call coordinator initialization (idempotent)
     callService.init();
   }, []);

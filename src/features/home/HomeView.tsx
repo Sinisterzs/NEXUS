@@ -19,7 +19,7 @@ import {
 import { useAppStore } from '../../stores/useAppStore';
 import { callService } from '../../services/CallService';
 import { mockCommunities, mockDirectMessages } from '../../mocks';
-import { Avatar } from '../../components/Avatar';
+import { Avatar, CurrentUserAvatar } from '../../components/Avatar';
 import { Badge } from '../../components/Badge';
 import { Tooltip } from '../../components/Tooltip';
 import { AddFriendModal } from '../friends/AddFriendModal';
@@ -80,7 +80,7 @@ export const HomeView: React.FC = () => {
   });
 
   const statusOptions: { value: UserStatus; label: string; color: string; desc: string }[] = [
-    { value: 'online', label: 'Online', color: 'bg-emerald-400', desc: 'Disponível no NEXUS' },
+    { value: 'online', label: 'Disponível', color: 'bg-emerald-400', desc: 'Disponível no NEXUS' },
     { value: 'idle', label: 'Ausente', color: 'bg-amber-400', desc: 'Temporariamente ausente' },
     { value: 'dnd', label: 'Não Perturbe', color: 'bg-rose-500', desc: 'Notificações silenciadas' },
     { value: 'invisible', label: 'Invisível', color: 'bg-zinc-400', desc: 'Aparece offline aos amigos' },
@@ -92,9 +92,7 @@ export const HomeView: React.FC = () => {
       <div className="bg-nexus-surface border border-nexus-border rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs">
         <div className="flex items-center gap-4">
           <div className="relative">
-            <Avatar
-              name={currentUser.displayName}
-              status={currentUser.status}
+            <CurrentUserAvatar
               size="lg"
               className="ring-2 ring-nexus-border"
             />
@@ -121,24 +119,20 @@ export const HomeView: React.FC = () => {
             {/* Quick Status Selector */}
             <div className="flex items-center gap-2 mt-1">
               <div className="relative">
-                <button
-                  onClick={() => setIsStatusMenuOpen(!isStatusMenuOpen)}
-                  className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-nexus-panel hover:bg-nexus-border text-[11px] font-medium text-nexus-text border border-nexus-border/60 transition-nexus"
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      currentUser.status === 'online'
-                        ? 'bg-emerald-400'
-                        : currentUser.status === 'idle'
-                        ? 'bg-amber-400'
-                        : currentUser.status === 'dnd'
-                        ? 'bg-rose-500'
-                        : 'bg-zinc-400'
-                    }`}
-                  />
-                  <span className="capitalize">{currentUser.status}</span>
-                  <ChevronDown className="w-3 h-3 text-nexus-muted" />
-                </button>
+                {(() => {
+                  const currentOpt =
+                    statusOptions.find((o) => o.value === currentUser.status) || statusOptions[0];
+                  return (
+                    <button
+                      onClick={() => setIsStatusMenuOpen(!isStatusMenuOpen)}
+                      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-nexus-panel hover:bg-nexus-border text-[11px] font-medium text-nexus-text border border-nexus-border/60 transition-nexus cursor-pointer"
+                    >
+                      <span className={`w-2 h-2 rounded-full ${currentOpt.color}`} />
+                      <span>{currentOpt.label}</span>
+                      <ChevronDown className="w-3 h-3 text-nexus-muted" />
+                    </button>
+                  );
+                })()}
 
                 {isStatusMenuOpen && (
                   <div

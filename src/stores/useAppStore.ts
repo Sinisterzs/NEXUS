@@ -388,14 +388,21 @@ function createAuthenticatedState(
   const normUser = normalizeAuthUser(user);
   const previousAccountId = state.onlineUser?.id;
   const isDifferentAccount = previousAccountId !== normUser.id;
-  const resolvedAvatar = normUser.avatarUrl || accountAvatarUrl;
+  const resolvedAvatar =
+    accountAvatarUrl ||
+    normUser.avatarUrl ||
+    (!isDifferentAccount ? state.currentUser?.avatarUrl : undefined) ||
+    (!isDifferentAccount ? state.settings?.profile?.avatarUrl : undefined);
 
   syncAccountRepositories(normUser.id);
 
   return {
     authStatus: 'authenticated' as const,
     authMode: 'authenticated' as const,
-    onlineUser: normUser,
+    onlineUser: {
+      ...normUser,
+      avatarUrl: resolvedAvatar,
+    },
     backendAvailable: true,
     // Reset DM/friend state if switching from another account or offline demo
     ...(isDifferentAccount
@@ -416,7 +423,7 @@ function createAuthenticatedState(
       tag: undefined,
       avatarUrl: resolvedAvatar,
       bio: normUser.bio || '',
-      status: (normUser.status as UserStatus) || 'online',
+      status: (normUser.status && normUser.status !== 'offline' ? (normUser.status as UserStatus) : 'online'),
       customStatus: normUser.customStatus || '',
       hasPassword: normUser.hasPassword,
       hasGoogle: normUser.hasGoogle,
@@ -711,6 +718,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         get().loadFriendRequests();
         get().loadConversations();
         get().initWebSocket();
+
+        // Restore saved presence preference if available
+        presenceRepository
+          .getPresence()
+          .then((p) => {
+            if (p?.preferredStatus && p.preferredStatus !== 'offline') {
+              set((state) => ({
+                currentUser: {
+                  ...state.currentUser,
+                  status: p.preferredStatus as UserStatus,
+                  customStatus: p.customStatus || state.currentUser.customStatus,
+                },
+              }));
+            }
+          })
+          .catch(() => {});
       } else if (isOffline && hasStoredToken) {
         // Backend temporarily down or unreachable, but valid credentials exist in Keyring.
         // DO NOT log out, preserve stored credentials.
@@ -1091,8 +1114,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     wsUnsubscribe = gatewayClient.addListener({
       onConnectionReady: ({ friends }) => {
         set({ friends });
+        const cur = get().currentUser;
+        const effectiveStatus: UserStatus =
+          cur.status && cur.status !== 'offline' ? cur.status : 'online';
+        if (cur.status !== effectiveStatus) {
+          set((state) => ({
+            currentUser: { ...state.currentUser, status: effectiveStatus },
+          }));
+        }
+        gatewayClient.sendPresence(effectiveStatus, cur.customStatus);
       },
       onPresenceUpdated: (update) => {
+        if (update.userId === get().currentUser.id) {
+          if (update.status && update.status !== 'offline') {
+            set((state) => ({
+              currentUser: {
+                ...state.currentUser,
+                status: update.status,
+                customStatus: update.customStatus ?? state.currentUser.customStatus,
+              },
+            }));
+          }
+        }
         set((state) => ({
           friends: state.friends.map((f) =>
             f.id === update.userId
@@ -1864,3 +1907,8 @@ screenCaptureService.addListener((state) => {
     screenShareError: state.error,
   });
 });
+
+if (typeof window !== 'undefined') {
+  (window as any).__NEXUS_STORE__ = useAppStore;
+}
+

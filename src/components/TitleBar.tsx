@@ -169,22 +169,22 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
         className="h-10 w-full bg-[#0B0C0E] border-b border-[#1E2026] flex items-center justify-between px-3 shrink-0 select-none text-xs relative z-30"
       >
         {/* Left: Brand Monogram & Breadcrumb */}
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2.5 shrink-0">
           <div className="flex items-center gap-2">
-            <div className="w-5 h-5 rounded bg-gradient-to-br from-rose-600 to-rose-700 flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-rose-900/40 shrink-0">
+            <div className="w-5 h-5 rounded bg-gradient-to-br from-rose-500 to-rose-700 flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-rose-900/50 shrink-0">
               N
             </div>
-            <span className="font-bold text-xs tracking-wider text-zinc-100">
+            <span className="font-bold text-[13px] tracking-wide text-zinc-100">
               NEXUS
             </span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-900 text-zinc-400 border border-zinc-800 font-mono">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-800 font-mono">
               v{APP_VERSION}
             </span>
           </div>
 
-          <span className="text-zinc-700">/</span>
+          <span className="text-zinc-600 font-light">/</span>
 
-          <span className="text-zinc-400 font-medium tracking-tight">
+          <span className="text-zinc-300 font-medium text-xs tracking-tight">
             {tabTitles[activeTab] || 'NEXUS'}
           </span>
         </div>
@@ -196,7 +196,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
           className="relative flex-1 max-w-sm mx-4"
         >
           <div className="relative flex items-center">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 text-zinc-500 pointer-events-none" />
+            <Search className="w-3.5 h-3.5 absolute left-2.5 text-zinc-400 pointer-events-none" />
             <input
               ref={searchInputRef}
               type="text"
@@ -204,10 +204,10 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => setIsSearchFocused(true)}
               placeholder="Pesquisar canais, amigos ou mensagens (Ctrl+K)"
-              className="w-full bg-[#14161C] hover:bg-[#181A22] text-zinc-200 placeholder-zinc-500 text-xs pl-8 pr-16 py-1.5 rounded-lg border border-zinc-800/80 hover:border-zinc-700/80 focus:border-rose-500/60 focus:bg-[#161820] focus:outline-none transition-colors"
+              className="w-full bg-[#14161C] hover:bg-[#181A22] text-zinc-200 placeholder-zinc-400 text-xs pl-8 pr-16 py-1 rounded-md border border-zinc-800 hover:border-zinc-700 focus:border-rose-500/70 focus:bg-[#161820] focus:outline-none transition-colors"
             />
             <div className="absolute right-2 flex items-center gap-1 pointer-events-none">
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-400 border border-zinc-700/60">
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-800/90 text-zinc-300 border border-zinc-700/60">
                 Ctrl K
               </span>
             </div>
@@ -358,14 +358,14 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                   setIsProfileOpen(!isProfileOpen);
                   setIsNotificationsOpen(false);
                 }}
-                className={`flex items-center gap-2 pl-1.5 pr-2 py-1 rounded-lg transition-colors cursor-pointer border ${
+                className={`flex items-center gap-2 pl-1 pr-2 py-0.5 rounded-lg transition-colors cursor-pointer border ${
                   isProfileOpen
                     ? 'bg-zinc-800/90 border-zinc-700 text-white'
-                    : 'bg-zinc-900/60 hover:bg-zinc-800/70 border-zinc-800/80 text-zinc-300 hover:text-white'
+                    : 'bg-zinc-900/80 hover:bg-zinc-800/70 border-zinc-800 text-zinc-200 hover:text-white'
                 }`}
               >
                 <CurrentUserAvatar size="xs" />
-                <span className="text-xs font-medium truncate max-w-[100px]">
+                <span className="text-xs font-medium truncate max-w-[110px]">
                   {onlineUser.displayName || onlineUser.username}
                 </span>
                 <ChevronDown className="w-3 h-3 text-zinc-400 shrink-0" />

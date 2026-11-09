@@ -34,17 +34,25 @@ export function sanitizeAvatarUrl(url?: string | null): string | undefined {
   const trimmed = url.trim();
   if (trimmed.length === 0) return undefined;
 
+  // Permitted image data URLs: strip whitespace / linebreaks inside payload and validate base64
+  if (/^data:image\/(png|jpeg|jpg|webp|gif|svg\+xml);base64,/i.test(trimmed)) {
+    const cleanDataUrl = trimmed.replace(/[\r\n\t\s]/g, '');
+    const base64Part = cleanDataUrl.replace(/^data:image\/[^;]+;base64,/i, '');
+    if (/^[A-Za-z0-9+/=]+$/.test(base64Part)) {
+      return cleanDataUrl;
+    }
+  }
+
   // Strict rejection of script / dangerous protocols or control characters
   if (/[\x00-\x1f\x7f<>"'`]/.test(trimmed)) return undefined;
   if (/^javascript:/i.test(trimmed) || /^vbscript:/i.test(trimmed)) return undefined;
 
-  // Permitted schemes: HTTPS, local dev HTTP, image data URLs, or relative paths
+  // Permitted schemes: HTTPS, local dev HTTP, or relative paths
   if (
     trimmed.startsWith('https://') ||
     trimmed.startsWith('http://localhost') ||
     trimmed.startsWith('http://127.0.0.1') ||
-    /^\/(?!\/)/.test(trimmed) ||
-    /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(trimmed)
+    /^\/(?!\/)/.test(trimmed)
   ) {
     return trimmed;
   }
@@ -117,11 +125,17 @@ export const CurrentUserAvatar: React.FC<{
   showStatus?: boolean;
 }> = ({ size = 'sm', className, showStatus = true }) => {
   const currentUser = useAppStore((state) => state.currentUser);
+  const onlineUser = useAppStore((state) => state.onlineUser);
+  const settingsAvatar = useAppStore((state) => state.settings?.profile?.avatarUrl);
+
+  const effectiveAvatar =
+    currentUser?.avatarUrl || onlineUser?.avatarUrl || settingsAvatar || undefined;
+
   return (
     <Avatar
-      name={currentUser.displayName || currentUser.username || 'Usuário'}
-      avatarUrl={currentUser.avatarUrl}
-      status={currentUser.status}
+      name={currentUser?.displayName || currentUser?.username || onlineUser?.displayName || onlineUser?.username || 'Usuário'}
+      avatarUrl={effectiveAvatar}
+      status={currentUser?.status}
       size={size}
       className={className}
       showStatus={showStatus}
