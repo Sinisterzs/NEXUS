@@ -27,6 +27,7 @@ export const DEFAULT_PREFERENCES: PersistedPreferences = {
   showGameActivity: initialAppSettings.privacy.showGameActivity,
   streamerMode: initialAppSettings.privacy.streamerMode,
   avatarUrl: undefined,
+  updateChannel: 'stable',
 };
 
 class SettingsRepository {

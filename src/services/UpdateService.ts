@@ -1,13 +1,20 @@
 /**
  * NEXUS - Serviço de Atualizações Automáticas via GitHub Releases (Tauri 2 Updater)
- * Permite que o app verifique, baixe e instale atualizações assinadas sem intervenção manual do usuário.
+ * Permite que o app verifique, baixe e instale atualizações assinadas sem intervenção manual do usuário,
+ * com suporte a canais dinâmicos (Stable e Beta / Nightly).
  */
+
+export type UpdateChannel = 'stable' | 'beta';
 
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
   body?: string;
   date?: string;
+  channel?: UpdateChannel;
+  isDowngradeNotice?: boolean;
+  latestRemoteVersion?: string;
+  endpointUsed?: string;
 }
 
 export type UpdateStatus =
@@ -17,17 +24,20 @@ export type UpdateStatus =
   | 'downloading'
   | 'installing'
   | 'up_to_date'
+  | 'downgrade_notice'
   | 'error';
 
 type UpdateListener = (state: UpdateState) => void;
 
 export interface UpdateState {
   status: UpdateStatus;
+  channel: UpdateChannel;
   updateInfo: UpdateInfo | null;
   downloadProgress: number; // 0 - 100
   downloadedBytes: number;
   totalBytes: number;
   errorMessage: string | null;
+  downgradeNoticeMessage: string | null;
 }
 
 class UpdateService {
@@ -35,15 +45,21 @@ class UpdateService {
   private listeners: UpdateListener[] = [];
   private state: UpdateState = {
     status: 'idle',
+    channel: 'stable',
     updateInfo: null,
     downloadProgress: 0,
     downloadedBytes: 0,
     totalBytes: 0,
     errorMessage: null,
+    downgradeNoticeMessage: null,
   };
 
   getState(): UpdateState {
     return this.state;
+  }
+
+  setChannel(channel: UpdateChannel) {
+    this.setState({ channel });
   }
 
   addListener(listener: UpdateListener): () => void {
@@ -66,57 +82,93 @@ class UpdateService {
   }
 
   /**
-   * Verifica se há atualizações disponíveis no GitHub Releases
+   * Verifica se há atualizações disponíveis no GitHub Releases para o canal especificado
    * @param silent Se true, não exibe erro nem status 'up_to_date' para o usuário (usado no arranque)
+   * @param requestedChannel Canal a verificar ('stable' | 'beta')
    */
-  async checkForUpdates(silent = false): Promise<UpdateInfo | null> {
+  async checkForUpdates(silent = false, requestedChannel?: UpdateChannel): Promise<UpdateInfo | null> {
     if (this.state.status === 'downloading' || this.state.status === 'installing') {
       return this.state.updateInfo;
     }
 
+    const channel = requestedChannel || this.state.channel || 'stable';
+
     this.setState({
       status: 'checking',
+      channel,
       errorMessage: null,
+      downgradeNoticeMessage: null,
       downloadProgress: 0,
     });
 
     try {
-      // Dynamic import to support development in browser without crashing
-      const { check } = await import('@tauri-apps/plugin-updater');
-      const update = await check();
+      const { invoke } = await import('@tauri-apps/api/core');
+      const res = await invoke<any>('updater_check_channel', { channel });
 
-      if (update) {
+      if (res && res.updateAvailable && res.rid != null) {
+        const { Update } = await import('@tauri-apps/plugin-updater');
+        const update = new Update(res);
         this.activeUpdate = update;
+
         const info: UpdateInfo = {
-          version: update.version,
-          currentVersion: update.currentVersion,
-          body: update.body || 'Atualizações e melhorias de estabilidade.',
-          date: update.date,
+          version: res.version,
+          currentVersion: res.currentVersion,
+          body: res.body || 'Atualizações e melhorias de estabilidade.',
+          date: res.date,
+          channel,
+          endpointUsed: res.endpointUsed,
+          isDowngradeNotice: false,
         };
 
-        console.log(`[UpdateService] Nova versão encontrada: v${update.version} (Atual: v${update.currentVersion})`);
+        console.log(
+          `[UpdateService] Nova versão encontrada (${channel}): v${res.version} (Atual: v${res.currentVersion})`
+        );
         this.setState({
           status: 'available',
           updateInfo: info,
           errorMessage: null,
+          downgradeNoticeMessage: null,
         });
         return info;
+      } else if (res && res.isCurrentHigher) {
+        // Usuário está em uma versão Nightly/Beta, mas selecionou o canal Stable (sem downgrade automático)
+        const remoteVer = res.latestRemoteVersion || 'estável';
+        const msg = `Você está usando uma versão experimental (v${res.currentVersion}). A versão estável mais recente é a v${remoteVer}. Não haverá downgrade automático; novas atualizações estáveis serão oferecidas quando uma versão superior for lançada.`;
+        console.log(`[UpdateService] Notificação de versão superior (${channel}): ${msg}`);
+        this.activeUpdate = null;
+        this.setState({
+          status: 'downgrade_notice',
+          updateInfo: {
+            version: remoteVer,
+            currentVersion: res.currentVersion,
+            channel,
+            isDowngradeNotice: true,
+            latestRemoteVersion: remoteVer,
+            endpointUsed: res.endpointUsed,
+          },
+          errorMessage: null,
+          downgradeNoticeMessage: msg,
+        });
+        return null;
       } else {
-        console.log('[UpdateService] NEXUS já está na versão mais recente.');
+        console.log(`[UpdateService] NEXUS já está na versão mais recente no canal ${channel}.`);
         this.activeUpdate = null;
         this.setState({
           status: silent ? 'idle' : 'up_to_date',
           updateInfo: null,
           errorMessage: null,
+          downgradeNoticeMessage: null,
         });
         return null;
       }
     } catch (err: any) {
-      console.warn('[UpdateService] Falha ao verificar atualizações no GitHub:', err);
+      console.warn(`[UpdateService] Falha ao verificar atualizações no canal ${channel}:`, err);
       this.activeUpdate = null;
       this.setState({
         status: silent ? 'idle' : 'error',
-        errorMessage: err?.message || 'Não foi possível consultar os servidores do GitHub Releases.',
+        errorMessage:
+          err?.message ||
+          (typeof err === 'string' ? err : 'Não foi possível consultar os servidores do GitHub Releases.'),
       });
       return null;
     }
@@ -174,7 +226,10 @@ class UpdateService {
       console.log('[UpdateService] Atualização aplicada. Reiniciando aplicativo...');
     } catch (err: any) {
       console.error('[UpdateService] Falha ao baixar ou aplicar atualização:', err);
-      const msg = typeof err === 'string' ? err : err?.message || (err ? JSON.stringify(err) : 'Falha ao baixar os pacotes da nova versão.');
+      const msg =
+        typeof err === 'string'
+          ? err
+          : err?.message || (err ? JSON.stringify(err) : 'Falha ao baixar os pacotes da nova versão.');
       this.setState({
         status: 'error',
         errorMessage: msg,

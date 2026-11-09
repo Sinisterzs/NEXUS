@@ -23,6 +23,8 @@ import {
   Copy,
   ShieldCheck,
   ShieldAlert,
+  AlertTriangle,
+  FlaskConical,
 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { networkManager } from '../../services/NetworkManager';
@@ -59,12 +61,15 @@ export const SettingsView: React.FC = () => {
   const checkNetwork = useAppStore((state) => state.checkNetwork);
   const openTailscale = useAppStore((state) => state.openTailscale);
   const setServerAddress = useAppStore((state) => state.setServerAddress);
+  const updateChannel = useAppStore((state) => state.updateChannel);
+  const setUpdateChannel = useAppStore((state) => state.setUpdateChannel);
 
   // Network form state
   const [serverAddressInput, setServerAddressInput] = useState(networkStatus.server_url);
   const [isTestingServer, setIsTestingServer] = useState(false);
   const [networkTestFeedback, setNetworkTestFeedback] = useState<{ text: string; isError: boolean } | null>(null);
   const [copiedServerId, setCopiedServerId] = useState(false);
+  const [showBetaConfirmModal, setShowBetaConfirmModal] = useState(false);
 
   const handleCopyServerId = (id: string) => {
     if (!id) return;
@@ -1620,7 +1625,7 @@ export const SettingsView: React.FC = () => {
             <div>
               <h2 className="text-base font-bold text-nexus-text">Sobre o NEXUS</h2>
               <p className="text-xs text-nexus-muted">
-                Informações da versão, atualizações automáticas via GitHub Releases e repositório.
+                Informações da versão, seleção de canal e atualizações automáticas via GitHub Releases.
               </p>
             </div>
 
@@ -1635,6 +1640,15 @@ export const SettingsView: React.FC = () => {
                     <span className="text-xs px-2 py-0.5 rounded-full bg-nexus-panel border border-nexus-border text-nexus-muted font-mono font-normal">
                       v{APP_VERSION}
                     </span>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded font-mono font-semibold uppercase ${
+                        updateChannel === 'beta'
+                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                          : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      }`}
+                    >
+                      {updateChannel === 'beta' ? 'Canal Beta' : 'Canal Estável'}
+                    </span>
                   </h3>
                   <p className="text-xs text-nexus-muted mt-0.5">
                     Comunicação desktop de alta performance em Rust e Tauri 2.
@@ -1642,16 +1656,109 @@ export const SettingsView: React.FC = () => {
                 </div>
               </div>
 
+              {/* Seletor de Canal de Atualizações */}
+              <div className="p-4 rounded-xl bg-nexus-panel border border-nexus-border space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FlaskConical className="w-4 h-4 text-nexus-accent" />
+                    <div>
+                      <h4 className="text-xs font-semibold text-nexus-text">Canal de Atualizações</h4>
+                      <p className="text-[11px] text-nexus-muted">
+                        Escolha entre versões estáveis homologadas ou versões experimentais prévias.
+                      </p>
+                    </div>
+                  </div>
+
+                  <span className="text-[11px] font-mono text-nexus-muted">
+                    {updateChannel === 'beta' ? 'Beta / Nightly' : 'Stable (Padrão)'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  {/* Opção Stable */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (updateChannel !== 'stable') {
+                        setUpdateChannel('stable');
+                      }
+                    }}
+                    className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                      updateChannel === 'stable'
+                        ? 'bg-nexus-surface border-emerald-500/50 shadow-sm shadow-emerald-500/10'
+                        : 'bg-nexus-surface/50 border-nexus-border hover:border-nexus-border/80 hover:bg-nexus-surface'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-nexus-text flex items-center gap-1.5">
+                          Canal Estável (Stable)
+                          {updateChannel === 'stable' && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          )}
+                        </span>
+                        <span className="text-[10px] text-emerald-400 font-mono font-medium">Recomendado</span>
+                      </div>
+                      <p className="text-[11px] text-nexus-muted mt-1 leading-relaxed">
+                        Recebe apenas releases estáveis e testadas. Não executa downgrades automáticos.
+                      </p>
+                    </div>
+                    <div className="mt-3 text-[10px] font-mono text-nexus-muted/80">
+                      Manifesto: latest.json
+                    </div>
+                  </button>
+
+                  {/* Opção Beta / Nightly */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (updateChannel !== 'beta') {
+                        setShowBetaConfirmModal(true);
+                      }
+                    }}
+                    className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                      updateChannel === 'beta'
+                        ? 'bg-nexus-surface border-amber-500/50 shadow-sm shadow-amber-500/10'
+                        : 'bg-nexus-surface/50 border-nexus-border hover:border-nexus-border/80 hover:bg-nexus-surface'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-nexus-text flex items-center gap-1.5">
+                          Canal Beta / Nightly
+                          {updateChannel === 'beta' && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                          )}
+                        </span>
+                        <span className="text-[10px] text-amber-400 font-mono font-medium">Experimental</span>
+                      </div>
+                      <p className="text-[11px] text-nexus-muted mt-1 leading-relaxed">
+                        Recebe builds automatizados com as últimas melhorias e validações em andamento.
+                      </p>
+                    </div>
+                    <div className="mt-3 text-[10px] font-mono text-nexus-muted/80">
+                      Manifesto: latest-nightly.json
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Status de Atualização do Aplicativo */}
               <div className="p-4 rounded-xl bg-nexus-panel border border-nexus-border space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-nexus-accent" />
-                    <span className="text-xs font-semibold text-nexus-text">Atualizações do Aplicativo</span>
+                    <div>
+                      <span className="text-xs font-semibold text-nexus-text">Verificação de Versão</span>
+                      <p className="text-[11px] text-nexus-muted">
+                        Consultando canal {updateChannel === 'beta' ? 'Beta / Nightly' : 'Estável'}
+                      </p>
+                    </div>
                   </div>
 
                   <button
                     disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'installing'}
-                    onClick={() => updateService.checkForUpdates(false)}
+                    onClick={() => updateService.checkForUpdates(false, updateChannel)}
                     className="px-3 py-1.5 rounded-lg bg-nexus-surface hover:bg-nexus-surface/80 border border-nexus-border text-xs font-semibold text-nexus-text flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
                   >
                     {updateState.status === 'checking' ? (
@@ -1671,26 +1778,51 @@ export const SettingsView: React.FC = () => {
                 {updateState.status === 'up_to_date' && (
                   <div className="flex items-center gap-2 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs">
                     <Check className="w-4 h-4 shrink-0" />
-                    <span>O NEXUS já está atualizado na versão mais recente disponível!</span>
+                    <span>
+                      O NEXUS já está atualizado na versão mais recente disponível no canal{' '}
+                      <strong>{updateChannel === 'beta' ? 'Beta / Nightly' : 'Estável'}</strong>!
+                    </span>
+                  </div>
+                )}
+
+                {updateState.status === 'downgrade_notice' && updateState.downgradeNoticeMessage && (
+                  <div className="p-3 rounded-lg bg-sky-500/10 border border-sky-500/30 space-y-1.5">
+                    <div className="flex items-center gap-2 text-sky-300 text-xs font-semibold">
+                      <Info className="w-4 h-4 shrink-0" />
+                      <span>Versão Experimental em Execução</span>
+                    </div>
+                    <p className="text-[11px] text-sky-200/80 leading-relaxed">
+                      {updateState.downgradeNoticeMessage}
+                    </p>
                   </div>
                 )}
 
                 {updateState.status === 'available' && updateState.updateInfo && (
-                  <div className="p-3 rounded-lg bg-nexus-accent/10 border border-nexus-accent/30 space-y-2">
+                  <div className="p-3.5 rounded-lg bg-nexus-accent/10 border border-nexus-accent/30 space-y-2.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-white">
-                        Nova versão v{updateState.updateInfo.version} disponível!
-                      </span>
+                      <div>
+                        <div className="text-xs font-bold text-white flex items-center gap-2">
+                          <span>Nova versão v{updateState.updateInfo.version} disponível!</span>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-nexus-accent text-white font-mono uppercase">
+                            {updateState.updateInfo.channel || updateChannel}
+                          </span>
+                        </div>
+                        {updateState.updateInfo.endpointUsed && (
+                          <div className="text-[10px] text-nexus-muted font-mono truncate max-w-[320px] mt-0.5" title={updateState.updateInfo.endpointUsed}>
+                            Endpoint: {updateState.updateInfo.endpointUsed}
+                          </div>
+                        )}
+                      </div>
                       <button
                         onClick={() => updateService.downloadAndInstall()}
-                        className="px-3 py-1 rounded-lg bg-nexus-accent hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        className="px-3.5 py-1.5 rounded-lg bg-nexus-accent hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-md shadow-nexus-accent/20"
                       >
                         <Download className="w-3.5 h-3.5" />
                         <span>Baixar e Atualizar</span>
                       </button>
                     </div>
                     {updateState.updateInfo.body && (
-                      <p className="text-[11px] text-nexus-muted font-mono whitespace-pre-wrap">
+                      <p className="text-[11px] text-nexus-muted font-mono whitespace-pre-wrap bg-nexus-panel/50 p-2.5 rounded-lg border border-nexus-border/60">
                         {updateState.updateInfo.body}
                       </p>
                     )}
@@ -1706,7 +1838,7 @@ export const SettingsView: React.FC = () => {
                       />
                     </div>
                     <div className="flex justify-between text-[11px] text-nexus-muted font-mono">
-                      <span>Baixando atualização...</span>
+                      <span>Baixando atualização ({updateChannel === 'beta' ? 'Nightly' : 'Stable'})...</span>
                       <span>{updateState.downloadProgress}%</span>
                     </div>
                   </div>
@@ -1740,9 +1872,64 @@ export const SettingsView: React.FC = () => {
                   </a>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span>Canal de Lançamentos:</span>
-                  <span className="font-mono text-nexus-text">GitHub Releases (Assinado)</span>
+                  <span>Canal Ativo:</span>
+                  <span className="font-mono text-nexus-text">
+                    {updateChannel === 'beta' ? 'Beta / Nightly (latest-nightly.json)' : 'Estável (latest.json)'}
+                  </span>
                 </div>
+                <div className="flex items-center justify-between">
+                  <span>Assinatura Criptográfica:</span>
+                  <span className="flex items-center gap-1 text-emerald-400 font-mono text-[11px]">
+                    <ShieldCheck className="w-3.5 h-3.5" /> Minisign Ed25519 (Obrigatória)
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal de Confirmação para ativação do Canal Beta */}
+        {showBetaConfirmModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fadeIn select-none">
+            <div className="relative w-full max-w-md bg-nexus-surface border border-nexus-border/80 rounded-2xl shadow-2xl p-5 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Ativar Canal Beta / Nightly?</h3>
+                  <p className="text-xs text-nexus-muted mt-0.5">Atualizações experimentais e recursos antecipados</p>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-nexus-panel border border-nexus-border/70 text-xs text-nexus-muted space-y-2">
+                <p>
+                  As versões do canal Beta/Nightly contêm as alterações mais recentes e experimentais. Elas podem sofrer alterações frequentes e eventuais instabilidades.
+                </p>
+                <div className="flex items-center gap-1.5 text-emerald-400 text-[11px] font-medium pt-1">
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span>Todos os pacotes continuam 100% verificados com assinatura digital Minisign.</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBetaConfirmModal(false)}
+                  className="px-3 py-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-border/60 text-xs font-semibold text-nexus-text transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setShowBetaConfirmModal(false);
+                    await setUpdateChannel('beta');
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-semibold text-white shadow transition-colors cursor-pointer"
+                >
+                  Confirmar e Ativar Beta
+                </button>
               </div>
             </div>
           </div>

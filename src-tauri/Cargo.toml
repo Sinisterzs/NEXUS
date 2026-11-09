@@ -1,6 +1,6 @@
 [package]
 name = "nexus"
-version = "0.1.9-nightly.1"
+version = "0.1.8"
 description = "NEXUS - High-performance desktop communication"
 authors = ["NEXUS Team"]
 edition = "2021"
@@ -30,6 +30,7 @@ ring = "0.17"
 hex = "0.4"
 url = "2.5"
 uuid = { version = "1", features = ["v4", "serde"] }
+semver = "1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

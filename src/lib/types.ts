@@ -189,6 +189,7 @@ export interface PersistedPreferences {
   showGameActivity: boolean;
   streamerMode: boolean;
   avatarUrl?: string;
+  updateChannel?: 'stable' | 'beta';
 }
 
 export interface AuthUserProfile {

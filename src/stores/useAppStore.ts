@@ -31,6 +31,7 @@ import { gatewayClient } from '../services/GatewayClient';
 import { callService } from '../services/CallService';
 import { screenCaptureService } from '../services/ScreenCaptureService';
 import { networkManager, DEFAULT_NETWORK_STATUS } from '../services/NetworkManager';
+import { updateService } from '../services/UpdateService';
 import { DeliveryStatus } from '../lib/types';
 
 export function syncAccountRepositories(accountId?: string | null): void {
@@ -295,6 +296,10 @@ interface AppState {
   setServerAddress: (url: string) => Promise<void>;
   approveServer: () => Promise<void>;
 
+  // Updates & Channel Actions
+  updateChannel: 'stable' | 'beta';
+  setUpdateChannel: (channel: 'stable' | 'beta') => Promise<void>;
+
   // Friends & Social Actions (Phase 2.2)
   loadFriends: () => Promise<void>;
   loadFriendRequests: () => Promise<void>;
@@ -443,6 +448,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isGoogleLoading: false,
   backendAvailable: false,
   networkStatus: DEFAULT_NETWORK_STATUS,
+  updateChannel: 'stable',
 
   activeTab: getInitialTab(),
   isSidebarCollapsed: false,
@@ -514,9 +520,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         : null;
 
       const finalTab = overrideTab || urlTab || prefs.activeTab || 'home';
+      const channel = prefs.updateChannel || 'stable';
+      updateService.setChannel(channel);
 
       set({
         activeTab: finalTab,
+        updateChannel: channel,
         isSidebarCollapsed: prefs.isSidebarCollapsed ?? false,
         activeCommunityId: prefs.activeCommunityId ?? null,
         activeChannelId: prefs.activeChannelId ?? null,
@@ -609,6 +618,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       );
       await get().checkSession();
     }
+  },
+
+  setUpdateChannel: async (channel) => {
+    set({ updateChannel: channel });
+    updateService.setChannel(channel);
+    await settingsRepository.savePreferences({ updateChannel: channel });
+    await settingsRepository.flushSave();
+    await updateService.checkForUpdates(false, channel);
   },
 
   checkSession: async () => {

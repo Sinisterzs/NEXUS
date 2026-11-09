@@ -5,6 +5,7 @@ pub mod dm;
 pub mod friends;
 pub mod network;
 pub mod oauth;
+pub mod updater;
 
 use db::DbState;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -209,6 +210,7 @@ pub fn run() {
             network::network_check_server,
             network::network_approve_server,
             network::network_verify_server,
+            updater::updater_check_channel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXUS desktop application");
