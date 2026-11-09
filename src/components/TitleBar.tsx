@@ -161,7 +161,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
         {/* Left: Brand Monogram with sleek curved red accent line */}
         <div className="flex items-center gap-2.5 shrink-0 relative">
           <div className="flex items-center gap-2">
-            <div className="w-5 h-5 rounded bg-gradient-to-br from-rose-500 to-rose-700 flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-rose-900/50 shrink-0">
+            <div className="w-5 h-5 rounded bg-gradient-to-br from-nexus-accent to-nexus-accent-hover flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-nexus-accent/30 shrink-0">
               N
             </div>
             <span className="font-bold text-[13px] tracking-wide text-zinc-100">
@@ -184,9 +184,9 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
               />
               <defs>
                 <linearGradient id="titlebar-red-swoosh" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.8" />
-                  <stop offset="60%" stopColor="#e11d48" stopOpacity="0.4" />
-                  <stop offset="100%" stopColor="#e11d48" stopOpacity="0.0" />
+                  <stop offset="0%" stopColor="var(--nexus-accent)" stopOpacity="0.8" />
+                  <stop offset="60%" stopColor="var(--nexus-accent)" stopOpacity="0.4" />
+                  <stop offset="100%" stopColor="var(--nexus-accent)" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
             </svg>
@@ -208,7 +208,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => setIsSearchFocused(true)}
               placeholder="Pesquisar canais, amigos ou mensagens..."
-              className="w-full bg-[#111319]/90 hover:bg-[#151821] text-zinc-200 placeholder-zinc-400 text-xs pl-8 pr-16 py-1.5 rounded-full border border-white/[0.08] hover:border-white/[0.15] focus:border-rose-500/60 focus:bg-[#151821] focus:outline-none transition-colors"
+              className="w-full bg-[#111319]/90 hover:bg-[#151821] text-zinc-200 placeholder-zinc-400 text-xs pl-8 pr-16 py-1.5 rounded-full border border-white/[0.08] hover:border-white/[0.15] focus:border-nexus-accent/60 focus:bg-[#151821] focus:outline-none transition-colors"
             />
             <div className="absolute right-2.5 flex items-center gap-1 pointer-events-none">
               <span className="text-[9px] font-mono px-1.5 py-0.5 rounded-md bg-white/[0.06] text-zinc-400 border border-white/[0.08]">
@@ -312,7 +312,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
             >
               <Bell className="w-4 h-4" />
               {incomingRequestsCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/50" />
+                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-nexus-accent shadow-sm shadow-nexus-accent/40" />
               )}
             </button>
 
@@ -322,7 +322,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                 <div className="flex items-center justify-between pb-2 border-b border-zinc-800">
                   <span className="font-semibold text-zinc-200">Notificações</span>
                   {incomingRequestsCount > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-mono font-medium">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-nexus-accent/20 text-nexus-accent font-mono font-medium">
                       {incomingRequestsCount} novas
                     </span>
                   )}
@@ -369,8 +369,8 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                 }`}
               >
                 <div className="relative">
-                  <CurrentUserAvatar size="xs" shapeClassName="rounded-md" className="ring-1 ring-rose-500/50" />
-                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-black" />
+                  <CurrentUserAvatar size="xs" shapeClassName="rounded-md" className="shadow-[0_0_8px_var(--nexus-accent-dim)]" />
+                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-nexus-surface" />
                 </div>
                 <div className="flex flex-col items-start text-left leading-tight">
                   <div className="flex items-center gap-1">
@@ -481,9 +481,9 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
               <button
                 type="button"
                 onClick={openAuthModal}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-[11px] font-semibold text-rose-200 transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-nexus-accent/20 hover:bg-nexus-accent/30 border border-nexus-accent/40 text-[11px] font-semibold text-nexus-text transition-colors cursor-pointer"
               >
-                <LogIn className="w-3 h-3 text-rose-400" />
+                <LogIn className="w-3 h-3 text-nexus-accent" />
                 <span>Entrar</span>
               </button>
             </div>

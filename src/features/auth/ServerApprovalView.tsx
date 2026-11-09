@@ -62,7 +62,7 @@ export const ServerApprovalView: React.FC = () => {
         className="h-10 w-full bg-[#0B0C0E] border-b border-[#1E2026] flex items-center justify-between px-3 shrink-0 text-xs"
       >
         <div className="flex items-center gap-2">
-          <div className="w-5 h-5 rounded bg-gradient-to-br from-rose-600 to-rose-700 flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-rose-900/40">
+          <div className="w-5 h-5 rounded bg-gradient-to-br from-nexus-accent to-nexus-accent-hover flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-nexus-accent/30">
             N
           </div>
           <span className="font-bold text-xs tracking-wider text-zinc-100">NEXUS</span>

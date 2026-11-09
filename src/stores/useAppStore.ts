@@ -521,6 +521,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   initializeStore: async (overrideTab) => {
     try {
+      const channel = await settingsRepository.getUpdateChannel();
+      updateService.setChannel(channel);
+
       const prefs = await settingsRepository.loadPreferences();
 
       // Check if URL search param exists
@@ -529,8 +532,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         : null;
 
       const finalTab = overrideTab || urlTab || prefs.activeTab || 'home';
-      const channel = prefs.updateChannel || 'stable';
-      updateService.setChannel(channel);
 
       set({
         activeTab: finalTab,
@@ -654,8 +655,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setUpdateChannel: async (channel) => {
     set({ updateChannel: channel });
     updateService.setChannel(channel);
-    await settingsRepository.savePreferences({ updateChannel: channel });
-    await settingsRepository.flushSave();
+    await settingsRepository.setUpdateChannel(channel);
     await updateService.checkForUpdates(false, channel);
   },
 

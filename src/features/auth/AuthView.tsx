@@ -156,7 +156,7 @@ export const AuthView: React.FC = () => {
         className="h-10 w-full bg-[#0B0C0E] border-b border-[#1E2026] flex items-center justify-between px-3 shrink-0 text-xs"
       >
         <div className="flex items-center gap-2">
-          <div className="w-5 h-5 rounded bg-gradient-to-br from-rose-600 to-rose-700 flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-rose-900/40">
+          <div className="w-5 h-5 rounded bg-gradient-to-br from-nexus-accent to-nexus-accent-hover flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-nexus-accent/30">
             N
           </div>
           <span className="font-bold text-xs tracking-wider text-zinc-100">NEXUS</span>
@@ -179,7 +179,7 @@ export const AuthView: React.FC = () => {
       <div className="flex-1 flex items-center justify-center p-4 overflow-y-auto">
         <div className="relative w-full max-w-md bg-nexus-surface border border-nexus-border/80 rounded-2xl shadow-2xl shadow-black/80 overflow-hidden flex flex-col animate-fadeIn">
           {/* Top highlight bar */}
-          <div className="h-1 bg-gradient-to-r from-nexus-accent via-rose-500 to-nexus-accent" />
+          <div className="h-1 bg-gradient-to-r from-nexus-accent via-nexus-accent-hover to-nexus-accent" />
 
           {/* Brand header */}
           <div className="p-6 pb-4 text-center">
@@ -264,7 +264,7 @@ export const AuthView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => cancelGoogleLogin()}
-                  className="text-[11px] text-nexus-muted hover:text-rose-400 underline transition-colors cursor-pointer"
+                  className="text-[11px] text-nexus-muted hover:text-nexus-accent underline transition-colors cursor-pointer"
                 >
                   Cancelar login Google
                 </button>
@@ -320,7 +320,7 @@ export const AuthView: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isLoading || isGoogleLoading}
-                  className="w-full mt-2 py-2.5 px-4 rounded-xl bg-nexus-accent hover:bg-rose-700 active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-nexus-accent/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  className="w-full mt-2 py-2.5 px-4 rounded-xl bg-nexus-accent hover:bg-nexus-accent-hover active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-nexus-accent/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   {isLoading ? (
                     <>
@@ -416,7 +416,7 @@ export const AuthView: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isLoading || isGoogleLoading}
-                  className="w-full mt-2 py-2.5 px-4 rounded-xl bg-nexus-accent hover:bg-rose-700 active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-nexus-accent/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  className="w-full mt-2 py-2.5 px-4 rounded-xl bg-nexus-accent hover:bg-nexus-accent-hover active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-nexus-accent/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   {isLoading ? (
                     <>

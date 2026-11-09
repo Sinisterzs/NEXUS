@@ -108,7 +108,7 @@ export const UpdateNotificationToast: React.FC = () => {
 
             <button
               onClick={handleUpdate}
-              className="flex-1 py-1.5 px-3 rounded-xl bg-nexus-accent hover:bg-rose-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-nexus shadow-lg shadow-nexus-accent/30 cursor-pointer"
+              className="flex-1 py-1.5 px-3 rounded-xl bg-nexus-accent hover:bg-nexus-accent-hover text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-nexus shadow-lg shadow-nexus-accent/30 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Atualizar Agora</span>

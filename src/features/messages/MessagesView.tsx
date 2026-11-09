@@ -440,7 +440,7 @@ export const MessagesView: React.FC = () => {
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
               placeholder="Filtrar conversas..."
-              className="w-full bg-[#0e1118]/80 text-zinc-200 placeholder-zinc-500 text-xs pl-8.5 pr-3 py-2 rounded-xl border border-white/[0.06] focus:border-rose-500/50 focus:outline-none transition-colors"
+              className="w-full bg-[#0e1118]/80 text-zinc-200 placeholder-zinc-500 text-xs pl-8.5 pr-3 py-2 rounded-xl border border-white/[0.06] focus:border-nexus-accent/60 focus:outline-none transition-colors"
             />
           </div>
 
@@ -448,9 +448,9 @@ export const MessagesView: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowFriendsList(!showFriendsList)}
-              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white border border-rose-500/40 hover:border-rose-500/60 text-xs font-medium transition-all shadow-sm shadow-rose-950/40 cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-nexus-text hover:text-white border border-nexus-accent/40 hover:border-nexus-accent/60 text-xs font-medium transition-all shadow-sm shadow-nexus-accent/20 cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5 text-rose-400" />
+              <Plus className="w-3.5 h-3.5 text-nexus-accent" />
               <span>Nova Conversa</span>
             </button>
           )}
@@ -551,7 +551,7 @@ export const MessagesView: React.FC = () => {
                     onClick={() => selectConversation(conv.id)}
                     className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all cursor-pointer group ${
                       isSelected
-                        ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                        ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white shadow-[0_0_12px_var(--nexus-accent-dim)]'
                         : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 border border-transparent'
                     }`}
                   >
@@ -598,7 +598,7 @@ export const MessagesView: React.FC = () => {
                   }}
                   className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all cursor-pointer group ${
                     isSelected
-                      ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                      ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white shadow-[0_0_12px_var(--nexus-accent-dim)]'
                       : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 border border-transparent'
                   }`}
                 >
@@ -635,9 +635,9 @@ export const MessagesView: React.FC = () => {
         <div className="flex-1 flex flex-col bg-[#07080b] overflow-hidden">
           {/* Header Bar */}
           <div className="h-14 border-b border-white/[0.06] px-6 flex items-center justify-between bg-[#0d0f15]/90 backdrop-blur shrink-0 relative overflow-hidden">
-            {/* Sutil linha de acento carmesim no rodapé do cabeçalho */}
-            <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-rose-500/25 to-transparent pointer-events-none" />
-            <div className="absolute -top-10 left-10 w-44 h-24 bg-rose-600/[0.04] rounded-full blur-2xl pointer-events-none" />
+            {/* Sutil linha de acento no rodapé do cabeçalho */}
+            <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-nexus-accent/30 to-transparent pointer-events-none" />
+            <div className="absolute -top-10 left-10 w-44 h-24 bg-nexus-accent/[0.06] rounded-full blur-2xl pointer-events-none" />
 
             <div className="flex items-center gap-3.5 min-w-0 relative z-10">
               <div className="relative shrink-0">
@@ -647,7 +647,7 @@ export const MessagesView: React.FC = () => {
                   status={activePartnerStatus || 'online'}
                   size="md"
                   shapeClassName="rounded-xl"
-                  className="ring-1 ring-rose-500/50 shadow-[0_0_12px_rgba(244,63,94,0.18)]"
+                  className="shadow-[0_0_12px_var(--nexus-accent-dim)]"
                   showStatus={true}
                 />
               </div>
@@ -676,7 +676,7 @@ export const MessagesView: React.FC = () => {
               <button
                 type="button"
                 onClick={startQuickCall}
-                className="inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white text-xs font-medium border border-rose-500/40 hover:border-rose-500/60 transition-all cursor-pointer shadow-sm shadow-rose-950/40 active:scale-95"
+                className="inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-nexus-text hover:text-white text-xs font-medium border border-nexus-accent/40 hover:border-nexus-accent/60 transition-all cursor-pointer shadow-sm shadow-nexus-accent/20 active:scale-95"
                 title={`Iniciar chamada com ${activePartnerName}`}
               >
                 <Phone className="w-3.5 h-3.5 text-emerald-400" />
@@ -733,7 +733,7 @@ export const MessagesView: React.FC = () => {
                   avatarUrl={activePartnerAvatar}
                   size="xl"
                   shapeClassName="rounded-2xl"
-                  className="mb-3 ring-1 ring-rose-500/50 shadow-[0_0_16px_rgba(244,63,94,0.18)]"
+                  className="mb-3 shadow-[0_0_16px_var(--nexus-accent-dim)]"
                 />
                 <h4 className="text-base font-bold text-white tracking-tight">
                   {activePartnerName}
@@ -796,7 +796,7 @@ export const MessagesView: React.FC = () => {
                             <div className="flex items-center gap-2 mb-1">
                               <span
                                 className={`text-xs font-semibold ${
-                                  isAuthorMe ? 'text-rose-400' : 'text-white'
+                                  isAuthorMe ? 'text-nexus-accent' : 'text-white'
                                 }`}
                               >
                                 {isAuthorMe ? currentUser.displayName : activePartnerName}
@@ -822,13 +822,13 @@ export const MessagesView: React.FC = () => {
                                   if (e.key === 'Enter') handleSaveEdit();
                                   if (e.key === 'Escape') handleCancelEdit();
                                 }}
-                                className="flex-1 bg-[#111319] text-xs text-white px-3 py-1.5 rounded-xl border border-rose-500/60 focus:outline-none"
+                                className="flex-1 bg-[#111319] text-xs text-white px-3 py-1.5 rounded-xl border border-nexus-accent/60 focus:outline-none"
                                 autoFocus
                               />
                               <button
                                 type="button"
                                 onClick={handleSaveEdit}
-                                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                                className="px-3 py-1.5 bg-nexus-accent hover:bg-nexus-accent-hover text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
                               >
                                 Salvar
                               </button>
@@ -884,7 +884,7 @@ export const MessagesView: React.FC = () => {
                               )}
                               {(msg.read_at || msg.delivery_status === 'read') && (
                                 <Tooltip content="Lido pelo destinatário">
-                                  <CheckCheck className="w-3 h-3 text-rose-400" />
+                                  <CheckCheck className="w-3 h-3 text-nexus-accent" />
                                 </Tooltip>
                               )}
                             </div>
@@ -960,7 +960,7 @@ export const MessagesView: React.FC = () => {
                             <div className="flex items-center gap-2 mb-1">
                               <span
                                 className={`text-xs font-semibold ${
-                                  isCurrentUser ? 'text-rose-400' : 'text-white'
+                                  isCurrentUser ? 'text-nexus-accent' : 'text-white'
                                 }`}
                               >
                                 {msg.authorName}
@@ -995,7 +995,7 @@ export const MessagesView: React.FC = () => {
           {/* Typing Composer Input Box - Centered max-w-4xl */}
           <div className="p-4 bg-[#090b10] border-t border-white/[0.06] shrink-0 flex justify-center">
             <div className="w-full max-w-4xl space-y-2">
-              <div className="flex items-center gap-2.5 bg-[#0e1118]/90 border border-white/[0.08] focus-within:border-rose-500/50 rounded-2xl px-4 py-2 transition-all shadow-sm">
+              <div className="flex items-center gap-2.5 bg-[#0e1118]/90 border border-white/[0.08] focus-within:border-nexus-accent/60 rounded-2xl px-4 py-2 transition-all shadow-sm">
                 <input
                   type="text"
                   value={draftMessage}
@@ -1016,7 +1016,7 @@ export const MessagesView: React.FC = () => {
                     disabled={!draftMessage.trim() || isSendingDm}
                     className={`p-2 rounded-xl transition-all cursor-pointer ${
                       draftMessage.trim() && !isSendingDm
-                        ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm shadow-rose-950/60 active:scale-95'
+                        ? 'bg-nexus-accent hover:bg-nexus-accent-hover text-white shadow-sm shadow-nexus-accent/25 active:scale-95'
                         : 'bg-white/[0.04] text-zinc-600 cursor-not-allowed'
                     }`}
                   >
@@ -1042,7 +1042,7 @@ export const MessagesView: React.FC = () => {
         /* Empty State */
         <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-[#07080b]">
           <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center text-zinc-400 mb-4 shadow-inner">
-            <MessageSquare className="w-7 h-7 text-rose-500" />
+            <MessageSquare className="w-7 h-7 text-nexus-accent" />
           </div>
           <h3 className="text-base font-bold text-white mb-1.5">
             Nenhuma conversa selecionada
@@ -1056,9 +1056,9 @@ export const MessagesView: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowFriendsList(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white border border-rose-500/40 hover:border-rose-500/60 text-xs font-medium transition-all shadow-sm shadow-rose-950/40 cursor-pointer"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-nexus-text hover:text-white border border-nexus-accent/40 hover:border-nexus-accent/60 text-xs font-medium transition-all shadow-sm shadow-nexus-accent/20 cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5 text-rose-400" />
+              <Plus className="w-3.5 h-3.5 text-nexus-accent" />
               <span>Nova Conversa</span>
             </button>
           )}

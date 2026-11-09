@@ -407,11 +407,11 @@ export const SettingsView: React.FC = () => {
             onClick={() => setActiveSection('profile')}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'profile'
-                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white font-medium shadow-[0_0_12px_var(--nexus-accent-dim)]'
                 : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <User className={`w-4 h-4 ${activeSection === 'profile' ? 'text-rose-500' : 'text-zinc-400'}`} />
+            <User className={`w-4 h-4 ${activeSection === 'profile' ? 'text-nexus-accent' : 'text-zinc-400'}`} />
             <span>Perfil de Usuário</span>
           </button>
 
@@ -419,11 +419,11 @@ export const SettingsView: React.FC = () => {
             onClick={() => setActiveSection('appearance')}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'appearance'
-                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white font-medium shadow-[0_0_12px_var(--nexus-accent-dim)]'
                 : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Palette className={`w-4 h-4 ${activeSection === 'appearance' ? 'text-rose-500' : 'text-zinc-400'}`} />
+            <Palette className={`w-4 h-4 ${activeSection === 'appearance' ? 'text-nexus-accent' : 'text-zinc-400'}`} />
             <span>Aparência & Tema</span>
           </button>
 
@@ -431,11 +431,11 @@ export const SettingsView: React.FC = () => {
             onClick={() => setActiveSection('audioVideo')}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'audioVideo'
-                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white font-medium shadow-[0_0_12px_var(--nexus-accent-dim)]'
                 : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Volume2 className={`w-4 h-4 ${activeSection === 'audioVideo' ? 'text-rose-500' : 'text-zinc-400'}`} />
+            <Volume2 className={`w-4 h-4 ${activeSection === 'audioVideo' ? 'text-nexus-accent' : 'text-zinc-400'}`} />
             <span>Áudio & Vídeo</span>
           </button>
 
@@ -443,11 +443,11 @@ export const SettingsView: React.FC = () => {
             onClick={() => setActiveSection('notifications')}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'notifications'
-                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white font-medium shadow-[0_0_12px_var(--nexus-accent-dim)]'
                 : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Bell className={`w-4 h-4 ${activeSection === 'notifications' ? 'text-rose-500' : 'text-zinc-400'}`} />
+            <Bell className={`w-4 h-4 ${activeSection === 'notifications' ? 'text-nexus-accent' : 'text-zinc-400'}`} />
             <span>Notificações</span>
           </button>
 
@@ -455,11 +455,11 @@ export const SettingsView: React.FC = () => {
             onClick={() => setActiveSection('privacy')}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'privacy'
-                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white font-medium shadow-[0_0_12px_var(--nexus-accent-dim)]'
                 : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Lock className={`w-4 h-4 ${activeSection === 'privacy' ? 'text-rose-500' : 'text-zinc-400'}`} />
+            <Lock className={`w-4 h-4 ${activeSection === 'privacy' ? 'text-nexus-accent' : 'text-zinc-400'}`} />
             <span>Privacidade & Segurança</span>
           </button>
 
@@ -467,11 +467,11 @@ export const SettingsView: React.FC = () => {
             onClick={() => setActiveSection('network')}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
               activeSection === 'network'
-                ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
+                ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white font-medium shadow-[0_0_12px_var(--nexus-accent-dim)]'
                 : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
             }`}
           >
-            <Network className={`w-4 h-4 ${activeSection === 'network' ? 'text-rose-500' : 'text-zinc-400'}`} />
+            <Network className={`w-4 h-4 ${activeSection === 'network' ? 'text-nexus-accent' : 'text-zinc-400'}`} />
             <span>Rede & Conectividade</span>
           </button>
 
@@ -480,14 +480,14 @@ export const SettingsView: React.FC = () => {
               onClick={() => setActiveSection('about')}
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer ${
                 activeSection === 'about'
-                  ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white font-medium shadow-[0_0_12px_rgba(244,63,94,0.12)]'
-                  : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
-              }`}
-            >
-              <Info className={`w-4 h-4 ${activeSection === 'about' ? 'text-rose-500' : 'text-zinc-400'}`} />
-              <span>Sobre & Atualizações</span>
-            </button>
-          </div>
+                  ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white font-medium shadow-[0_0_12px_var(--nexus-accent-dim)]'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
+            }`}
+          >
+            <Info className={`w-4 h-4 ${activeSection === 'about' ? 'text-nexus-accent' : 'text-zinc-400'}`} />
+            <span>Sobre & Atualizações</span>
+          </button>
+        </div>
         </nav>
       </div>
 
@@ -611,7 +611,7 @@ export const SettingsView: React.FC = () => {
                   ) : (
                     <button
                       onClick={openAuthModal}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nexus-accent hover:bg-rose-700 text-white text-xs font-semibold shadow-sm transition-colors cursor-pointer"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover text-white text-xs font-semibold shadow-sm transition-colors cursor-pointer"
                     >
                       <LogIn className="w-3.5 h-3.5" />
                       <span>Conectar Conta Online</span>
@@ -812,7 +812,7 @@ export const SettingsView: React.FC = () => {
                     type="button"
                     disabled={!hasProfileChanges || isSavingProfile}
                     onClick={handleSaveProfile}
-                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-nexus-accent hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-semibold text-white shadow-sm transition-colors cursor-pointer"
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-xs font-semibold text-white shadow-sm transition-colors cursor-pointer"
                   >
                     {isSavingProfile ? (
                       <>
@@ -1470,7 +1470,7 @@ export const SettingsView: React.FC = () => {
                           });
                         }
                       }}
-                      className="px-3.5 py-2 rounded-lg bg-nexus-accent hover:bg-rose-700 text-xs font-semibold text-white transition-colors cursor-pointer"
+                      className="px-3.5 py-2 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover text-xs font-semibold text-white transition-colors cursor-pointer"
                     >
                       Salvar Endereço
                     </button>
@@ -1862,7 +1862,7 @@ export const SettingsView: React.FC = () => {
                       </div>
                       <button
                         onClick={() => updateService.downloadAndInstall()}
-                        className="px-3.5 py-1.5 rounded-lg bg-nexus-accent hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-md shadow-nexus-accent/20"
+                        className="px-3.5 py-1.5 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-md shadow-nexus-accent/20"
                       >
                         <Download className="w-3.5 h-3.5" />
                         <span>Baixar e Atualizar</span>

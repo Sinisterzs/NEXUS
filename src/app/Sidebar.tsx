@@ -54,8 +54,8 @@ export const Sidebar: React.FC = () => {
         isSidebarCollapsed ? 'w-16' : 'w-60'
       }`}
     >
-      {/* Sutil ambient glow avermelhado no canto inferior esquerdo */}
-      <div className="pointer-events-none absolute -bottom-10 -left-10 w-44 h-44 bg-rose-600/[0.07] rounded-full blur-3xl" />
+      {/* Sutil ambient glow de destaque no canto inferior esquerdo */}
+      <div className="pointer-events-none absolute -bottom-10 -left-10 w-44 h-44 bg-nexus-accent/[0.07] rounded-full blur-3xl" />
 
       {/* Top Section: Nav items */}
       <div className="flex flex-col flex-1 overflow-hidden relative z-10">
@@ -102,14 +102,14 @@ export const Sidebar: React.FC = () => {
                   onClick={() => setActiveTab(item.id)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
                     isActive
-                      ? 'bg-gradient-to-r from-rose-950/40 via-rose-900/20 to-transparent border border-rose-500/40 text-white shadow-[0_0_15px_rgba(244,63,94,0.12)]'
+                      ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white shadow-[0_0_15px_var(--nexus-accent-dim)]'
                       : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border border-transparent'
                   } ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}
                 >
                   <div className="relative flex items-center justify-center">
                     <Icon
                       className={`w-4 h-4 shrink-0 ${
-                        isActive ? 'text-rose-500' : 'text-zinc-400'
+                        isActive ? 'text-nexus-accent' : 'text-zinc-400'
                       }`}
                     />
                     {isSidebarCollapsed && item.badge && item.badge > 0 ? (
@@ -164,7 +164,7 @@ export const Sidebar: React.FC = () => {
                       }}
                       className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-xs transition-colors text-left cursor-pointer ${
                         isSelected
-                          ? 'bg-rose-950/30 text-white font-medium border border-rose-500/30'
+                          ? 'bg-nexus-accent/20 text-white font-medium border border-nexus-accent/40'
                           : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'
                       }`}
                     >

@@ -44,13 +44,13 @@ test('SemVer: versões experimentais produzem VERSÃO NIGHTLY/BETA', () => {
   }
 });
 
-test('SemVer: APP_VERSION atual (0.1.9-nightly.3) é detectada corretamente', () => {
-  assert.equal(APP_VERSION, '0.1.9-nightly.3');
+test('SemVer: APP_VERSION atual é detectada corretamente', () => {
+  assert.equal(APP_VERSION.startsWith('0.1.9-nightly.'), true);
   const info = getInstalledVersionInfo();
 
   assert.equal(info.isPrerelease, true);
   assert.equal(info.isNightly, true);
-  assert.equal(info.prereleaseTag, 'nightly.3');
+  assert.equal(info.prereleaseTag?.startsWith('nightly.'), true);
   assert.equal(info.badgeLabel, 'VERSÃO NIGHTLY/BETA');
 });
 

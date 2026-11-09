@@ -165,7 +165,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fadeIn select-none">
       <div className="relative w-full max-w-md bg-nexus-surface border border-nexus-border/80 rounded-2xl shadow-2xl shadow-black/80 overflow-hidden flex flex-col">
         {/* Header decoration */}
-        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-nexus-accent via-rose-500 to-nexus-accent" />
+        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-nexus-accent via-nexus-accent-hover to-nexus-accent" />
 
         {/* Close Button */}
         <button
@@ -322,7 +322,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               <button
                 type="submit"
                 disabled={isLoading || isGoogleLoading}
-                className="w-full mt-2 py-2.5 px-4 rounded-xl bg-nexus-accent hover:bg-rose-700 active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-nexus-accent/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                className="w-full mt-2 py-2.5 px-4 rounded-xl bg-nexus-accent hover:bg-nexus-accent-hover active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-nexus-accent/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
               >
                 {isLoading ? (
                   <>
@@ -421,7 +421,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               <button
                 type="submit"
                 disabled={isLoading || isGoogleLoading}
-                className="w-full mt-2 py-2.5 px-4 rounded-xl bg-nexus-accent hover:bg-rose-700 active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-nexus-accent/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                className="w-full mt-2 py-2.5 px-4 rounded-xl bg-nexus-accent hover:bg-nexus-accent-hover active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-nexus-accent/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
               >
                 {isLoading ? (
                   <>

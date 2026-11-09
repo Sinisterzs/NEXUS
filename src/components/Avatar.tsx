@@ -95,7 +95,7 @@ export const Avatar: React.FC<AvatarProps> = ({
       <div
         className={cn(
           shapeClassName || defaultRounding,
-          'bg-zinc-800/90 border border-zinc-700/60 flex items-center justify-center font-medium text-zinc-200 overflow-hidden shadow-inner',
+          'bg-nexus-surface/80 flex items-center justify-center font-medium text-nexus-text overflow-hidden shadow-sm',
           sizeClasses[size]
         )}
       >
@@ -107,7 +107,7 @@ export const Avatar: React.FC<AvatarProps> = ({
             className="w-full h-full object-cover"
           />
         ) : (
-          <span className="font-semibold text-zinc-300 tracking-tight">{initials}</span>
+          <span className="font-semibold text-nexus-muted-hover tracking-tight">{initials}</span>
         )}
       </div>
       {status && showStatus && (
@@ -115,7 +115,7 @@ export const Avatar: React.FC<AvatarProps> = ({
           <StatusIndicator
             status={status}
             size={statusSizeMap[size]}
-            className="ring-2 ring-zinc-950"
+            className="ring-2 ring-nexus-surface"
           />
         </div>
       )}

@@ -85,10 +85,10 @@ export const HomeView: React.FC = () => {
     <div className="flex-1 overflow-y-auto p-6 space-y-6 select-none bg-[#07080b] text-zinc-100">
       {/* 1. Top Welcome Banner com Arco Celestial e Ações */}
       <section className="relative overflow-hidden rounded-2xl bg-[#0d0f15]/90 border border-white/[0.07] px-6 py-5 shadow-2xl">
-        {/* Arco Celestial avermelhado (eclíptica/horizonte planetário com glow) */}
+        {/* Arco Celestial com glow dinâmico de acordo com o tema */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden select-none">
           {/* Ambient soft glow */}
-          <div className="absolute -top-10 right-1/4 w-96 h-48 bg-rose-600/[0.09] rounded-full blur-3xl" />
+          <div className="absolute -top-10 right-1/4 w-96 h-48 bg-nexus-accent/[0.09] rounded-full blur-3xl" />
           {/* SVG do horizonte celestial curvo */}
           <svg
             className="absolute inset-0 w-full h-full"
@@ -98,12 +98,12 @@ export const HomeView: React.FC = () => {
           >
             <defs>
               <linearGradient id="celestialArcGrad" x1="0" y1="1" x2="1" y2="0">
-                <stop offset="0%" stopColor="#f43f5e" stopOpacity="0" />
-                <stop offset="30%" stopColor="#e11d48" stopOpacity="0.25" />
-                <stop offset="50%" stopColor="#f43f5e" stopOpacity="0.8" />
-                <stop offset="70%" stopColor="#ff4d6d" stopOpacity="0.95" />
-                <stop offset="90%" stopColor="#e11d48" stopOpacity="0.3" />
-                <stop offset="100%" stopColor="#e11d48" stopOpacity="0" />
+                <stop offset="0%" stopColor="var(--nexus-accent)" stopOpacity="0" />
+                <stop offset="30%" stopColor="var(--nexus-accent)" stopOpacity="0.25" />
+                <stop offset="50%" stopColor="var(--nexus-accent)" stopOpacity="0.8" />
+                <stop offset="70%" stopColor="var(--nexus-accent-hover)" stopOpacity="0.95" />
+                <stop offset="90%" stopColor="var(--nexus-accent)" stopOpacity="0.3" />
+                <stop offset="100%" stopColor="var(--nexus-accent)" stopOpacity="0" />
               </linearGradient>
               <filter id="arcGlow" x="-20%" y="-50%" width="140%" height="200%">
                 <feGaussianBlur in="SourceGraphic" stdDeviation="5" />
@@ -134,10 +134,10 @@ export const HomeView: React.FC = () => {
               <CurrentUserAvatar
                 size="2xl"
                 shapeClassName="rounded-2xl"
-                className="ring-1 ring-rose-500/60 shadow-[0_0_16px_rgba(244,63,94,0.18)]"
+                className="shadow-[0_0_16px_var(--nexus-accent-dim)]"
               />
               <span
-                className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-[#0d0f15] shadow-sm"
+                className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-nexus-surface shadow-sm"
                 title="Online"
               />
             </div>
@@ -162,7 +162,7 @@ export const HomeView: React.FC = () => {
               <MessageSquare className="w-4 h-4 text-zinc-300" />
               <span>Mensagens</span>
               {totalUnreadConversations > 0 && (
-                <span className="w-4 h-4 bg-rose-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center">
+                <span className="w-4 h-4 bg-nexus-accent text-white rounded-full text-[10px] font-bold flex items-center justify-center">
                   {totalUnreadConversations}
                 </span>
               )}
@@ -183,11 +183,11 @@ export const HomeView: React.FC = () => {
                 joinCall('Rustaceans Hub • Sala de Voz 01');
                 setActiveTab('calls');
               }}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white text-xs font-medium border border-rose-500/40 hover:border-rose-500/60 transition-all cursor-pointer shadow-sm shadow-rose-950/50"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-nexus-text hover:text-white text-xs font-medium border border-nexus-accent/40 hover:border-nexus-accent/60 transition-all cursor-pointer shadow-sm shadow-nexus-accent/20"
             >
               {/* Waveform icon fiel à referência */}
               <svg
-                className="w-4 h-4 text-rose-400"
+                className="w-4 h-4 text-nexus-accent"
                 viewBox="0 0 20 20"
                 fill="currentColor"
               >
@@ -211,7 +211,7 @@ export const HomeView: React.FC = () => {
           <section className="bg-[#0d0f15]/90 border border-white/[0.07] rounded-2xl p-5 shadow-xl flex flex-col">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
-                <MessageSquare className="w-4 h-4 text-rose-500" />
+                <MessageSquare className="w-4 h-4 text-nexus-accent" />
                 <h2 className="text-xs font-bold text-white uppercase tracking-wider">
                   CONVERSAS RECENTES
                 </h2>
@@ -219,7 +219,7 @@ export const HomeView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setActiveTab('messages')}
-                className="text-xs text-rose-500 hover:text-rose-400 font-medium transition-colors flex items-center gap-1 cursor-pointer"
+                className="text-xs text-nexus-accent hover:text-nexus-accent-hover font-medium transition-colors flex items-center gap-1 cursor-pointer"
               >
                 <span>Ver todas</span>
                 <span>&rarr;</span>
@@ -357,7 +357,7 @@ export const HomeView: React.FC = () => {
           <section className="bg-[#0d0f15]/90 border border-white/[0.07] rounded-2xl p-5 shadow-xl flex flex-col">
             <div className="flex items-center justify-between mb-3.5">
               <div className="flex items-center gap-2">
-                <Users className="w-4 h-4 text-rose-500" />
+                <Users className="w-4 h-4 text-nexus-accent" />
                 <h2 className="text-xs font-bold text-white uppercase tracking-wider">
                   SUAS COMUNIDADES
                 </h2>
@@ -427,7 +427,7 @@ export const HomeView: React.FC = () => {
                             {ch.type === 'text' ? (
                               <Hash className="w-3 h-3 text-zinc-500 shrink-0" />
                             ) : (
-                              <Radio className="w-3 h-3 text-rose-400 shrink-0" />
+                              <Radio className="w-3 h-3 text-nexus-accent shrink-0" />
                             )}
                             <span className="truncate">{ch.name}</span>
                           </span>
@@ -453,16 +453,16 @@ export const HomeView: React.FC = () => {
                 </h2>
               </div>
 
-              {/* Botão + Adicionar em Pill carmesim suave */}
+              {/* Botão + Adicionar em Pill com acento suave do tema */}
               <button
                 type="button"
                 onClick={openAddFriendModal}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 hover:text-white text-xs font-medium border border-rose-500/40 hover:border-rose-500/60 transition-all cursor-pointer shadow-sm shadow-rose-950/50"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-nexus-text hover:text-white text-xs font-medium border border-nexus-accent/40 hover:border-nexus-accent/60 transition-all cursor-pointer shadow-sm shadow-nexus-accent/20"
               >
-                <UserPlus className="w-3.5 h-3.5 text-rose-400" />
+                <UserPlus className="w-3.5 h-3.5 text-nexus-accent" />
                 <span>Adicionar</span>
                 {incomingRequestsCount > 0 && (
-                  <span className="w-4 h-4 bg-rose-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center ml-1">
+                  <span className="w-4 h-4 bg-nexus-accent text-white rounded-full text-[10px] font-bold flex items-center justify-center ml-1">
                     {incomingRequestsCount}
                   </span>
                 )}
@@ -476,7 +476,7 @@ export const HomeView: React.FC = () => {
                 onClick={() => setFriendFilter('all')}
                 className={`px-3.5 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${
                   friendFilter === 'all'
-                    ? 'bg-rose-950/40 border border-rose-500/40 text-white font-medium shadow-sm'
+                    ? 'bg-nexus-accent/25 border border-nexus-accent/50 text-white font-medium shadow-sm shadow-nexus-accent/15'
                     : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
                 }`}
               >
@@ -487,7 +487,7 @@ export const HomeView: React.FC = () => {
                 onClick={() => setFriendFilter('online')}
                 className={`px-3.5 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${
                   friendFilter === 'online'
-                    ? 'bg-rose-950/40 border border-rose-500/40 text-white font-medium shadow-sm'
+                    ? 'bg-nexus-accent/25 border border-nexus-accent/50 text-white font-medium shadow-sm shadow-nexus-accent/15'
                     : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
                 }`}
               >
@@ -498,7 +498,7 @@ export const HomeView: React.FC = () => {
                 onClick={() => setFriendFilter('gaming')}
                 className={`px-3.5 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${
                   friendFilter === 'gaming'
-                    ? 'bg-rose-950/40 border border-rose-500/40 text-white font-medium shadow-sm'
+                    ? 'bg-nexus-accent/25 border border-nexus-accent/50 text-white font-medium shadow-sm shadow-nexus-accent/15'
                     : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
                 }`}
               >
@@ -514,7 +514,7 @@ export const HomeView: React.FC = () => {
                 value={friendSearch}
                 onChange={(e) => setFriendSearch(e.target.value)}
                 placeholder="Buscar amigo por nome ou tag..."
-                className="w-full bg-[#08090d]/80 border border-white/[0.06] focus:border-rose-500/50 rounded-xl pl-9 pr-8 py-2 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none transition-colors"
+                className="w-full bg-[#08090d]/80 border border-white/[0.06] focus:border-nexus-accent/60 rounded-xl pl-9 pr-8 py-2 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none transition-colors"
               />
               {friendSearch && (
                 <button
@@ -532,7 +532,7 @@ export const HomeView: React.FC = () => {
               {filteredFriends.length === 0 ? (
                 <div className="text-center py-10 px-4 space-y-3">
                   <div className="w-12 h-12 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mx-auto text-zinc-500">
-                    <Users className="w-5 h-5 text-rose-400/80" />
+                    <Users className="w-5 h-5 text-nexus-accent/80" />
                   </div>
                   <div className="space-y-1">
                     <h4 className="text-xs font-semibold text-zinc-300">

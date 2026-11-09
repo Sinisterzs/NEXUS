@@ -140,7 +140,7 @@ export const App: React.FC = () => {
                   },
                 });
               }}
-              className="px-3 py-1.5 rounded-lg bg-nexus-accent hover:bg-rose-700 text-xs font-semibold text-white transition-colors cursor-pointer"
+              className="px-3 py-1.5 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover text-xs font-semibold text-white transition-colors cursor-pointer"
             >
               Abrir opções de rede
             </button>
