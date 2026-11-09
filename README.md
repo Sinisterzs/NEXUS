@@ -11,8 +11,8 @@
 [![Tailwind CSS 4](https://img.shields.io/badge/Tailwind-4.0-0f1117?style=flat-square&logo=tailwindcss&logoColor=38B2AC)](https://tailwindcss.com)
 [![WebRTC](https://img.shields.io/badge/WebRTC-DTLS--SRTP-0f1117?style=flat-square&logo=webrtc&logoColor=E02424)](https://webrtc.org)
 [![Windows 11](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0f1117?style=flat-square&logo=windows11&logoColor=0078D4)](https://www.microsoft.com/windows)
-[![Release](https://img.shields.io/badge/Release-v0.1.8%20Stable-0f1117?style=flat-square&logo=github)](https://github.com/Sinisterzs/NEXUS/releases/tag/v0.1.8)
-[![Candidate](https://img.shields.io/badge/Candidate-v0.2.0%20(Homologação)-e02424?style=flat-square)](https://github.com/Sinisterzs/NEXUS/tree/release/v0.2.0)
+[![Release](https://img.shields.io/badge/Release-v0.2.0%20Stable-e02424?style=flat-square&logo=github)](https://github.com/Sinisterzs/NEXUS/releases/tag/v0.2.0)
+[![Nightly](https://img.shields.io/badge/Nightly-v0.1.9--nightly.7-0f1117?style=flat-square&logo=github)](https://github.com/Sinisterzs/NEXUS/releases/tag/v0.1.9-nightly.7)
 
 </div>
 
@@ -35,9 +35,8 @@ O NEXUS conta com canais de distribuição oficiais gerenciados diretamente nas 
 
 | Canal | Versão | Status | Instalador Windows | Manifesto de Atualização |
 | :--- | :---: | :---: | :--- | :--- |
-| **Estável (Stable Atual)** | `v0.1.8` | Produção Homologada | [Download nexus_0.1.8_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.8/nexus_0.1.8_x64-setup.exe) | [`latest.json`](https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json) |
-| **Pré-lançamento (Nightly / Beta)** | `v0.1.9-nightly.7` | Candidata à v0.2.0 | [Download nexus_0.1.9-nightly.7_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/nexus_0.1.9-nightly.7_x64-setup.exe) | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/latest-nightly.json) |
-| **Próxima Estável (Em Preparação)** | **`v0.2.0`** | Homologação Final | *Aguardando publicação oficial* | *Promoverá latest.json para v0.2.0* |
+| **Estável (Stable Oficial)** | **`v0.2.0`** | Produção Homologada | [**Download nexus_0.2.0_x64-setup.exe**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.0/nexus_0.2.0_x64-setup.exe) | [`latest.json`](https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json) |
+| **Pré-lançamento (Nightly / Beta)** | `v0.1.9-nightly.7` | Candidata Anterior | [Download nexus_0.1.9-nightly.7_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/nexus_0.1.9-nightly.7_x64-setup.exe) | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/latest-nightly.json) |
 
 > [!TIP]
 > Você pode alternar entre os canais **Estável** e **Beta / Nightly** a qualquer momento em **Configurações → Sobre & Atualizações**. A preferência é gravada de forma persistente e o aplicativo notificará automaticamente sobre novos pacotes assinados.
