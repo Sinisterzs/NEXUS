@@ -122,6 +122,8 @@ export class WebRtcService {
   private currentState: WebRtcConnectionState = 'idle';
   private lastDiagnostics: WebRtcTransportDiagnostics | null = null;
   private isDestroyed = false;
+  private cachedIceServers: RTCIceServer[] | null = null;
+  private lastIceServersFetch = 0;
 
   constructor(
     callbacks: WebRtcCallbacks,
@@ -310,20 +312,55 @@ export class WebRtcService {
   }
 
   /**
+   * Consulta os servidores ICE (/v1/webrtc/ice-servers) no backend autenticado com fallback local
+   */
+  public async fetchIceServers(): Promise<RTCIceServer[]> {
+    const now = Date.now();
+    if (this.cachedIceServers && now - this.lastIceServersFetch < 600_000) {
+      return this.cachedIceServers;
+    }
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const servers = await invoke<Array<{ urls: string | string[]; username?: string; credential?: string }>>(
+        'webrtc_get_ice_servers'
+      );
+      if (servers && servers.length > 0) {
+        this.cachedIceServers = servers as RTCIceServer[];
+        this.lastIceServersFetch = now;
+        return this.cachedIceServers;
+      }
+    } catch (err) {
+      console.warn('[WebRtcService] Falha ao consultar /v1/webrtc/ice-servers, usando fallback STUN:', err);
+    }
+
+    const fallback: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+    ];
+    this.cachedIceServers = fallback;
+    this.lastIceServersFetch = now;
+    return fallback;
+  }
+
+  /**
    * Inicializa RTCPeerConnection para chamada 1:1 preservando candidatos ICE recebidos antecipadamente
    */
-  createPeerConnection(): RTCPeerConnection {
+  createPeerConnection(customIceServers?: RTCIceServer[]): RTCPeerConnection {
     if (this.peerConnection) {
       this.cleanupPeerConnection(false);
     }
 
-    // Configuração com fallback STUN para descoberta de reflexivos quando necessário
+    const iceServers = customIceServers || this.cachedIceServers || [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+    ];
+
+    // Configuração com servidores ICE (STUN/TURN)
     const config: RTCConfiguration = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-      ],
+      iceServers,
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
       iceCandidatePoolSize: 2,

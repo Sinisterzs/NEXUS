@@ -86,7 +86,7 @@ pub fn get_session_user_key() -> &'static str {
         "session_token_test_b0_isolated"
     }
 }
-const DEFAULT_API_BASE: &str = "http://127.0.0.1:3001";
+pub const DEFAULT_API_BASE: &str = "https://nexus-api.dynv6.net";
 const DEFAULT_GOOGLE_CLIENT_ID: &str =
     "964906993797-r3v176v8d8b88fo0r9bethub6dr4cre2.apps.googleusercontent.com";
 
@@ -780,7 +780,9 @@ mod tests {
         assert!(!api_base.is_empty());
         assert!(crate::network::validate_server_url(&api_base).is_ok());
         assert!(
-            api_base == "http://127.0.0.1:3001" || api_base == "http://nexus-server:3001",
+            api_base == "https://nexus-api.dynv6.net"
+                || api_base == "http://127.0.0.1:3001"
+                || api_base == "http://nexus-server:3001",
             "Unexpected default api_base: {}",
             api_base
         );
@@ -830,6 +832,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_keyring_and_session_restore_lifecycle() {
+        let _guard = crate::network::tests::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("NEXUS_API_BASE");
+        std::env::remove_var("NEXUS_API_URL");
         clear_authenticated_server_origin();
         crate::network::clear_dynamic_api_base_for_tests();
         crate::network::clear_persisted_server_url_for_tests();

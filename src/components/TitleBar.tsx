@@ -23,9 +23,14 @@ const NetworkStatusBadge: React.FC = () => {
   const reachability = networkStatus.server_reachability;
 
   if (reachability === 'connected') {
+    const connLabel = networkStatus.server_url.startsWith('https://')
+      ? 'HTTPS Seguro'
+      : networkStatus.is_magic_dns
+      ? 'MagicDNS'
+      : 'Tailscale';
     return (
       <div
-        title={`Conectado ao servidor via ${networkStatus.is_magic_dns ? 'MagicDNS' : 'Tailscale'} (${networkStatus.server_url})${networkStatus.server_latency_ms ? ` • ${networkStatus.server_latency_ms}ms` : ''}`}
+        title={`Conectado ao servidor via ${connLabel} (${networkStatus.server_url})${networkStatus.server_latency_ms ? ` • ${networkStatus.server_latency_ms}ms` : ''}`}
         className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-nexus-panel border border-emerald-500/30 text-[10px] text-emerald-300 font-medium select-none"
       >
         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />

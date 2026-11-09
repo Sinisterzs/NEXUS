@@ -2,5 +2,5 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "NEXUS Desktop & Server public configuration",
   "googleClientId": "964906993797-r3v176v8d8b88fo0r9bethub6dr4cre2.apps.googleusercontent.com",
-  "apiUrl": "http://nexus-server:3001"
+  "apiUrl": "https://nexus-api.dynv6.net"
 }

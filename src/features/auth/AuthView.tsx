@@ -433,7 +433,7 @@ export const AuthView: React.FC = () => {
               <div className="flex items-center gap-1.5 truncate max-w-[280px]">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                 <span className="truncate font-mono">
-                  {networkStatus.server_url || 'http://100.86.96.35:3001'}
+                  {networkStatus.server_url || 'https://nexus-api.dynv6.net'}
                 </span>
               </div>
               <span className="text-[10px] font-mono text-nexus-muted/80 shrink-0">

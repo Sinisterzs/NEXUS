@@ -21,6 +21,44 @@ pub fn is_valid_tailscale_ip(host: &str) -> bool {
     false
 }
 
+pub fn is_valid_public_fqdn(host: &str) -> bool {
+    let clean = host.trim().trim_end_matches('.');
+    if clean.is_empty() || clean.len() > 253 {
+        return false;
+    }
+
+    // Disallow raw IP addresses (prevents SSRF against internal LAN/cloud metadata like 192.168.x.x, 10.x.x.x, 169.254.169.254)
+    if clean.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+
+    let labels: Vec<&str> = clean.split('.').collect();
+    // Must have at least 2 labels (domain.tld)
+    if labels.len() < 2 {
+        return false;
+    }
+
+    // TLD must not be purely numeric (RFC 1123) and at least 2 characters
+    let tld = labels.last().unwrap();
+    if tld.len() < 2 || tld.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+
+    for label in labels {
+        if label.is_empty() || label.len() > 63 {
+            return false;
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return false;
+        }
+        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return false;
+        }
+    }
+
+    true
+}
+
 pub fn is_authorized_server_host(host: &str) -> bool {
     let clean = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if clean.is_empty() {
@@ -52,6 +90,11 @@ pub fn is_authorized_server_host(host: &str) -> bool {
         {
             return true;
         }
+    }
+
+    // 4. Valid RFC 1123 Public Domain FQDN
+    if is_valid_public_fqdn(&clean) {
+        return true;
     }
 
     false
@@ -90,9 +133,22 @@ pub fn validate_server_url(raw_url: &str) -> Result<String, String> {
 
     if !is_authorized_server_host(host) {
         return Err(
-            "Host não autorizado. Use apenas loopback (127.0.0.1/localhost) ou endereço privado Tailscale (100.64.0.0/10, nexus-server ou *.ts.net)."
+            "Host não autorizado. Use apenas loopback (127.0.0.1/localhost), endereço privado Tailscale (100.64.0.0/10, *.ts.net) ou domínio público FQDN seguro."
                 .to_string(),
         );
+    }
+
+    // Public FQDNs must use https:// (http:// is strictly allowed only on loopback or Tailscale)
+    let is_local_or_tailnet = host == "127.0.0.1"
+        || host == "localhost"
+        || host == "[::1]"
+        || host == "::1"
+        || host == "nexus-server"
+        || host.ends_with(".ts.net")
+        || is_valid_tailscale_ip(host);
+
+    if !is_local_or_tailnet && scheme != "https" {
+        return Err("Domínios públicos externos exigem conexão segura https://.".to_string());
     }
 
     let normalized_host = host.trim_end_matches('.');
@@ -739,6 +795,12 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
         // - Other online Tailscale peers
         let mut candidates: Vec<String> = Vec::new();
 
+        // Pass 0: Default public HTTPS server if not already active_url
+        let default_public = crate::auth::get_default_api_base();
+        if default_public != active_url {
+            candidates.push(default_public);
+        }
+
         // Pass 1: Peers labeled as likely servers
         for p in &detected_peers {
             if p.online && p.is_likely_server {
@@ -859,7 +921,10 @@ pub async fn network_get_status() -> Result<NetworkStatus, String> {
     }
 
     if reachability != "connected" && reachability != "needs_approval" {
-        if !installed || state_str != "running" {
+        if active_url.starts_with("https://") {
+            // Public HTTPS server connectivity failure does not indicate private Tailscale disconnection
+            reachability = "server_unreachable".to_string();
+        } else if !installed || state_str != "running" {
             reachability = "network_disconnected".to_string();
         } else {
             reachability = "server_unreachable".to_string();
@@ -1091,10 +1156,10 @@ pub fn augment_csp_for_server(base_csp: &str, server_url: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_augment_csp_for_server_injects_tailscale_ip_origins() {
@@ -1141,24 +1206,45 @@ mod tests {
             validate_server_url("https://nexus-server.tail1234.ts.net").unwrap(),
             "https://nexus-server.tail1234.ts.net"
         );
+        // Valid HTTPS Public FQDNs
+        assert_eq!(
+            validate_server_url("https://api.nexus.app").unwrap(),
+            "https://api.nexus.app"
+        );
+        assert_eq!(
+            validate_server_url("https://nexus.mydomain.com:443/").unwrap(),
+            "https://nexus.mydomain.com"
+        );
     }
 
     #[test]
     fn test_validate_server_url_rejects_unauthorized_hosts_and_exfiltration_vectors() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         clear_dynamic_api_base_for_tests();
 
-        // External domains (HTTP and HTTPS) must be rejected to prevent Bearer token exfiltration
+        // Plaintext HTTP on external domains must be rejected to prevent credential interception
         assert!(validate_server_url("http://attacker.example.com:3001").is_err());
-        assert!(validate_server_url("https://attacker.example.com:3001").is_err());
         assert!(validate_server_url("http://nexus-server.attacker.com:3001").is_err());
         assert!(validate_server_url("http://ts.net.attacker.com:3001").is_err());
+        assert!(validate_server_url("http://api.nexus.app").is_err());
 
-        // IPs outside Tailscale 100.64.0.0/10 and loopback must be rejected
+        // Malformed domain names or numeric TLDs must be rejected
+        assert!(validate_server_url("https://-invalid.example.com").is_err());
+        assert!(validate_server_url("https://invalid-.example.com").is_err());
+        assert!(validate_server_url("https://invalid..example.com").is_err());
+        assert!(validate_server_url("https://domain.123").is_err());
+
+        // IPs outside Tailscale 100.64.0.0/10 and loopback must be rejected (prevents LAN SSRF and metadata probing)
         assert!(validate_server_url("http://100.63.255.255:3001").is_err());
         assert!(validate_server_url("http://100.128.0.1:3001").is_err());
         assert!(validate_server_url("http://192.168.1.50:3001").is_err());
+        assert!(validate_server_url("https://192.168.1.50").is_err());
+        assert!(validate_server_url("http://10.0.0.1:3001").is_err());
+        assert!(validate_server_url("https://10.0.0.1").is_err());
+        assert!(validate_server_url("http://169.254.169.254:3001").is_err());
+        assert!(validate_server_url("https://169.254.169.254").is_err());
         assert!(validate_server_url("http://8.8.8.8:3001").is_err());
+        assert!(validate_server_url("https://8.8.8.8").is_err());
 
         // Non-HTTP schemes, embedded credentials, paths, and queries must be rejected
         assert!(validate_server_url("ftp://127.0.0.1:3001").is_err());
@@ -1185,7 +1271,7 @@ mod tests {
 
     #[test]
     fn test_persisted_server_url_lifecycle() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         clear_dynamic_api_base_for_tests();
         clear_persisted_server_url_for_tests();
 
@@ -1258,7 +1344,7 @@ mod tests {
     fn test_auth_token_withholding_on_unauthenticated_server() {
         use crate::auth::*;
 
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         clear_authenticated_server_origin();
         clear_dynamic_api_base_for_tests();
         clear_persisted_server_url_for_tests();
@@ -1301,7 +1387,7 @@ mod tests {
     async fn test_live_backend_needs_approval_flow() {
         use crate::auth::clear_authenticated_server_origin;
 
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         clear_authenticated_server_origin();
         clear_dynamic_api_base_for_tests();
         clear_persisted_server_url_for_tests();

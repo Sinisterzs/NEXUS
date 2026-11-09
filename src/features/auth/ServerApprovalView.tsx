@@ -14,7 +14,7 @@ export const ServerApprovalView: React.FC = () => {
   const pending = networkStatus.pending_server_identity;
   const serverId = pending?.server_id || networkStatus.approved_server_id || 'Não identificado';
   const publicKey = pending?.public_key || 'Desconhecida';
-  const endpoint = pending?.bound_endpoint || networkStatus.server_url || 'http://nexus-server:3001';
+  const endpoint = pending?.bound_endpoint || networkStatus.server_url || 'https://nexus-api.dynv6.net';
 
   const handleApprove = async () => {
     setIsApproving(true);

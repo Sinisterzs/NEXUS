@@ -54,6 +54,7 @@ pub fn create_router_with_identity(
         config_host: config.server_host.clone(),
         config_port: config.server_port,
         tailscale_ip: config.tailscale_ip.clone(),
+        public_fqdn: config.public_fqdn.clone(),
     };
 
     let system_routes = Router::new()
@@ -61,9 +62,11 @@ pub fn create_router_with_identity(
         .route("/v1/system/challenge", post(handlers::health::challenge_check))
         .route("/system/challenge", post(handlers::health::challenge_check))
         .with_state(system_state);
-    let rate_limiter = RateLimiter::new(
+    let rate_limiter = RateLimiter::with_options(
         config.rate_limit_auth_per_minute as usize,
         Duration::from_secs(60),
+        crate::middleware::rate_limit::DEFAULT_MAX_TRACKED_IPS,
+        config.trust_proxy_headers,
     );
 
     // 1. Public auth routes with rate limiting
@@ -182,10 +185,24 @@ pub fn create_router_with_identity(
         .merge(gateway_ws_routes)
         .merge(gateway_ticket_routes);
 
+    // 7. WebRTC ICE / STUN / TURN routes protected by auth middleware
+    let webrtc_state = handlers::webrtc::WebrtcState {
+        turn_secret: config.turn_secret.clone(),
+        turn_server: config.turn_server.clone(),
+    };
+    let webrtc_routes = Router::new()
+        .route("/ice-servers", get(handlers::webrtc::get_ice_servers))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_service.clone(),
+            auth_middleware,
+        ))
+        .with_state(webrtc_state);
+
     // CORS configuration for Tauri & Web clients (strictly scoped origins)
+    let public_fqdn = config.public_fqdn.clone();
     let cors = CorsLayer::new()
         .allow_origin(tower_http::cors::AllowOrigin::predicate(
-            |origin: &header::HeaderValue, _parts: &axum::http::request::Parts| {
+            move |origin: &header::HeaderValue, _parts: &axum::http::request::Parts| {
                 if let Ok(s) = origin.to_str() {
                     let clean = s.trim().to_ascii_lowercase();
                     // 1. Tauri desktop application origins
@@ -209,6 +226,18 @@ pub fn create_router_with_identity(
                         || clean.starts_with("https://100.")
                     {
                         return true;
+                    }
+                    // 4. Configured Public FQDN origin (HTTPS or HTTP)
+                    if let Some(ref fqdn) = public_fqdn {
+                        let https_origin = format!("https://{}", fqdn);
+                        let http_origin = format!("http://{}", fqdn);
+                        if clean == https_origin
+                            || clean == http_origin
+                            || clean.starts_with(&format!("{}:", https_origin))
+                            || clean.starts_with(&format!("{}:", http_origin))
+                        {
+                            return true;
+                        }
                     }
                 }
                 false
@@ -234,6 +263,7 @@ pub fn create_router_with_identity(
         .nest("/v1/users", users_routes)
         .nest("/v1/friends", friends_routes)
         .nest("/v1/dm", dm_routes)
+        .nest("/v1/webrtc", webrtc_routes)
         .nest("/v1/gateway", gateway_routes.clone())
         .nest("/v1/ws", gateway_routes.clone())
         .nest("/ws", gateway_routes)

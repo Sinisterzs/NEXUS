@@ -12,7 +12,7 @@ export const ServerOfflineView: React.FC = () => {
   const authStatus = useAppStore((state) => state.authStatus);
 
   const [addressInput, setAddressInput] = useState(
-    networkStatus.server_url || 'http://100.86.96.35:3001'
+    networkStatus.server_url || 'https://nexus-api.dynv6.net'
   );
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -110,7 +110,9 @@ export const ServerOfflineView: React.FC = () => {
             </div>
             <h2 className="text-lg font-bold text-nexus-text">Servidor NEXUS Indisponível</h2>
             <p className="text-xs text-nexus-muted mt-1 max-w-md mx-auto">
-              {isTailscaleNeedsLogin
+              {networkStatus.server_url.startsWith('https://')
+                ? 'Não foi possível conectar ao servidor NEXUS pela internet (verifique sua conexão ou se o serviço está em manutenção).'
+                : isTailscaleNeedsLogin
                 ? 'Sua rede privada Tailscale precisa de autenticação para alcançar o backend.'
                 : isNetworkDisconnected
                 ? 'A rede privada Tailscale está desconectada ou desativada no seu computador.'
@@ -150,7 +152,7 @@ export const ServerOfflineView: React.FC = () => {
           <div className="p-4 rounded-xl bg-nexus-panel/60 border border-nexus-border/60 space-y-3">
             <div>
               <label className="block text-[11px] font-semibold text-nexus-text mb-1">
-                Endereço do Servidor (MagicDNS ou IP Tailscale)
+                Endereço do Servidor (HTTPS Público ou Tailscale)
               </label>
               <div className="flex gap-2">
                 <input
@@ -160,7 +162,7 @@ export const ServerOfflineView: React.FC = () => {
                     setAddressInput(e.target.value);
                     setFeedback(null);
                   }}
-                  placeholder="http://100.86.96.35:3001"
+                  placeholder="https://nexus-api.dynv6.net"
                   className="flex-1 bg-nexus-bg text-nexus-text text-xs px-3 py-2 rounded-xl border border-nexus-border focus:border-nexus-accent focus:outline-none font-mono"
                 />
                 <button
@@ -183,7 +185,7 @@ export const ServerOfflineView: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-between text-[11px] text-nexus-muted pt-1">
-              <span>Status Tailscale: <strong>{networkStatus.tailscale_installed ? (networkStatus.tailscale_state === 'running' ? 'Ativo' : networkStatus.tailscale_state) : 'Não instalado'}</strong></span>
+              <span>Status Tailscale (Opcional): <strong>{networkStatus.tailscale_installed ? (networkStatus.tailscale_state === 'running' ? 'Ativo' : networkStatus.tailscale_state) : 'Não instalado'}</strong></span>
               <span>IP Local: <code className="font-mono text-nexus-text">{networkStatus.tailscale_ips[0] || 'Nenhum'}</code></span>
             </div>
           </div>
@@ -200,14 +202,29 @@ export const ServerOfflineView: React.FC = () => {
               <span>{isReconnecting ? 'Reconectando...' : 'Tentar Reconectar'}</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => openTailscale()}
-              className="py-2.5 px-4 rounded-xl bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span>Abrir Tailscale</span>
-            </button>
+            {networkStatus.tailscale_installed ? (
+              <button
+                type="button"
+                onClick={() => openTailscale()}
+                className="py-2.5 px-4 rounded-xl bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Abrir Tailscale</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  setAddressInput('https://nexus-api.dynv6.net');
+                  await setServerAddress('https://nexus-api.dynv6.net');
+                  await checkSession();
+                }}
+                className="py-2.5 px-4 rounded-xl bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Restaurar Padrão (HTTPS)</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

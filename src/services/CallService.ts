@@ -615,6 +615,7 @@ export class CallService {
       const latestStore = useAppStore.getState();
       rtc.setMuted(Boolean(latestStore.isMicMuted || latestStore.isDeafened));
       rtc.setDeafened(Boolean(latestStore.isDeafened));
+      await rtc.fetchIceServers().catch(() => {});
       rtc.createPeerConnection();
 
       // Dispara convite no backend
@@ -678,6 +679,7 @@ export class CallService {
       );
       rtc.setMuted(currentMuted);
       rtc.setDeafened(Boolean(useAppStore.getState().isDeafened));
+      await rtc.fetchIceServers().catch(() => {});
       rtc.createPeerConnection();
 
       // Responde aceite ao backend

@@ -4,6 +4,7 @@ use crate::db::{
     DbConversationState, DbMessage, DbState,
 };
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
@@ -693,4 +694,65 @@ pub fn db_migrate_to_v3(
         "status": "success",
         "schema_version": ver
     }))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IceServerConfig {
+    pub urls: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IceServersResponse {
+    pub ice_servers: Vec<IceServerConfig>,
+    #[serde(default)]
+    pub ttl: u64,
+}
+
+#[tauri::command]
+pub async fn webrtc_get_ice_servers() -> Result<Vec<IceServerConfig>, String> {
+    let fallback = vec![
+        IceServerConfig {
+            urls: serde_json::json!([
+                "stun:stun.l.google.com:19302",
+                "stun:stun1.l.google.com:19302",
+                "stun:stun2.l.google.com:19302"
+            ]),
+            username: None,
+            credential: None,
+        },
+    ];
+
+    let token = match crate::auth::get_secure_token() {
+        Some(t) => t,
+        None => return Ok(fallback),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let url = format!("{}/v1/webrtc/ice-servers", crate::auth::get_api_base());
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return Ok(fallback),
+    };
+
+    if !resp.status().is_success() {
+        return Ok(fallback);
+    }
+
+    match resp.json::<IceServersResponse>().await {
+        Ok(data) if !data.ice_servers.is_empty() => Ok(data.ice_servers),
+        _ => Ok(fallback),
+    }
 }

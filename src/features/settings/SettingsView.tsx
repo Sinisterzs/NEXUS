@@ -467,7 +467,7 @@ export const SettingsView: React.FC = () => {
             }`}
           >
             <Network className="w-4 h-4" />
-            <span>Rede Privada (Tailscale)</span>
+            <span>Rede & Conectividade</span>
           </button>
 
           <div className="pt-2 mt-2 border-t border-nexus-border/50">
@@ -1249,9 +1249,9 @@ export const SettingsView: React.FC = () => {
         {activeSection === 'network' && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-base font-bold text-nexus-text">Rede Privada & Tailscale</h2>
+              <h2 className="text-base font-bold text-nexus-text">Rede & Conectividade</h2>
               <p className="text-xs text-nexus-muted">
-                Conectividade segura ponto-a-ponto com o servidor NEXUS em redes distintas.
+                Conectividade segura com o servidor NEXUS via HTTPS público pela internet ou rede privada Tailscale.
               </p>
             </div>
 
@@ -1264,7 +1264,7 @@ export const SettingsView: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="text-xs font-bold text-nexus-text">Status do Tailscale</h3>
-                    <p className="text-[11px] text-nexus-muted">Túnel WireGuard de rede privada mesh</p>
+                    <p className="text-[11px] text-nexus-muted">Túnel WireGuard de rede privada mesh (Opcional)</p>
                   </div>
                 </div>
 
@@ -1280,9 +1280,9 @@ export const SettingsView: React.FC = () => {
                       Login Necessário
                     </span>
                   ) : (
-                    <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/15 border border-rose-500/30 text-[11px] font-semibold text-rose-300">
-                      <span className="w-2 h-2 rounded-full bg-rose-400" />
-                      {networkStatus.tailscale_installed ? 'Desconectado' : 'Não Instalado'}
+                    <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-zinc-500/15 border border-zinc-500/30 text-[11px] font-semibold text-zinc-300">
+                      <span className="w-2 h-2 rounded-full bg-zinc-400" />
+                      {networkStatus.tailscale_installed ? 'Desconectado' : 'Não Instalado (Opcional)'}
                     </span>
                   )}
                 </div>
@@ -1404,10 +1404,10 @@ export const SettingsView: React.FC = () => {
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-semibold text-nexus-text mb-1">
-                    Endereço do Servidor (MagicDNS ou IP Tailscale)
+                    Endereço do Servidor (HTTPS Público, MagicDNS ou IP Tailscale)
                   </label>
                   <p className="text-[11px] text-nexus-muted mb-2">
-                    Por padrão, o NEXUS utiliza MagicDNS (<code className="text-nexus-accent">http://nexus-server:3001</code>) sem necessidade de configuração manual.
+                    Por padrão, o NEXUS conecta ao backend público seguro (<code className="text-nexus-accent">https://nexus-api.dynv6.net</code>) pela internet, sem exigir Tailscale.
                   </p>
                   <div className="flex items-center gap-2">
                     <input
@@ -1417,7 +1417,7 @@ export const SettingsView: React.FC = () => {
                         setServerAddressInput(e.target.value);
                         setNetworkTestFeedback(null);
                       }}
-                      placeholder="http://nexus-server:3001"
+                      placeholder="https://nexus-api.dynv6.net"
                       className="flex-1 bg-nexus-bg text-nexus-text text-xs px-3 py-2 rounded-lg border border-nexus-border focus:border-nexus-accent focus:outline-none font-mono"
                     />
                     <button

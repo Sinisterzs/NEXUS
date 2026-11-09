@@ -12,6 +12,10 @@ pub struct AppConfig {
     pub google_client_secret: Option<String>,
     pub google_jwks_url: String,
     pub tailscale_ip: Option<String>,
+    pub public_fqdn: Option<String>,
+    pub trust_proxy_headers: bool,
+    pub turn_secret: Option<String>,
+    pub turn_server: Option<String>,
 }
 
 impl AppConfig {
@@ -104,6 +108,33 @@ impl AppConfig {
             .filter(|s| !s.is_empty())
             .or_else(detect_tailscale_ip);
 
+        let public_fqdn = env::var("PUBLIC_FQDN")
+            .or_else(|_| env::var("PUBLIC_DOMAIN"))
+            .ok()
+            .map(|s| {
+                s.trim()
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase()
+            })
+            .filter(|s| !s.is_empty());
+
+        let trust_proxy_headers = env::var("TRUST_PROXY_HEADERS")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+
+        let turn_secret = env::var("TURN_SECRET")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let turn_server = env::var("TURN_SERVER")
+            .or_else(|_| env::var("TURN_URLS"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Self {
             database_url,
             test_database_url,
@@ -115,6 +146,10 @@ impl AppConfig {
             google_client_secret,
             google_jwks_url,
             tailscale_ip,
+            public_fqdn,
+            trust_proxy_headers,
+            turn_secret,
+            turn_server,
         }
     }
 

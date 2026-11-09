@@ -17,6 +17,7 @@ pub struct SystemState {
     pub config_host: String,
     pub config_port: u16,
     pub tailscale_ip: Option<String>,
+    pub public_fqdn: Option<String>,
 }
 
 pub async fn health_check(
@@ -73,14 +74,25 @@ pub async fn challenge_check(
             .unwrap_or("")
             .trim_start_matches('[')
             .trim_end_matches(']');
-        let p_port = parsed.port().unwrap_or(80);
+        let scheme = parsed.scheme();
+        let default_port = if scheme == "https" { 443 } else { 80 };
+        let p_port = parsed.port().unwrap_or(default_port);
 
-        let port_matches = p_port == port;
+        let is_public_fqdn_match = state
+            .public_fqdn
+            .as_deref()
+            .map(|fqdn| fqdn.eq_ignore_ascii_case(p_host))
+            .unwrap_or(false);
+
+        let port_matches = p_port == port
+            || (is_public_fqdn_match && (p_port == 443 || p_port == 80 || p_port == port))
+            || ((p_port == 443 || p_port == 80) && (p_host == "127.0.0.1" || p_host == "localhost"));
 
         let host_matches = p_host == "127.0.0.1"
             || p_host == "localhost"
             || p_host == "::1"
             || p_host == state.config_host.to_lowercase()
+            || is_public_fqdn_match
             || state
                 .tailscale_ip
                 .as_deref()

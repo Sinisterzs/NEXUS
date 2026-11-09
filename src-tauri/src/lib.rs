@@ -210,6 +210,7 @@ pub fn run() {
             network::network_check_server,
             network::network_approve_server,
             network::network_verify_server,
+            commands::webrtc_get_ice_servers,
             updater::updater_check_channel,
         ])
         .run(tauri::generate_context!())
