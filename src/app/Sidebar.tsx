@@ -50,16 +50,16 @@ export const Sidebar: React.FC = () => {
 
   return (
     <aside
-      className={`h-full bg-nexus-surface border-r border-nexus-border flex flex-col justify-between shrink-0 transition-all duration-200 select-none ${
+      className={`h-full bg-[#0e1015] border-r border-zinc-800/80 flex flex-col justify-between shrink-0 transition-all duration-200 select-none ${
         isSidebarCollapsed ? 'w-16' : 'w-60'
       }`}
     >
       {/* Top Section: Nav items */}
       <div className="flex flex-col flex-1 overflow-hidden">
         {/* Toggle Collapse Header */}
-        <div className="h-10 border-b border-nexus-border px-3 flex items-center justify-between">
+        <div className="h-10 border-b border-zinc-800/60 px-3 flex items-center justify-between">
           {!isSidebarCollapsed && (
-            <span className="text-[11px] font-bold text-nexus-muted uppercase tracking-wider">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">
               Navegação
             </span>
           )}
@@ -68,8 +68,9 @@ export const Sidebar: React.FC = () => {
             position="right"
           >
             <button
+              type="button"
               onClick={toggleSidebar}
-              className="p-1 rounded hover:bg-nexus-panel text-nexus-muted hover:text-nexus-text transition-nexus mx-auto"
+              className="p-1 rounded-lg hover:bg-zinc-800/80 text-zinc-400 hover:text-zinc-200 transition-colors mx-auto cursor-pointer"
             >
               {isSidebarCollapsed ? (
                 <ChevronRight className="w-4 h-4" />
@@ -94,17 +95,18 @@ export const Sidebar: React.FC = () => {
                 className="w-full"
               >
                 <button
+                  type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-nexus ${
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium transition-colors cursor-pointer ${
                     isActive
-                      ? 'bg-nexus-panel text-white border-l-2 border-nexus-accent shadow-sm'
-                      : 'text-nexus-muted hover:bg-nexus-panel/60 hover:text-nexus-text'
+                      ? 'bg-zinc-900/90 text-white border-l-2 border-rose-500 shadow-sm'
+                      : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
                   } ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}
                 >
                   <div className="relative flex items-center justify-center">
                     <Icon
                       className={`w-4 h-4 shrink-0 ${
-                        isActive ? 'text-nexus-accent' : 'text-nexus-muted'
+                        isActive ? 'text-rose-400' : 'text-zinc-400'
                       }`}
                     />
                     {isSidebarCollapsed && item.badge && item.badge > 0 ? (
@@ -128,14 +130,14 @@ export const Sidebar: React.FC = () => {
 
         {/* Lateral Communities Quick Library (Steam inspired) */}
         {!isSidebarCollapsed && (
-          <div className="flex-1 overflow-y-auto px-2 py-3 border-t border-nexus-border/60">
-            <div className="px-3 pb-2 text-[10px] font-bold text-nexus-muted uppercase tracking-wider flex items-center justify-between">
+          <div className="flex-1 overflow-y-auto px-2 py-3 border-t border-zinc-800/60">
+            <div className="px-3 pb-2 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex items-center justify-between">
               <span>Sua Biblioteca</span>
-              <span className="text-[10px] text-nexus-muted font-mono">{mockCommunities.length}</span>
+              <span className="text-[10px] text-zinc-500 font-mono">{mockCommunities.length}</span>
             </div>
 
             {mockCommunities.length === 0 ? (
-              <div className="px-3 py-4 text-center text-nexus-muted">
+              <div className="px-3 py-4 text-center text-zinc-500">
                 <p className="text-[11px]">Nenhuma comunidade</p>
               </div>
             ) : (
@@ -145,18 +147,19 @@ export const Sidebar: React.FC = () => {
                   return (
                     <button
                       key={comm.id}
+                      type="button"
                       onClick={() => {
                         setActiveCommunity(comm.id);
                         setActiveTab('communities');
                       }}
-                      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs transition-nexus text-left ${
+                      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-xs transition-colors text-left cursor-pointer ${
                         isSelected
-                          ? 'bg-nexus-panel text-white font-medium border-l-2 border-nexus-accent'
-                          : 'text-nexus-muted hover:bg-nexus-panel/50 hover:text-nexus-text'
+                          ? 'bg-zinc-900 text-white font-medium border-l-2 border-rose-500'
+                          : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
                       }`}
                     >
                       <div
-                        className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold text-white shrink-0"
+                        className="w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold text-white shrink-0 shadow-xs"
                         style={{ backgroundColor: comm.iconBg }}
                       >
                         {comm.initials}
@@ -175,24 +178,25 @@ export const Sidebar: React.FC = () => {
       </div>
 
       {/* Bottom Audio & Quick Controls Dock */}
-      <div className="p-2 border-t border-nexus-border bg-nexus-panel/40 shrink-0">
+      <div className="p-2.5 border-t border-zinc-800/80 bg-[#0a0c10]/90 shrink-0">
         <div
           className={`flex items-center ${
-            isSidebarCollapsed ? 'flex-col gap-1 justify-center' : 'justify-between px-1'
+            isSidebarCollapsed ? 'flex-col gap-1.5 justify-center' : 'justify-between px-1'
           }`}
         >
           {/* Quick Mic / Headphone controls */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             <Tooltip
               content={isMicMuted ? 'Ativar Microfone' : 'Mutar Microfone'}
               position="top"
             >
               <button
+                type="button"
                 onClick={() => callService.toggleMute()}
-                className={`p-1.5 rounded-lg transition-nexus cursor-pointer ${
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
                   isMicMuted
                     ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
-                    : 'text-nexus-muted hover:bg-nexus-panel hover:text-nexus-text'
+                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
                 }`}
               >
                 {isMicMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
@@ -204,30 +208,30 @@ export const Sidebar: React.FC = () => {
               position="top"
             >
               <button
+                type="button"
                 onClick={() => callService.toggleDeafen()}
-                className={`p-1.5 rounded-lg transition-nexus cursor-pointer ${
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
                   isDeafened
                     ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
-                    : 'text-nexus-muted hover:bg-nexus-panel hover:text-nexus-text'
+                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
                 }`}
               >
                 <Headphones
-                  className={`w-4 h-4 ${isDeafened ? 'text-rose-400' : ''}`}
+                  className={`w-4 h-4 ${
+                    isDeafened ? 'text-rose-400' : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
                 />
               </button>
             </Tooltip>
           </div>
 
-          {/* Quick Settings Action (quando expandido) */}
+          {/* Quick settings shortcut on expanded dock */}
           {!isSidebarCollapsed && (
             <Tooltip content="Configurações" position="top">
               <button
+                type="button"
                 onClick={() => setActiveTab('settings')}
-                className={`p-1.5 rounded-lg transition-nexus cursor-pointer ${
-                  activeTab === 'settings'
-                    ? 'bg-nexus-panel text-nexus-text'
-                    : 'text-nexus-muted hover:bg-nexus-panel hover:text-nexus-text'
-                }`}
+                className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors cursor-pointer"
               >
                 <Settings className="w-4 h-4" />
               </button>
