@@ -1,6 +1,6 @@
 [package]
 name = "nexus"
-version = "0.1.9-nightly.6"
+version = "0.1.9-nightly.7"
 description = "NEXUS - High-performance desktop communication"
 authors = ["NEXUS Team"]
 edition = "2021"

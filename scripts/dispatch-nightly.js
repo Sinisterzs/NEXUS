@@ -52,8 +52,8 @@ async function sleep(ms) {
 }
 
 async function main() {
-  const version = '0.1.9-nightly.6';
-  const releaseNotes = 'NEXUS v0.1.9-nightly.6 — Consolidação do Redesign UI 2.0, persistência definitiva do canal Beta/Nightly e harmonização global de temas dinâmicos.';
+  const version = '0.1.9-nightly.7';
+  const releaseNotes = 'NEXUS v0.1.9-nightly.7 — Persistência global definitiva de temas entre reinicializações a frio, zero-flash pré-renderização e versão candidata à Stable v0.2.0.';
 
   console.log(`[Dispatch] Disparando workflow nightly.yml para versão ${version}...`);
   await githubRequest('/repos/Sinisterzs/NEXUS/actions/workflows/nightly.yml/dispatches', 'POST', {

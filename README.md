@@ -22,18 +22,18 @@
 | Canal | Versão Atual | Data | Status | Manifest do Updater |
 | :--- | :---: | :---: | :---: | :--- |
 | **Estável (Stable)** | `v0.1.8` | 09/11/2026 | Produção Homologada | [`latest.json`](https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json) |
-| **Pré-lançamento (Nightly)** | `v0.1.9-nightly.6` | 09/11/2026 | Consolidação UI 2.0 | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.6/latest-nightly.json) |
-| **Próximo Marco (Roadmap)** | `v0.2.0 Stable` | Em Breve | Em Preparação | *Canal Estável após validação da Nightly.6* |
+| **Pré-lançamento (Nightly)** | `v0.1.9-nightly.7` | 09/11/2026 | Candidata à v0.2.0 | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/latest-nightly.json) |
+| **Próximo Marco (Roadmap)** | `v0.2.0 Stable` | Em Breve | Em Preparação | *Canal Estável após validação da Nightly.7* |
 
 ---
 
 ## 📋 Destaques da Versão Recente
 
-### 🌙 Nightly Atual (`v0.1.9-nightly.6`)
-- 🎨 **Harmonização Global de Temas (UI 2.0):** Eliminação de cores estáticas; botões, ícones, seleções e gradientes agora sincronizam instantaneamente com o tema escolhido (**NEXUS Dark**, **Midnight Black**, **Cyber Slate**).
-- 👤 **Avatar com Glow Suave:** Remoção da borda quadrada sólida ao redor da foto de perfil, substituída por um brilho externo sutil que absorve o acento do tema.
-- 💾 **Persistência Confiável do Canal de Atualização:** A escolha do canal (Stable ou Beta) agora persiste perfeitamente entre reinicializações através de armazenamento em dupla camada (Tauri Store + fallback local).
-- 🛡️ **Segurança Criptográfica & Testes Isolados:** Aprovação visual explícita de identidade de servidor AWS (TOFU Ed25519) e isolamento rigoroso de suítes de teste (zero acesso a credenciais ou arquivos reais de usuário).
+### 🌙 Nightly Atual (`v0.1.9-nightly.7`)
+- 🎨 **Persistência Definitiva de Temas:** Armazenamento global em nível de instalação (`app_theme` e `nexus_theme`) com hidratação completa na restauração de sessão pelo Keyring, preservando o tema escolhido entre reinicializações a frio.
+- ⚡ **Zero-Flash Pré-Renderização:** Inserção de inicializador síncrono no primeiro frame do WebView2, aplicando o tema antes mesmo da montagem do React.
+- 💾 **Persistência Multi-Camada de Canais:** Seleção consciente entre canais Stable e Beta com manifestos isolados.
+- 🛡️ **Segurança Criptográfica & Testes Isolados:** Aprovação visual de integridade de servidor AWS (TOFU Ed25519) e isolamento rigoroso de testes automatizados.
 
 ### 🏷️ Versão Estável Homologada (`v0.1.8`)
 - 🔄 **Seletor de Canais Integrado:** Interface em Configurações para transição segura entre builds estáveis e experimentais.

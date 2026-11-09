@@ -20,6 +20,19 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 
 ---
 
+## [0.1.9-nightly.7] — 2026-11-09
+
+### Corrigido
+- **Persistência Global de Temas:** Resolvido o problema em que o aplicativo retornava ao tema padrão após ser fechado e reaberto. Implementada persistência em nível de instalação (`app_theme` na raiz do `nexus_settings.json` e `nexus_theme` no `localStorage`).
+- **Hidratação de Configurações na Autenticação:** A função `createAuthenticatedState()` no `useAppStore` agora recebe e hidrata adequadamente as preferências da conta ativa (`appearance`, `audioVideo`, `notifications`, `privacy`), eliminando o descarte do tema salvo após o login ou restauração de sessão.
+- **Eliminação de Flash no Início:** Inserido script síncrono no `<head>` do `index.html` e `getInitialTheme()` no Zustand para aplicação imediata do atributo `data-theme` no primeiro frame de pintura do WebView2.
+
+### Adicionado
+- Suíte completa de testes automatizados de persistência de temas ([`tests/theme_persistence.test.ts`](file:///c:/Users/kelma/Documents/Tropa/tests/theme_persistence.test.ts)) cobrindo os 3 temas e reinicializações simuladas.
+- Documento de Release Notes da Nightly.7 ([`scripts/release-notes-v0.1.9-nightly.7.md`](file:///c:/Users/kelma/Documents/Tropa/scripts/release-notes-v0.1.9-nightly.7.md)).
+
+---
+
 ## [0.1.9-nightly.6] — 2026-11-09
 
 ### Adicionado
