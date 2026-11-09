@@ -83,25 +83,40 @@ jobs:
       - name: Strict Security Audit of Artifacts
         run: node scripts/audit-nightly-artifacts.cjs
 
+      - name: Prepare Markdown Release Notes Body
+        shell: pwsh
+        run: |
+          $ver = "${{ github.event.inputs.version }}"
+          $customNotesFile = "scripts/release-notes-v$ver.md"
+          if (Test-Path $customNotesFile) {
+            Write-Host "Encontradas notas ricas em Markdown: $customNotesFile"
+            Copy-Item $customNotesFile -Destination "release-notes-body.md"
+          } else {
+            Write-Host "Utilizando notas padrão informadas no input do workflow."
+            $defaultBody = @"
+          ## 🌙 NEXUS Nightly Release — v$ver
+
+          ${{ github.event.inputs.release_notes }}
+
+          ---
+
+          > [!NOTE]
+          > Este é um build pré-lançamento do canal **Nightly**. Não altera o canal estável (``latest.json``).
+
+          ### Artefatos de Instalação:
+          - **Instalador NSIS:** Instalador com suporte a auto-update assinado.
+          - **Assinatura Minisign:** Arquivo ``.sig`` validado pela chave pública oficial.
+          - **Canal de Atualização:** ``latest-nightly.json``
+          "@
+            Set-Content -Path "release-notes-body.md" -Value $defaultBody -Encoding utf8
+          }
+
       - name: Publish GitHub Pre-Release (Nightly Channel)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.event.inputs.version }}
           name: NEXUS v${{ github.event.inputs.version }} (Nightly)
-          body: |
-            ## 🌙 NEXUS Nightly Release — v${{ github.event.inputs.version }}
-            
-            ${{ github.event.inputs.release_notes }}
-            
-            ---
-            
-            > [!NOTE]
-            > Este é um build pré-lançamento do canal **Nightly**. Não altera o canal estável (`latest.json`).
-            
-            ### Artefatos de Instalação:
-            - **Instalador NSIS:** Instalador com suporte a auto-update assinado.
-            - **Assinatura Minisign:** Arquivo `.sig` validado pela chave pública oficial.
-            - **Canal de Atualização:** `latest-nightly.json`
+          body_path: release-notes-body.md
           draft: false
           prerelease: true
           make_latest: 'false'
