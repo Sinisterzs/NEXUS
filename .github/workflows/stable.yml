@@ -38,6 +38,22 @@ jobs:
           ref: ${{ github.event.inputs.target_ref }}
           fetch-depth: 0
 
+      - name: Capture & Validate Target Commit
+        id: commit_info
+        shell: pwsh
+        run: |
+          $compiledSha = (git rev-parse HEAD).Trim()
+          Write-Host "[INFO] Commit compilado (HEAD): $compiledSha"
+          echo "compiled_sha=$compiledSha" >> $env:GITHUB_OUTPUT
+
+          # Valida que o commit descende da base homologada da Nightly.7 (52a9ed6)
+          git merge-base --is-ancestor 52a9ed6 $compiledSha
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "[FALHA CRÍTICA] O commit $compiledSha não descende da base funcional homologada 52a9ed6 (v0.1.9-nightly.7)!"
+            exit 1
+          }
+          Write-Host "[OK] Base funcional homologada 52a9ed6 confirmada como ancestral do commit."
+
       - name: Strict Origin & Version Verification Guard
         shell: pwsh
         run: |
@@ -46,9 +62,6 @@ jobs:
             Write-Error "[FALHA CRÍTICA] A versão informada '$expectedVersion' não é 0.2.0! O workflow Stable v0.2.0 rejeita qualquer outra versão."
             exit 1
           }
-
-          $headSha = (git rev-parse HEAD).Trim()
-          Write-Host "[INFO] Commit HEAD sob compilação: $headSha"
 
           $pkgJson = Get-Content package.json | ConvertFrom-Json
           $tauriJson = Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json
@@ -62,7 +75,7 @@ jobs:
             exit 1
           }
 
-          Write-Host "[OK] Todas as verificações de guarda de origem e versionamento foram validadas com sucesso."
+          Write-Host "[OK] Metadados de versão validados com sucesso."
 
       - name: Setup Node.js (v22)
         uses: actions/setup-node@v4
@@ -115,7 +128,7 @@ jobs:
       - name: Strict Security Audit of Artifacts
         run: node scripts/audit-nightly-artifacts.cjs
 
-      - name: Validate Artifacts Integrity Before Publishing
+      - name: Validate Local Artifacts Integrity Before Upload
         shell: pwsh
         run: |
           $ver = "${{ github.event.inputs.version }}"
@@ -129,13 +142,20 @@ jobs:
           }
 
           $exe = $exeFiles[0]
-          if ($exe.Length -lt 10MB) {
-            Write-Error "[FALHA CRÍTICA] Instalador $($exe.Name) tem tamanho anormalmente baixo ($($exe.Length) bytes)."
+          Write-Host "[INFO] Instalador detectado: $($exe.Name) ($([math]::Round($exe.Length/1MB, 2)) MB)"
+          if ($exe.Length -lt 3MB -or $exe.Length -gt 50MB) {
+            Write-Error "[FALHA CRÍTICA] Instalador $($exe.Name) tem tamanho fora do intervalo esperado de 3 MB a 50 MB ($($exe.Length) bytes)."
             exit 1
           }
 
           if ($sigFiles.Count -eq 0) {
             Write-Error "[FALHA CRÍTICA] Arquivo de assinatura .sig da versão $ver não foi encontrado em $nsisDir."
+            exit 1
+          }
+
+          $sig = $sigFiles[0]
+          if ($sig.Length -lt 50 -or $sig.Length -gt 10KB) {
+            Write-Error "[FALHA CRÍTICA] Arquivo de assinatura $($sig.Name) tem tamanho anormal ($($sig.Length) bytes)."
             exit 1
           }
 
@@ -150,7 +170,12 @@ jobs:
             exit 1
           }
 
-          Write-Host "[OK] Artefatos validados: $($exe.Name) ($([math]::Round($exe.Length/1MB, 2)) MB), Assinatura e Manifesto prontos para publicação."
+          if ([string]::IsNullOrWhiteSpace($manifest.platforms.'windows-x86_64'.signature)) {
+            Write-Error "[FALHA CRÍTICA] Assinatura Minisign ausente no manifesto latest.json."
+            exit 1
+          }
+
+          Write-Host "[OK] Artefatos locais validados: $($exe.Name), Assinatura e Manifesto prontos para upload."
 
       - name: Prepare Markdown Release Notes Body
         shell: pwsh
@@ -176,16 +201,16 @@ jobs:
             Set-Content -Path "release-notes-body.md" -Value $defaultBody -Encoding utf8
           }
 
-      - name: Publish GitHub Release (Stable Channel)
+      - name: Publish GitHub Release (as Protected Draft)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.event.inputs.version }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ steps.commit_info.outputs.compiled_sha }}
           name: NEXUS v${{ github.event.inputs.version }} (Stable)
           body_path: release-notes-body.md
-          draft: false
+          draft: true
           prerelease: false
-          make_latest: 'true'
+          make_latest: 'false'
           files: |
             src-tauri/target/release/nexus.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe
@@ -193,3 +218,69 @@ jobs:
             latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate Uploaded Assets & Promote Draft to Public Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: v${{ github.event.inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          Write-Host "[INFO] Consultando release Draft para $env:TAG_NAME no repositório $env:REPO..."
+          
+          $headers = @{
+            "Authorization" = "Bearer $env:GH_TOKEN"
+            "Accept" = "application/vnd.github+json"
+            "User-Agent" = "NEXUS-Release-Promoter"
+          }
+
+          $apiUrl = "https://api.github.com/repos/$env:REPO/releases"
+          $releases = Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method Get
+          $draftRelease = $releases | Where-Object { $_.tag_name -eq $env:TAG_NAME -and $_.draft -eq $true }
+
+          if (-not $draftRelease) {
+            Write-Error "[FALHA CRÍTICA] Release Draft para a tag $env:TAG_NAME não foi encontrada."
+            exit 1
+          }
+
+          $releaseId = $draftRelease.id
+          Write-Host "[INFO] Release Draft localizada com ID: $releaseId"
+
+          $assets = $draftRelease.assets
+          Write-Host "[INFO] Quantidade de assets enviados: $($assets.Count)"
+          $assets | ForEach-Object { Write-Host "  - $($_.name) ($([math]::Round($_.size/1MB, 2)) MB, state: $($_.state))" }
+
+          $verNum = $env:TAG_NAME.TrimStart('v')
+          $requiredAssets = @(
+            "nexus.exe",
+            "nexus_${verNum}_x64-setup.exe",
+            "nexus_${verNum}_x64-setup.exe.sig",
+            "latest.json"
+          )
+
+          foreach ($req in $requiredAssets) {
+            $found = $assets | Where-Object { $_.name -eq $req -and $_.state -eq "uploaded" -and $_.size -gt 0 }
+            if (-not $found) {
+              Write-Error "[FALHA CRÍTICA] Asset obrigatório '$req' ausente ou corrompido no draft da release. A release permanecerá em Draft para evitar publicação incompleta."
+              exit 1
+            }
+          }
+
+          Write-Host "[OK] Todos os 4 assets obrigatórios foram carregados e validados com 100% de sucesso."
+          Write-Host "[INFO] Promovendo a release de Draft para Pública (Latest)..."
+
+          $updateUrl = "https://api.github.com/repos/$env:REPO/releases/$releaseId"
+          $updateBody = @{
+            draft = $false
+            make_latest = "true"
+          } | ConvertTo-Json
+
+          $promoted = Invoke-RestMethod -Uri $updateUrl -Headers $headers -Method Patch -Body $updateBody -ContentType "application/json"
+
+          if ($promoted.draft -eq $false) {
+            Write-Host "[SUCESSO] Release $($promoted.name) ($($promoted.tag_name)) promovida a pública com sucesso!"
+            Write-Host "[INFO] URL oficial: $($promoted.html_url)"
+          } else {
+            Write-Error "[FALHA CRÍTICA] Falha ao promover release para pública."
+            exit 1
+          }
