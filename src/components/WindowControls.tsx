@@ -1,27 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { Minus, Square, Copy, X } from 'lucide-react';
-import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export const WindowControls: React.FC<{ className?: string }> = ({ className = '' }) => {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    if (!isTauri()) return;
-
     let unlisten: (() => void) | undefined;
-    const win = getCurrentWindow();
+    try {
+      const win = getCurrentWindow();
+      win.isMaximized().then(setIsMaximized).catch(() => {});
 
-    win.isMaximized().then(setIsMaximized).catch(() => {});
-
-    win.onResized(async () => {
-      try {
-        const max = await win.isMaximized();
-        setIsMaximized(max);
-      } catch {}
-    }).then((unsub) => {
-      unlisten = unsub;
-    }).catch(() => {});
+      win.onResized(async () => {
+        try {
+          const max = await win.isMaximized();
+          setIsMaximized(max);
+        } catch {}
+      }).then((unsub) => {
+        unlisten = unsub;
+      }).catch(() => {});
+    } catch {}
 
     return () => {
       if (unlisten) unlisten();
@@ -30,36 +28,31 @@ export const WindowControls: React.FC<{ className?: string }> = ({ className = '
 
   const handleMinimize = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isTauri()) {
-      try {
-        await getCurrentWindow().minimize();
-      } catch (err) {
-        console.warn('[WindowControls] Erro ao minimizar:', err);
-      }
+    try {
+      await getCurrentWindow().minimize();
+    } catch (err) {
+      console.warn('[WindowControls] Erro ao minimizar:', err);
     }
   };
 
   const handleToggleMaximize = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isTauri()) {
-      try {
-        const win = getCurrentWindow();
-        await win.toggleMaximize();
-        setIsMaximized(await win.isMaximized());
-      } catch (err) {
-        console.warn('[WindowControls] Erro ao alternar maximização:', err);
-      }
+    try {
+      const win = getCurrentWindow();
+      await win.toggleMaximize();
+      const max = await win.isMaximized();
+      setIsMaximized(max);
+    } catch (err) {
+      console.warn('[WindowControls] Erro ao alternar maximização:', err);
     }
   };
 
   const handleClose = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isTauri()) {
-      try {
-        await getCurrentWindow().close();
-      } catch (err) {
-        console.warn('[WindowControls] Erro ao fechar:', err);
-      }
+    try {
+      await getCurrentWindow().close();
+    } catch (err) {
+      console.warn('[WindowControls] Erro ao fechar:', err);
     }
   };
 

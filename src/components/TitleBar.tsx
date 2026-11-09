@@ -16,7 +16,6 @@ import { APP_VERSION } from '../version';
 import { CurrentUserAvatar } from './Avatar';
 import { WindowControls } from './WindowControls';
 import { UserStatus } from '../lib/types';
-import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const tabTitles: Record<string, string> = {
@@ -107,7 +106,11 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('click', handleClickOutside);
+    };
   }, []);
 
   // Double click header to toggle maximize natively
@@ -116,11 +119,9 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
     if (target.getAttribute('data-tauri-drag-region') === 'false' || target.closest('button, input, [role="button"]')) {
       return;
     }
-    if (isTauri()) {
-      try {
-        await getCurrentWindow().toggleMaximize();
-      } catch {}
-    }
+    try {
+      await getCurrentWindow().toggleMaximize();
+    } catch {}
   };
 
   // Filtered search results
