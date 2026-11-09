@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Lock, Mail, User, Shield, AlertCircle, Loader2, CheckCircle2, ShieldCheck } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { APP_VERSION } from '../../version';
+import { WindowControls } from '../../components/WindowControls';
 
 const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
   <svg className={className} viewBox="0 0 24 24">
@@ -152,21 +153,25 @@ export const AuthView: React.FC = () => {
       {/* Custom Window Header Drag Region */}
       <header
         data-tauri-drag-region
-        className="h-10 w-full bg-nexus-surface border-b border-nexus-border flex items-center justify-between px-3 shrink-0 text-xs"
+        className="h-10 w-full bg-[#0B0C0E] border-b border-[#1E2026] flex items-center justify-between px-3 shrink-0 text-xs"
       >
-        <div className="flex items-center gap-2 font-bold tracking-wider text-nexus-text">
-          <div className="w-5 h-5 rounded bg-nexus-accent flex items-center justify-center text-white font-extrabold text-[11px] shadow-sm">
+        <div className="flex items-center gap-2">
+          <div className="w-5 h-5 rounded bg-gradient-to-br from-rose-600 to-rose-700 flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-rose-900/40">
             N
           </div>
-          <span className="font-semibold text-sm tracking-wide">NEXUS</span>
-          <span className="text-[10px] px-1.5 py-0.2 rounded bg-nexus-panel text-nexus-muted border border-nexus-border font-mono">
+          <span className="font-bold text-xs tracking-wider text-zinc-100">NEXUS</span>
+          <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-900 text-zinc-400 border border-zinc-800 font-mono">
             v{APP_VERSION}
           </span>
         </div>
 
-        <div className="flex items-center gap-2 text-[11px] text-nexus-muted font-medium">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />
-          <span>Servidor online</span>
+        <div className="flex items-center gap-3 h-full">
+          <div className="flex items-center gap-2 text-[11px] text-zinc-400 font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />
+            <span>Servidor online</span>
+          </div>
+          <div className="h-4 w-[1px] bg-zinc-800 mx-1 shrink-0" />
+          <WindowControls />
         </div>
       </header>
 

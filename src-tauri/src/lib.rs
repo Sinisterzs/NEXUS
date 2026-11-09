@@ -129,7 +129,7 @@ pub fn run() {
                 .min_inner_size(960.0, 600.0)
                 .resizable(true)
                 .maximizable(true)
-                .decorations(true)
+                .decorations(false)
                 .theme(Some(tauri::Theme::Dark))
                 .on_web_resource_request(|_request, response| {
                     if let Some(csp_val) = response.headers_mut().get_mut("content-security-policy") {
