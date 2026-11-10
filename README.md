@@ -6,14 +6,18 @@
 
 Uma plataforma de mensagens e chamadas em tempo real construída com arquitetura nativa em Rust e interface fluida em React 19, inspirada na organização da Steam e na estética gamer escura com detalhes em carmesim.
 
+<!-- NEXUS:STABLE_HEADER_BADGE:START -->
 [![Versão](https://img.shields.io/badge/Versão-v0.2.0%20Stable-e02424?style=flat-square&logo=github)](https://github.com/Sinisterzs/NEXUS/releases/tag/v0.2.0)
 [![Windows](https://img.shields.io/badge/Plataforma-Windows%2010%20%2F%2011%20x64-0f1117?style=flat-square&logo=windows11&logoColor=0078D4)](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.0/nexus_0.2.0_x64-setup.exe)
+<!-- NEXUS:STABLE_HEADER_BADGE:END -->
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-0f1117?style=flat-square&logo=tauri&logoColor=24C8DB)](https://tauri.app)
 [![Rust](https://img.shields.io/badge/Rust-1.85-0f1117?style=flat-square&logo=rust&logoColor=DEA584)](https://www.rust-lang.org)
 [![React](https://img.shields.io/badge/React-19.0-0f1117?style=flat-square&logo=react&logoColor=61DAFB)](https://react.dev)
 [![Licença](https://img.shields.io/badge/Licença-MIT-0f1117?style=flat-square)](LICENSE)
 
+<!-- NEXUS:STABLE_HEADER_LINKS:START -->
 [**Baixar v0.2.0 Stable**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.0/nexus_0.2.0_x64-setup.exe) • [**Notas de Lançamento**](scripts/release-notes-v0.2.0.md) • [**Releases no GitHub**](https://github.com/Sinisterzs/NEXUS/releases) • [**Histórico de Mudanças**](CHANGELOG.md)
+<!-- NEXUS:STABLE_HEADER_LINKS:END -->
 
 </div>
 
@@ -39,14 +43,18 @@ Essa abordagem entrega um consumo reduzido de memória RAM e processamento, mant
 
 ---
 
-## 3. Download Oficial da v0.2.0 Stable
+## 3. Downloads Oficiais e Canais de Atualização
 
 O NEXUS disponibiliza instaladores assinados digitalmente para Windows de 64 bits:
 
 | Canal | Versão | Status | Instalador Windows (64-bit) | Manifesto do Updater |
 | :--- | :---: | :---: | :--- | :--- |
+<!-- NEXUS:STABLE_ROW:START -->
 | **Estável (Recomendado)** | **`v0.2.0`** | Homologada | [**nexus_0.2.0_x64-setup.exe**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.0/nexus_0.2.0_x64-setup.exe) | [`latest.json`](https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json) |
-| **Pré-lançamento (Beta)** | `v0.1.9-nightly.7` | Candidata Anterior | [nexus_0.1.9-nightly.7_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/nexus_0.1.9-nightly.7_x64-setup.exe) | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/latest-nightly.json) |
+<!-- NEXUS:STABLE_ROW:END -->
+<!-- NEXUS:BETA_ROW:START -->
+| **Pré-lançamento (Beta)** | `v0.2.1-nightly.1` | Homologação Ativa | [nexus_0.2.1-nightly.1_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1-nightly.1/nexus_0.2.1-nightly.1_x64-setup.exe) | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1-nightly.1/latest-nightly.json) |
+<!-- NEXUS:BETA_ROW:END -->
 
 ### Como Instalar e Atualizar
 1. Baixe o instalador oficial `nexus_0.2.0_x64-setup.exe`.
