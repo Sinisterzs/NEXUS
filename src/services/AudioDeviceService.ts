@@ -156,6 +156,8 @@ export class AudioDeviceService {
 
       const inputs: AudioDeviceInfo[] = [];
       const outputs: AudioDeviceInfo[] = [];
+      const seenInputIds = new Set<string>();
+      const seenOutputIds = new Set<string>();
 
       let micIndex = 1;
       let speakerIndex = 1;
@@ -163,6 +165,8 @@ export class AudioDeviceService {
       for (const dev of allDevices) {
         if (!dev || !dev.deviceId) continue;
         if (dev.kind === 'audioinput') {
+          if (seenInputIds.has(dev.deviceId)) continue;
+          seenInputIds.add(dev.deviceId);
           inputs.push({
             deviceId: dev.deviceId,
             label:
@@ -172,6 +176,8 @@ export class AudioDeviceService {
             kind: 'audioinput',
           });
         } else if (dev.kind === 'audiooutput') {
+          if (seenOutputIds.has(dev.deviceId)) continue;
+          seenOutputIds.add(dev.deviceId);
           outputs.push({
             deviceId: dev.deviceId,
             label:

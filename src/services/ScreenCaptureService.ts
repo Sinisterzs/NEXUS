@@ -7,7 +7,7 @@
  * e ciclo de vida estrito contra tracks órfãs.
  */
 
-import { ScreenShareQualityPreset } from '../lib/types';
+import type { ScreenShareQualityPreset } from '../lib/types';
 
 export interface ScreenEncodingTargets {
   maxBitrate: number;
