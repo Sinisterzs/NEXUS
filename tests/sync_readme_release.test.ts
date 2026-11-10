@@ -167,12 +167,18 @@ test('Automação README: validação contra o README.md real do repositório', 
   assert.ok(actualReadme.includes('<tbody>'));
   assert.ok(actualReadme.includes('</tbody>'));
 
-  // Simula execução com a versão atual publicada: não deve alterar nada (idempotente)
+  // Extrai a versão Beta atual presente no README e verifica idempotência
+  const betaMatch = actualReadme.match(
+    /<!-- NEXUS:BETA_ROW:START -->[\s\S]*?<code>v([^<]+)<\/code>[\s\S]*?<!-- NEXUS:BETA_ROW:END -->/
+  );
+  assert.ok(betaMatch && betaMatch[1], 'Deve conter versão Beta válida entre os marcadores');
+  const currentBetaVer = betaMatch[1];
+
   const simulated = updateReadmeContent({
     content: actualReadme,
     channel: 'beta',
-    version: '0.2.1-nightly.1',
-    artifact: 'nexus_0.2.1-nightly.1_x64-setup.exe',
+    version: currentBetaVer,
+    artifact: `nexus_${currentBetaVer}_x64-setup.exe`,
     status: 'Homologação Ativa',
   });
 
