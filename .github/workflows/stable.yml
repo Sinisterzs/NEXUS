@@ -6,17 +6,17 @@ on:
       target_ref:
         description: 'Branch ou Commit SHA oficial homologado para compilação'
         required: true
-        default: 'release/v0.2.0'
+        default: 'release/v0.2.1'
         type: string
       version:
-        description: 'Versão SemVer Oficial (deve ser estritamente 0.2.0)'
+        description: 'Versão SemVer Oficial (ex: 0.2.1)'
         required: true
-        default: '0.2.0'
+        default: '0.2.1'
         type: string
       release_notes:
         description: 'Resumo das notas de lançamento para o manifesto do updater'
         required: false
-        default: 'NEXUS v0.2.0 — Versão Estável Oficial com Redesign UI 2.0, Temas Globais e Segurança TOFU.'
+        default: 'NEXUS v0.2.1 — Atualização Estável de manutenção para correção de classificação de versões e canais de atualização.'
         type: string
 
 permissions:
@@ -58,8 +58,8 @@ jobs:
         shell: pwsh
         run: |
           $expectedVersion = "${{ github.event.inputs.version }}".Trim()
-          if ($expectedVersion -ne "0.2.0") {
-            Write-Error "[FALHA CRÍTICA] A versão informada '$expectedVersion' não é 0.2.0! O workflow Stable v0.2.0 rejeita qualquer outra versão."
+          if (-not ($expectedVersion -match '^[0-9]+\.[0-9]+\.[0-9]+$')) {
+            Write-Error "[FALHA CRÍTICA] A versão informada '$expectedVersion' não é um SemVer Stable válido (ex: 0.2.1)! O workflow Stable rejeita qualquer versão pré-lançamento ou formato inválido."
             exit 1
           }
 
@@ -70,12 +70,12 @@ jobs:
           Write-Host "[INFO] package.json version: $($pkgJson.version)"
           Write-Host "[INFO] tauri.conf.json version: $($tauriJson.version)"
 
-          if ($pkgJson.version -ne "0.2.0" -or $tauriJson.version -ne "0.2.0" -or -not ($versionTs -match "APP_VERSION = '0.2.0'")) {
-            Write-Error "[FALHA CRÍTICA] Inconsistência nos metadados de versão do commit! Todos os arquivos devem estar sincronizados em 0.2.0 antes do build."
+          if ($pkgJson.version -ne $expectedVersion -or $tauriJson.version -ne $expectedVersion -or -not ($versionTs -match "APP_VERSION = '$expectedVersion'")) {
+            Write-Error "[FALHA CRÍTICA] Inconsistência nos metadados de versão do commit! Todos os arquivos devem estar sincronizados em $expectedVersion antes do build."
             exit 1
           }
 
-          Write-Host "[OK] Metadados de versão validados com sucesso."
+          Write-Host "[OK] Metadados de versão validados com sucesso para $expectedVersion."
 
       - name: Setup Node.js (v22)
         uses: actions/setup-node@v4
