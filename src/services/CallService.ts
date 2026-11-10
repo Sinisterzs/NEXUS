@@ -400,6 +400,9 @@ export class CallService {
           }
 
           const answerSdp = await this.webRtc.handleOffer(data.sdp);
+          if (!answerSdp) {
+            return;
+          }
           const latestStore = useAppStore.getState();
           if (
             token !== this.callSessionToken ||
@@ -413,7 +416,9 @@ export class CallService {
         } catch (err: any) {
           if (token !== this.callSessionToken) return;
           console.error('[CallService] Falha ao processar SDP Offer:', err);
-          this.endCall('Falha ao negociar conexão de áudio.');
+          if (useAppStore.getState().voiceCallState === 'connecting') {
+            this.endCall('Falha ao negociar conexão de áudio.');
+          }
         }
       },
 
@@ -449,7 +454,9 @@ export class CallService {
         } catch (err: any) {
           if (token !== this.callSessionToken) return;
           console.error('[CallService] Falha ao processar SDP Answer:', err);
-          this.endCall('Falha ao estabelecer conexão de áudio.');
+          if (useAppStore.getState().voiceCallState === 'connecting') {
+            this.endCall('Falha ao estabelecer conexão de áudio.');
+          }
         }
       },
 

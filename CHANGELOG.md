@@ -10,6 +10,35 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 
 ---
 
+## [0.3.0-nightly.1] — 2026-11-10
+
+> [!NOTE]
+> Primeira compilação **Beta / Nightly** da série `0.3.0`, introduzindo o pacote integrado **Calls & Streaming 2.0** para homologação no Windows.
+
+### Adicionado
+- **Áudio 2.0:**
+  - Seletor rápido de microfone e dispositivo de saída diretamente na barra inferior da chamada com troca em tempo real (*hot-swap* via `replaceTrack` e `setSinkId`).
+  - Fallback automático para o dispositivo padrão do sistema (`default`) quando o microfone ou fone ativo é desconectado fisicamente durante a chamada (`track.onended` e `devicechange`).
+  - Controle de volume individual por participante (`0%` a `200%`) persistido localmente por contato, com amplificação via `GainNode` (Web Audio API) acima de `100%`.
+  - Controle explícito de **Controle Automático de Ganho (WebRTC AGC)** e acoplamento dinâmico do limiar de detecção de fala (VAD) à sensibilidade do microfone (`inputSensitivity`).
+- **Compartilhamento de Tela 2.0:**
+  - Presets de qualidade selecionáveis (`Automático`, `720p • 30 FPS`, `1080p • 30 FPS`, `1080p • 60 FPS`) com ajuste dinâmico de `maxBitrate` e `maxFramerate` no encoder WebRTC.
+  - Fallback automático para `720p • 30 FPS` quando a superfície ou placa gráfica não suporta a restrição solicitada (`OverconstrainedError`), exibindo resolução e FPS efetivos reais.
+- **Calls UI 2.0:**
+  - Palco de transmissão redimensionável por divisor arrastável (`30%` a `85%`) e presets rápidos de layout (`Compacto`, `Equilibrado`, `Cinema`).
+  - Modo Tela Cheia real integrado com a janela nativa do Tauri 2 (`setFullscreen`), controles flutuantes em tela cheia e saída limpa via `Esc`.
+  - Indicadores de fala ativa, tentativa de reconexão e compartilhamento de tela na barra flutuante (`ActiveCallBar`).
+- **Estabilidade WebRTC & Diagnósticos:**
+  - Reconexão controlada com *backoff* exponencial (até 3 tentativas) e negociação ativa de **ICE Restart** (`createOffer({ iceRestart: true })`).
+  - Painel opcional de **Diagnósticos de Mídia** em tempo real (`getStats()`) exibindo rota ICE, RTT (transporte de ida e volta), Jitter, perda de pacotes (`%`), bitrate de áudio/vídeo (`kbps`) e resolução/FPS.
+- **Testes Automatizados:** Nova suíte [`tests/calls_and_streaming_v030.test.ts`](tests/calls_and_streaming_v030.test.ts) com 10 testes de unidade e integração.
+
+### Corrigido
+- Corrigido bug em que alternar da aba `Chamadas` para `Mensagens` desmontava `CallsView` e encerrava prematuramente o compartilhamento de tela ativo.
+- Tratamento de colisão de ofertas (*glare*) durante renegociação/ICE Restart em chamadas já conectadas.
+
+---
+
 ## [0.2.1] — 2026-11-10
 
 > [!NOTE]

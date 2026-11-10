@@ -760,7 +760,7 @@ export class WebRtcService {
       if (isOfferCollision) {
         if (!this.isPolite) {
           console.warn('[WebRtcService] Colisão de ofertas detectada. Peer impolite ignora oferta concorrente.');
-          return this.lastGeneratedAnswerSdp || pc.localDescription?.sdp || '';
+          return '';
         }
         console.log('[WebRtcService] Colisão de ofertas detectada. Peer polite realiza rollback local.');
         try {

@@ -35,6 +35,18 @@ pkg.version = version;
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
 console.log(`[OK] package.json: ${oldVersion} -> ${version}`);
 
+// 1b. package-lock.json
+const pkgLockPath = path.join(rootDir, 'package-lock.json');
+if (fs.existsSync(pkgLockPath)) {
+  const pkgLock = JSON.parse(fs.readFileSync(pkgLockPath, 'utf8'));
+  pkgLock.version = version;
+  if (pkgLock.packages && pkgLock.packages['']) {
+    pkgLock.packages[''].version = version;
+  }
+  fs.writeFileSync(pkgLockPath, JSON.stringify(pkgLock, null, 2) + '\n', 'utf8');
+  console.log(`[OK] package-lock.json: ${oldVersion} -> ${version}`);
+}
+
 // 2. src-tauri/tauri.conf.json
 const tauriConfPath = path.join(rootDir, 'src-tauri', 'tauri.conf.json');
 const tauriConf = JSON.parse(fs.readFileSync(tauriConfPath, 'utf8'));
