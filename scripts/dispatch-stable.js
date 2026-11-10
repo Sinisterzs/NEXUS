@@ -52,9 +52,11 @@ async function sleep(ms) {
 }
 
 async function main() {
-  const version = '0.2.0';
-  const targetRef = 'release/v0.2.0';
-  const releaseNotes = 'NEXUS v0.2.0 — Versão Estável Oficial com Redesign UI 2.0, Temas Globais e Segurança TOFU.';
+  const version = process.argv[2] || '0.2.1';
+  const targetRef = process.argv[3] || 'release/v0.2.1';
+  const releaseNotes =
+    process.argv[4] ||
+    `NEXUS v${version} — Atualização Estável oficial com hotfix de classificação de versões e canais.`;
 
   console.log(`[Dispatch] Disparando workflow stable.yml para versão ${version} a partir de ${targetRef}...`);
   await githubRequest('/repos/Sinisterzs/NEXUS/actions/workflows/stable.yml/dispatches', 'POST', {
