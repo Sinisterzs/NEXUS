@@ -1814,8 +1814,12 @@ export const SettingsView: React.FC = () => {
                   <div className="flex items-center gap-2 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs">
                     <Check className="w-4 h-4 shrink-0" />
                     <span>
-                      O NEXUS já está atualizado na versão mais recente disponível no canal{' '}
-                      <strong>{updateChannel === 'beta' ? 'Beta / Nightly' : 'Estável'}</strong>!
+                      {updateState.statusMessage || (
+                        <>
+                          O NEXUS já está atualizado na versão mais recente disponível no canal{' '}
+                          <strong>{updateChannel === 'beta' ? 'Beta / Nightly' : 'Estável'}</strong>!
+                        </>
+                      )}
                     </span>
                   </div>
                 )}
@@ -1825,9 +1829,9 @@ export const SettingsView: React.FC = () => {
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-2 text-sky-300 text-xs font-semibold">
                         <Info className="w-4 h-4 shrink-0" />
-                        <span>Versão Experimental em Execução</span>
+                        <span>{updateState.noticeTitle || 'Aviso de Atualização'}</span>
                       </div>
-                      {updateChannel === 'stable' && (
+                      {updateChannel === 'stable' && installedVersionInfo.isPrerelease && (
                         <button
                           type="button"
                           onClick={() => setShowBetaConfirmModal(true)}

@@ -4,6 +4,8 @@
  * com suporte a canais dinâmicos (Stable e Beta / Nightly).
  */
 
+import { isPrereleaseVersion } from '../version.ts';
+
 export type UpdateChannel = 'stable' | 'beta';
 
 export interface UpdateInfo {
@@ -15,6 +17,7 @@ export interface UpdateInfo {
   isDowngradeNotice?: boolean;
   latestRemoteVersion?: string;
   endpointUsed?: string;
+  noticeTitle?: string;
 }
 
 export type UpdateStatus =
@@ -38,6 +41,113 @@ export interface UpdateState {
   totalBytes: number;
   errorMessage: string | null;
   downgradeNoticeMessage: string | null;
+  noticeTitle: string | null;
+  statusMessage: string | null;
+}
+
+export interface ChannelVersionResolution {
+  status: UpdateStatus;
+  isDowngradeNotice: boolean;
+  downgradeNoticeMessage: string | null;
+  noticeTitle: string | null;
+  statusMessage: string | null;
+}
+
+/**
+ * Avalia de forma pura a relação entre a versão instalada, a versão remota do canal
+ * e as regras de atualização do NEXUS, evitando avisos falsos de downgrade ou de versão experimental.
+ */
+export function resolveChannelVersionComparison(params: {
+  currentVersion: string;
+  latestRemoteVersion?: string | null;
+  updateAvailable: boolean;
+  isCurrentHigher: boolean;
+  channel: UpdateChannel;
+  silent?: boolean;
+}): ChannelVersionResolution {
+  const {
+    currentVersion,
+    latestRemoteVersion,
+    updateAvailable,
+    isCurrentHigher,
+    channel,
+    silent = false,
+  } = params;
+
+  if (updateAvailable) {
+    return {
+      status: 'available',
+      isDowngradeNotice: false,
+      downgradeNoticeMessage: null,
+      noticeTitle: null,
+      statusMessage: null,
+    };
+  }
+
+  const isCurrentPrerelease = isPrereleaseVersion(currentVersion);
+  const remoteVer = latestRemoteVersion || '';
+
+  if (isCurrentHigher) {
+    // Cenário A: Versão instalada é experimental e o canal ativo é Stable -> Downgrade Notice legítimo
+    if (isCurrentPrerelease && channel === 'stable') {
+      const msg = `Você está usando uma versão experimental (v${currentVersion}) com o Canal Estável ativo. A versão disponível no canal Estável é a v${remoteVer || 'estável'}. Não haverá downgrade automático; novas atualizações estáveis serão oferecidas quando uma versão estável superior à sua for publicada.`;
+      return {
+        status: 'downgrade_notice',
+        isDowngradeNotice: true,
+        downgradeNoticeMessage: msg,
+        noticeTitle: 'Versão Experimental com Canal Estável Ativo',
+        statusMessage: null,
+      };
+    }
+
+    // Cenário B: Versão instalada é Stable oficial e o canal ativo é Beta / Nightly
+    // O usuário está à frente da compilação remota do canal beta (ex: 0.2.0 > 0.1.9-nightly.7).
+    // NÃO é versão experimental, NÃO é downgrade.
+    if (!isCurrentPrerelease && channel === 'beta') {
+      const msg = `Você está utilizando a versão estável oficial (v${currentVersion}). O Canal Beta / Nightly está ativo e novas compilações experimentais serão oferecidas automaticamente assim que uma versão superior for publicada (ex: v0.2.1-nightly.x).`;
+      return {
+        status: silent ? 'idle' : 'up_to_date',
+        isDowngradeNotice: false,
+        downgradeNoticeMessage: null,
+        noticeTitle: null,
+        statusMessage: msg,
+      };
+    }
+
+    // Cenário C: Versão instalada é Stable e superior ao manifesto Stable (ex: build interno ou hotfix)
+    if (!isCurrentPrerelease && channel === 'stable') {
+      const msg = `O NEXUS (v${currentVersion}) já está em uma versão superior à homologada no canal Estável (v${remoteVer || 'estável'}).`;
+      return {
+        status: silent ? 'idle' : 'up_to_date',
+        isDowngradeNotice: false,
+        downgradeNoticeMessage: null,
+        noticeTitle: null,
+        statusMessage: msg,
+      };
+    }
+
+    // Cenário D: Versão instalada é experimental e superior à compilação remota do canal Beta
+    if (isCurrentPrerelease && channel === 'beta') {
+      const msg = `O NEXUS (v${currentVersion}) já está em uma compilação mais recente que a disponível no canal Beta (v${remoteVer}).`;
+      return {
+        status: silent ? 'idle' : 'up_to_date',
+        isDowngradeNotice: false,
+        downgradeNoticeMessage: null,
+        noticeTitle: null,
+        statusMessage: msg,
+      };
+    }
+  }
+
+  // Versão instalada é idêntica à remota ou não há atualização
+  const channelName = channel === 'beta' ? 'Beta / Nightly' : 'Estável';
+  return {
+    status: silent ? 'idle' : 'up_to_date',
+    isDowngradeNotice: false,
+    downgradeNoticeMessage: null,
+    noticeTitle: null,
+    statusMessage: `O NEXUS já está atualizado na versão mais recente disponível no canal ${channelName}!`,
+  };
 }
 
 class UpdateService {
@@ -52,6 +162,8 @@ class UpdateService {
     totalBytes: 0,
     errorMessage: null,
     downgradeNoticeMessage: null,
+    noticeTitle: null,
+    statusMessage: null,
   };
 
   getState(): UpdateState {
@@ -98,6 +210,8 @@ class UpdateService {
       channel,
       errorMessage: null,
       downgradeNoticeMessage: null,
+      noticeTitle: null,
+      statusMessage: null,
       downloadProgress: 0,
     });
 
@@ -105,59 +219,79 @@ class UpdateService {
       const { invoke } = await import('@tauri-apps/api/core');
       const res = await invoke<any>('updater_check_channel', { channel });
 
-      if (res && res.updateAvailable && res.rid != null) {
+      const currentVer = res?.currentVersion || '0.2.0';
+      const remoteVer = res?.latestRemoteVersion || res?.version || null;
+      const isAvailable = Boolean(res && res.updateAvailable && res.rid != null);
+      const isHigher = Boolean(res && res.isCurrentHigher);
+
+      const resolution = resolveChannelVersionComparison({
+        currentVersion: currentVer,
+        latestRemoteVersion: remoteVer,
+        updateAvailable: isAvailable,
+        isCurrentHigher: isHigher,
+        channel,
+        silent,
+      });
+
+      if (resolution.status === 'available') {
         const { Update } = await import('@tauri-apps/plugin-updater');
         const update = new Update(res);
         this.activeUpdate = update;
 
         const info: UpdateInfo = {
           version: res.version,
-          currentVersion: res.currentVersion,
+          currentVersion: currentVer,
           body: res.body || 'Atualizações e melhorias de estabilidade.',
           date: res.date,
           channel,
           endpointUsed: res.endpointUsed,
           isDowngradeNotice: false,
+          latestRemoteVersion: remoteVer || undefined,
         };
 
         console.log(
-          `[UpdateService] Nova versão encontrada (${channel}): v${res.version} (Atual: v${res.currentVersion})`
+          `[UpdateService] Nova versão encontrada (${channel}): v${res.version} (Atual: v${currentVer})`
         );
         this.setState({
           status: 'available',
           updateInfo: info,
           errorMessage: null,
           downgradeNoticeMessage: null,
+          noticeTitle: null,
+          statusMessage: null,
         });
         return info;
-      } else if (res && res.isCurrentHigher) {
-        // Usuário está em uma versão Nightly/Beta, mas selecionou o canal Stable (sem downgrade automático)
-        const remoteVer = res.latestRemoteVersion || 'estável';
-        const msg = `Você está usando uma versão experimental (v${res.currentVersion}). A versão estável mais recente é a v${remoteVer}. Não haverá downgrade automático; novas atualizações estáveis serão oferecidas quando uma versão superior for lançada.`;
-        console.log(`[UpdateService] Notificação de versão superior (${channel}): ${msg}`);
+      } else if (resolution.status === 'downgrade_notice') {
+        const targetVer = remoteVer || 'estável';
+        console.log(`[UpdateService] Notificação de downgrade/mismatch (${channel}): ${resolution.downgradeNoticeMessage}`);
         this.activeUpdate = null;
         this.setState({
           status: 'downgrade_notice',
           updateInfo: {
-            version: remoteVer,
-            currentVersion: res.currentVersion,
+            version: targetVer,
+            currentVersion: currentVer,
             channel,
             isDowngradeNotice: true,
-            latestRemoteVersion: remoteVer,
-            endpointUsed: res.endpointUsed,
+            latestRemoteVersion: targetVer,
+            endpointUsed: res?.endpointUsed,
+            noticeTitle: resolution.noticeTitle || undefined,
           },
           errorMessage: null,
-          downgradeNoticeMessage: msg,
+          downgradeNoticeMessage: resolution.downgradeNoticeMessage,
+          noticeTitle: resolution.noticeTitle,
+          statusMessage: null,
         });
         return null;
       } else {
-        console.log(`[UpdateService] NEXUS já está na versão mais recente no canal ${channel}.`);
+        console.log(`[UpdateService] Status (${channel}): ${resolution.statusMessage}`);
         this.activeUpdate = null;
         this.setState({
-          status: silent ? 'idle' : 'up_to_date',
+          status: resolution.status,
           updateInfo: null,
           errorMessage: null,
           downgradeNoticeMessage: null,
+          noticeTitle: null,
+          statusMessage: resolution.statusMessage,
         });
         return null;
       }
@@ -169,6 +303,9 @@ class UpdateService {
         errorMessage:
           err?.message ||
           (typeof err === 'string' ? err : 'Não foi possível consultar os servidores do GitHub Releases.'),
+        downgradeNoticeMessage: null,
+        noticeTitle: null,
+        statusMessage: null,
       });
       return null;
     }

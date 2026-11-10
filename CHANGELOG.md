@@ -10,6 +10,21 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 
 ---
 
+## [0.2.1] — 2026-11-10
+
+> [!NOTE]
+> Esta versão de manutenção oficial (**Hotfix**) corrige de forma cirúrgica a classificação e exibição de versões no seletor de canais de atualização, eliminando falsos avisos de versão experimental e garantindo a separação estrita entre a versão instalada e o canal de atualização ativo.
+
+### Corrigido
+- **Classificação de Versão Instalada:** A versão local passa a ser classificada de forma estritamente imutável via análise SemVer (`isPrereleaseVersion`), não sendo mais alterada dinamicamente pelo resultado das consultas de rede dos canais.
+- **Falso Alerta de "Versão Experimental":** Eliminado o comportamento incorreto onde uma versão Estável oficial (como a `v0.2.0`), ao consultar o canal Beta/Nightly cujo último build remoto era inferior, disparava erroneamente o alerta *"Versão Experimental em Execução"* e rotulava a versão remota como "estável".
+- **Lógica Pura de Comparação de Canais (`resolveChannelVersionComparison`):** Introduzida função pura no `UpdateService` que trata de forma determinística os 4 cenários de comparação SemVer entre versões instaladas e manifestos remotos.
+- **Mensagens Contextuais e Título Dinâmico:** O card de atualizações em Configurações agora exibe status amigável de versão atualizada quando a versão estável está à frente do canal Beta, preservando o aviso de downgrade apenas para cenários legítimos (compilação experimental com canal Estável ativo).
+- **Exibição Condicional de Botões:** O botão *"Continuar recebendo Nightlies"* agora só é exibido quando uma versão experimental real estiver instalada e o canal Estável estiver selecionado.
+- **Cobertura de Regressão Automatizada:** Nova suíte de testes cobrindo a matriz completa de 7 cenários SemVer de transição entre versões estáveis e pré-lançamentos nos canais Stable e Beta.
+
+---
+
 ## [0.2.0] — 2026-11-09
 
 > [!NOTE]

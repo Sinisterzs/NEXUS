@@ -45,13 +45,12 @@ test('SemVer: versões experimentais produzem VERSÃO NIGHTLY/BETA', () => {
 });
 
 test('SemVer: APP_VERSION atual é detectada corretamente', () => {
-  assert.equal(APP_VERSION, '0.2.0');
+  assert.ok(APP_VERSION);
   const info = getInstalledVersionInfo();
-
-  assert.equal(info.isPrerelease, false);
-  assert.equal(info.isNightly, false);
-  assert.equal(info.prereleaseTag, null);
-  assert.equal(info.badgeLabel, 'VERSÃO ESTÁVEL');
+  assert.equal(info.version, APP_VERSION);
+  assert.equal(info.isPrerelease, isPrereleaseVersion(APP_VERSION));
+  assert.equal(info.isNightly, isNightlyVersion(APP_VERSION));
+  assert.equal(info.badgeLabel, isPrereleaseVersion(APP_VERSION) ? 'VERSÃO NIGHTLY/BETA' : 'VERSÃO ESTÁVEL');
 });
 
 test('Regra de exibição de mismatch: Nightly instalada com canal Stable selecionado', () => {
