@@ -22,14 +22,37 @@ const SAMPLE_README = `# NEXUS
 
 ## 3. Downloads Oficiais e Canais de Atualização
 
-| Canal | Versão | Status | Instalador Windows (64-bit) | Manifesto do Updater |
-| :--- | :---: | :---: | :--- | :--- |
+<table>
+  <thead>
+    <tr>
+      <th align="left">Canal</th>
+      <th align="center">Versão</th>
+      <th align="center">Status</th>
+      <th align="left">Instalador Windows (64-bit)</th>
+      <th align="left">Manifesto do Updater</th>
+    </tr>
+  </thead>
+  <tbody>
 <!-- NEXUS:STABLE_ROW:START -->
-| **Estável (Recomendado)** | **\`v0.2.0\`** | Homologada | [**nexus_0.2.0_x64-setup.exe**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.0/nexus_0.2.0_x64-setup.exe) | [\`latest.json\`](https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json) |
+    <tr>
+      <td align="left"><strong>Estável (Recomendado)</strong></td>
+      <td align="center"><strong><code>v0.2.0</code></strong></td>
+      <td align="center">Homologada</td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.0/nexus_0.2.0_x64-setup.exe"><strong>nexus_0.2.0_x64-setup.exe</strong></a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json"><code>latest.json</code></a></td>
+    </tr>
 <!-- NEXUS:STABLE_ROW:END -->
 <!-- NEXUS:BETA_ROW:START -->
-| **Pré-lançamento (Beta)** | \`v0.1.9-nightly.7\` | Candidata Anterior | [nexus_0.1.9-nightly.7_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/nexus_0.1.9-nightly.7_x64-setup.exe) | [\`latest-nightly.json\`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/latest-nightly.json) |
+    <tr>
+      <td align="left"><strong>Pré-lançamento (Beta)</strong></td>
+      <td align="center"><code>v0.1.9-nightly.7</code></td>
+      <td align="center">Candidata Anterior</td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/nexus_0.1.9-nightly.7_x64-setup.exe">nexus_0.1.9-nightly.7_x64-setup.exe</a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.7/latest-nightly.json"><code>latest-nightly.json</code></a></td>
+    </tr>
 <!-- NEXUS:BETA_ROW:END -->
+  </tbody>
+</table>
 
 ## 6. Arquitetura
 
@@ -40,7 +63,7 @@ flowchart TD
 \`\`\`
 `;
 
-test('Automação README: canal Beta atualiza exclusivamente a linha Beta sem tocar em Stable', () => {
+test('Automação README: canal Beta atualiza exclusivamente a linha HTML Beta sem tocar em Stable', () => {
   const result = updateReadmeContent({
     content: SAMPLE_README,
     channel: 'beta',
@@ -49,21 +72,25 @@ test('Automação README: canal Beta atualiza exclusivamente a linha Beta sem to
     status: 'Homologação Ativa',
   });
 
-  // Linha Beta deve ter sido atualizada
-  assert.match(result, /v0\.2\.1-nightly\.1/);
+  // Linha HTML Beta deve ter sido atualizada dentro do tbody com tags HTML válidas
+  assert.match(result, /<code>v0\.2\.1-nightly\.1<\/code>/);
   assert.match(result, /nexus_0\.2\.1-nightly\.1_x64-setup\.exe/);
-  assert.match(result, /Homologação Ativa/);
+  assert.match(result, /<td align="center">Homologação Ativa<\/td>/);
+  assert.match(
+    result,
+    /<tbody>[\s\S]*<!-- NEXUS:BETA_ROW:START -->[\s\S]*<tr>[\s\S]*<\/tr>[\s\S]*<!-- NEXUS:BETA_ROW:END -->[\s\S]*<\/tbody>/
+  );
 
   // Todas as referências da Stable v0.2.0 devem permanecer 100% intactas
   assert.match(result, /v0\.2\.0%20Stable/);
   assert.match(result, /Baixar v0\.2\.0 Stable/);
-  assert.match(result, /\|\s+\*\*Estável \(Recomendado\)\*\*\s+\|\s+\*\*\`v0\.2\.0\`\*\*/);
+  assert.match(result, /<strong><code>v0\.2\.0<\/code><\/strong>/);
 
   // Mermaid deve permanecer intacto
   assert.match(result, /\|"Áudio e Tela P2P \(DTLS-SRTP\)"\|/);
 });
 
-test('Automação README: canal Stable atualiza Header Badges, Links e Linha Stable sem tocar em Beta', () => {
+test('Automação README: canal Stable atualiza Header Badges, Links e Linha HTML Stable sem tocar em Beta', () => {
   const result = updateReadmeContent({
     content: SAMPLE_README,
     channel: 'stable',
@@ -77,11 +104,15 @@ test('Automação README: canal Stable atualiza Header Badges, Links e Linha Sta
   assert.match(result, /nexus_0\.3\.0_x64-setup\.exe/);
   assert.match(result, /scripts\/release-notes-v0\.3\.0\.md/);
 
-  // Linha Stable deve apontar para v0.3.0
-  assert.match(result, /\|\s+\*\*Estável \(Recomendado\)\*\*\s+\|\s+\*\*\`v0\.3\.0\`\*\*/);
+  // Linha HTML Stable deve apontar para v0.3.0
+  assert.match(result, /<strong><code>v0\.3\.0<\/code><\/strong>/);
+  assert.match(
+    result,
+    /<tbody>[\s\S]*<!-- NEXUS:STABLE_ROW:START -->[\s\S]*<tr>[\s\S]*<\/tr>[\s\S]*<!-- NEXUS:STABLE_ROW:END -->[\s\S]*<\/tbody>/
+  );
 
-  // Linha Beta pré-existente deve permanecer 100% inalterada
-  assert.match(result, /v0\.1\.9-nightly\.7/);
+  // Linha HTML Beta pré-existente deve permanecer 100% inalterada
+  assert.match(result, /<code>v0\.1\.9-nightly\.7<\/code>/);
   assert.match(result, /Candidata Anterior/);
 });
 
@@ -129,6 +160,12 @@ test('Automação README: validação contra o README.md real do repositório', 
   assert.ok(actualReadme.includes(MARKERS.STABLE_ROW.end));
   assert.ok(actualReadme.includes(MARKERS.BETA_ROW.start));
   assert.ok(actualReadme.includes(MARKERS.BETA_ROW.end));
+
+  // Validação da estrutura HTML da tabela
+  assert.ok(actualReadme.includes('<table>'));
+  assert.ok(actualReadme.includes('</table>'));
+  assert.ok(actualReadme.includes('<tbody>'));
+  assert.ok(actualReadme.includes('</tbody>'));
 
   // Simula execução com a versão atual publicada: não deve alterar nada (idempotente)
   const simulated = updateReadmeContent({

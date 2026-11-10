@@ -47,14 +47,37 @@ Essa abordagem entrega um consumo reduzido de memória RAM e processamento, mant
 
 O NEXUS disponibiliza instaladores assinados digitalmente para Windows de 64 bits:
 
-| Canal | Versão | Status | Instalador Windows (64-bit) | Manifesto do Updater |
-| :--- | :---: | :---: | :--- | :--- |
+<table>
+  <thead>
+    <tr>
+      <th align="left">Canal</th>
+      <th align="center">Versão</th>
+      <th align="center">Status</th>
+      <th align="left">Instalador Windows (64-bit)</th>
+      <th align="left">Manifesto do Updater</th>
+    </tr>
+  </thead>
+  <tbody>
 <!-- NEXUS:STABLE_ROW:START -->
-| **Estável (Recomendado)** | **`v0.2.0`** | Homologada | [**nexus_0.2.0_x64-setup.exe**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.0/nexus_0.2.0_x64-setup.exe) | [`latest.json`](https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json) |
+    <tr>
+      <td align="left"><strong>Estável (Recomendado)</strong></td>
+      <td align="center"><strong><code>v0.2.0</code></strong></td>
+      <td align="center">Homologada</td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.0/nexus_0.2.0_x64-setup.exe"><strong>nexus_0.2.0_x64-setup.exe</strong></a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json"><code>latest.json</code></a></td>
+    </tr>
 <!-- NEXUS:STABLE_ROW:END -->
 <!-- NEXUS:BETA_ROW:START -->
-| **Pré-lançamento (Beta)** | `v0.2.1-nightly.1` | Homologação Ativa | [nexus_0.2.1-nightly.1_x64-setup.exe](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1-nightly.1/nexus_0.2.1-nightly.1_x64-setup.exe) | [`latest-nightly.json`](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1-nightly.1/latest-nightly.json) |
+    <tr>
+      <td align="left"><strong>Pré-lançamento (Beta)</strong></td>
+      <td align="center"><code>v0.2.1-nightly.1</code></td>
+      <td align="center">Homologação Ativa</td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1-nightly.1/nexus_0.2.1-nightly.1_x64-setup.exe">nexus_0.2.1-nightly.1_x64-setup.exe</a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1-nightly.1/latest-nightly.json"><code>latest-nightly.json</code></a></td>
+    </tr>
 <!-- NEXUS:BETA_ROW:END -->
+  </tbody>
+</table>
 
 ### Como Instalar e Atualizar
 1. Baixe o instalador oficial `nexus_0.2.0_x64-setup.exe`.
