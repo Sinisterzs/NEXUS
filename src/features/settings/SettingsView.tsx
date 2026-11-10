@@ -134,7 +134,7 @@ export const SettingsView: React.FC = () => {
           deviceId: deviceId && deviceId !== 'default' ? { ideal: deviceId } : undefined,
           echoCancellation: Boolean(settings.audioVideo.echoCancellation),
           noiseSuppression: Boolean(settings.audioVideo.noiseSuppression),
-          autoGainControl: true,
+          autoGainControl: Boolean(settings.audioVideo.autoGainControl ?? true),
         },
         video: false,
       };
@@ -154,7 +154,7 @@ export const SettingsView: React.FC = () => {
               audio: {
                 echoCancellation: Boolean(settings.audioVideo.echoCancellation),
                 noiseSuppression: Boolean(settings.audioVideo.noiseSuppression),
-                autoGainControl: true,
+                autoGainControl: Boolean(settings.audioVideo.autoGainControl ?? true),
               },
               video: false,
             });
@@ -262,6 +262,7 @@ export const SettingsView: React.FC = () => {
     settings.audioVideo.outputVolume,
     settings.audioVideo.noiseSuppression,
     settings.audioVideo.echoCancellation,
+    settings.audioVideo.autoGainControl,
   ]);
 
   // Profile form local state (prevents premature unpersisted state in Zustand)
@@ -1051,7 +1052,7 @@ export const SettingsView: React.FC = () => {
 
                 <div>
                   <div className="flex justify-between text-[11px] text-nexus-muted mb-1">
-                    <span>Volume de Saída</span>
+                    <span>Volume Geral de Saída</span>
                     <span className="font-mono text-nexus-text">{settings.audioVideo.outputVolume}%</span>
                   </div>
                   <input
@@ -1060,7 +1061,9 @@ export const SettingsView: React.FC = () => {
                     max="100"
                     value={settings.audioVideo.outputVolume}
                     onChange={(e) => {
-                      updateAudioVideo({ outputVolume: Number(e.target.value) });
+                      const nextVol = Number(e.target.value);
+                      updateAudioVideo({ outputVolume: nextVol });
+                      callService.setOutputVolume(nextVol);
                       showSaveSuccess();
                     }}
                     className="w-full accent-nexus-accent cursor-pointer"
@@ -1068,13 +1071,62 @@ export const SettingsView: React.FC = () => {
                 </div>
               </div>
 
-              {/* Noise Suppression & Echo Cancellation */}
+              {/* Screen Share Quality Default Preset */}
+              <div className="p-4 rounded-xl bg-nexus-surface border border-nexus-border space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-nexus-text">
+                      Qualidade Padrão de Compartilhamento de Tela
+                    </p>
+                    <p className="text-[11px] text-nexus-muted">
+                      Define a resolução e taxa de quadros inicial das transmissões WebRTC P2P. Se o hardware não suportar o modo selecionado, o sistema reduz automaticamente para 720p / 30 FPS.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                  {(
+                    [
+                      { id: 'auto', label: 'Automático', desc: 'Adaptativo (1080p/30)' },
+                      { id: '720p30', label: '720p • 30 FPS', desc: 'Baixo uso de CPU/Rede' },
+                      { id: '1080p30', label: '1080p • 30 FPS', desc: 'Nitidez para leitura' },
+                      { id: '1080p60', label: '1080p • 60 FPS', desc: 'Fluidez para jogos' },
+                    ] as const
+                  ).map((preset) => {
+                    const currentQuality = settings.audioVideo.screenShareQuality || 'auto';
+                    const isSelected = currentQuality === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => {
+                          useAppStore.getState().setScreenShareQuality(preset.id);
+                          callService.setScreenShareQuality(preset.id);
+                          showSaveSuccess();
+                        }}
+                        className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-nexus-accent/15 border-nexus-accent text-nexus-text shadow-sm'
+                            : 'bg-nexus-bg border-nexus-border text-nexus-muted hover:text-nexus-text hover:border-nexus-border/80'
+                        }`}
+                      >
+                        <div className="text-xs font-bold">{preset.label}</div>
+                        <div className="text-[10px] opacity-80 mt-0.5">{preset.desc}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Standard WebRTC DSP Controls */}
               <div className="space-y-2">
                 <label className="flex items-center justify-between p-3 rounded-xl bg-nexus-surface border border-nexus-border cursor-pointer">
                   <div>
-                    <p className="text-xs font-semibold text-nexus-text">Supressão de Ruído Nativa (WebRTC DSP)</p>
+                    <p className="text-xs font-semibold text-nexus-text">
+                      Supressão de Ruído Padrão (WebRTC NS)
+                    </p>
                     <p className="text-[11px] text-nexus-muted">
-                      Filtra ruídos de fundo contínuos (ventiladores, digitação e respiração) diretamente no pipeline Opus.
+                      Aplica o filtro padrão do motor WebRTC para atenuar ruídos estacionários de fundo (como coolers e chiados contínuos).
                     </p>
                   </div>
                   <input
@@ -1083,7 +1135,11 @@ export const SettingsView: React.FC = () => {
                     onChange={(e) => {
                       const next = e.target.checked;
                       updateAudioVideo({ noiseSuppression: next });
-                      callService.applyAudioConstraints(next, settings.audioVideo.echoCancellation);
+                      callService.applyAudioConstraints(
+                        next,
+                        settings.audioVideo.echoCancellation,
+                        settings.audioVideo.autoGainControl ?? true
+                      );
                       showSaveSuccess();
                     }}
                     className="rounded border-nexus-border accent-nexus-accent h-4 w-4 cursor-pointer"
@@ -1092,9 +1148,11 @@ export const SettingsView: React.FC = () => {
 
                 <label className="flex items-center justify-between p-3 rounded-xl bg-nexus-surface border border-nexus-border cursor-pointer">
                   <div>
-                    <p className="text-xs font-semibold text-nexus-text">Cancelamento de Eco Acústico (AEC)</p>
+                    <p className="text-xs font-semibold text-nexus-text">
+                      Cancelamento de Eco Acústico (WebRTC AEC)
+                    </p>
                     <p className="text-[11px] text-nexus-muted">
-                      Impede realimentação acústica entre os fones/alto-falantes e o microfone na chamada.
+                      Evita realimentação acústica entre alto-falantes e microfone usando o processador padrão do WebView2.
                     </p>
                   </div>
                   <input
@@ -1103,7 +1161,37 @@ export const SettingsView: React.FC = () => {
                     onChange={(e) => {
                       const next = e.target.checked;
                       updateAudioVideo({ echoCancellation: next });
-                      callService.applyAudioConstraints(settings.audioVideo.noiseSuppression, next);
+                      callService.applyAudioConstraints(
+                        settings.audioVideo.noiseSuppression,
+                        next,
+                        settings.audioVideo.autoGainControl ?? true
+                      );
+                      showSaveSuccess();
+                    }}
+                    className="rounded border-nexus-border accent-nexus-accent h-4 w-4 cursor-pointer"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between p-3 rounded-xl bg-nexus-surface border border-nexus-border cursor-pointer">
+                  <div>
+                    <p className="text-xs font-semibold text-nexus-text">
+                      Controle Automático de Ganho (WebRTC AGC)
+                    </p>
+                    <p className="text-[11px] text-nexus-muted">
+                      Normaliza automaticamente variações de volume da fala na captura do microfone.
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.audioVideo.autoGainControl ?? true}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      updateAudioVideo({ autoGainControl: next });
+                      callService.applyAudioConstraints(
+                        settings.audioVideo.noiseSuppression,
+                        settings.audioVideo.echoCancellation,
+                        next
+                      );
                       showSaveSuccess();
                     }}
                     className="rounded border-nexus-border accent-nexus-accent h-4 w-4 cursor-pointer"

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mic,
   MicOff,
@@ -18,11 +18,20 @@ import {
   Monitor,
   Maximize2,
   Minimize2,
+  Volume2,
+  VolumeX,
+  Activity,
+  ChevronUp,
+  GripHorizontal,
+  Sparkles,
+  X,
 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { callService } from '../../services/CallService';
-import { screenCaptureService } from '../../services/ScreenCaptureService';
+import { audioDeviceService, AudioDeviceInfo } from '../../services/AudioDeviceService';
+import { WebRtcTransportDiagnostics } from '../../services/WebRtcService';
 import { callHistoryRepository, CallHistoryEntry } from '../../repositories/CallHistoryRepository';
+import { ScreenShareQualityPreset } from '../../lib/types';
 import { Avatar } from '../../components/Avatar';
 import { Tooltip } from '../../components/Tooltip';
 import { EmptyState } from '../../components/EmptyState';
@@ -62,6 +71,18 @@ function formatHistoryTimestamp(timestamp: number): string {
   return `${day}/${month} às ${timeStr}`;
 }
 
+const QUALITY_PRESET_OPTIONS: {
+  id: ScreenShareQualityPreset;
+  label: string;
+  shortLabel: string;
+  desc: string;
+}[] = [
+  { id: 'auto', label: 'Automático (Adaptativo)', shortLabel: 'Auto', desc: 'Até 1080p / 30 FPS' },
+  { id: '720p30', label: '720p • 30 FPS', shortLabel: '720p30', desc: 'Equilíbrio e baixo uso de CPU' },
+  { id: '1080p30', label: '1080p • 30 FPS', shortLabel: '1080p30', desc: 'Alta nitidez para texto e código' },
+  { id: '1080p60', label: '1080p • 60 FPS', shortLabel: '1080p60', desc: 'Alta fluidez para vídeos e jogos' },
+];
+
 export const CallsView: React.FC = () => {
   const voiceCallState = useAppStore((state) => state.voiceCallState);
   const activeCallPeer = useAppStore((state) => state.activeCallPeer);
@@ -74,29 +95,113 @@ export const CallsView: React.FC = () => {
   const isPeerMuted = useAppStore((state) => state.isPeerMuted);
   const callErrorMessage = useAppStore((state) => state.callErrorMessage);
   const setCallErrorMessage = useAppStore((state) => state.setCallErrorMessage);
+  const callDeviceNotice = useAppStore((state) => state.callDeviceNotice);
+  const setCallDeviceNotice = useAppStore((state) => state.setCallDeviceNotice);
+  const reconnectAttempt = useAppStore((state) => state.reconnectAttempt);
+  const maxReconnectAttempts = useAppStore((state) => state.maxReconnectAttempts);
   const currentUser = useAppStore((state) => state.currentUser);
   const onlineUser = useAppStore((state) => state.onlineUser);
   const authStatus = useAppStore((state) => state.authStatus);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
+  const settings = useAppStore((state) => state.settings);
+  const updateAudioVideo = useAppStore((state) => state.updateAudioVideo);
+  const setParticipantVolume = useAppStore((state) => state.setParticipantVolume);
+  const setCallStageSplitRatio = useAppStore((state) => state.setCallStageSplitRatio);
 
-  // Phase 3.0: Screen Sharing State (Local Preview)
+  // Screen Sharing State (Local & Quality)
   const isScreenSharing = useAppStore((state) => state.isScreenSharing);
   const isStartingScreenShare = useAppStore((state) => state.isStartingScreenShare);
   const screenStream = useAppStore((state) => state.screenStream);
   const screenShareLabel = useAppStore((state) => state.screenShareLabel);
   const screenShareError = useAppStore((state) => state.screenShareError);
+  const screenShareQuality = useAppStore((state) => state.screenShareQuality);
+  const screenEffectiveWidth = useAppStore((state) => state.screenEffectiveWidth);
+  const screenEffectiveHeight = useAppStore((state) => state.screenEffectiveHeight);
+  const screenEffectiveFps = useAppStore((state) => state.screenEffectiveFps);
+  const screenQualityFallbackNotice = useAppStore((state) => state.screenQualityFallbackNotice);
   const toggleScreenShare = useAppStore((state) => state.toggleScreenShare);
   const stopScreenShare = useAppStore((state) => state.stopScreenShare);
   const clearScreenShareError = useAppStore((state) => state.clearScreenShareError);
 
-  // Phase 3.1: Remote Screen Share State (WebRTC)
+  // Remote Screen Share State (WebRTC)
   const isRemoteScreenSharing = useAppStore((state) => state.isRemoteScreenSharing);
   const remoteScreenStream = useAppStore((state) => state.remoteScreenStream);
   const isRemoteScreenMuted = useAppStore((state) => state.isRemoteScreenMuted);
 
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
+  const stageAreaRef = useRef<HTMLDivElement | null>(null);
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isDraggingSplitter, setIsDraggingSplitter] = useState(false);
+  const [activePopover, setActivePopover] = useState<'none' | 'audio' | 'quality'>('none');
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<WebRtcTransportDiagnostics | null>(null);
+  const [inputDevices, setInputDevices] = useState<AudioDeviceInfo[]>([]);
+  const [outputDevices, setOutputDevices] = useState<AudioDeviceInfo[]>([]);
+  const [activeStageSource, setActiveStageSource] = useState<'remote' | 'local'>('remote');
+
+  const peerId = activeCallPeer?.id || '';
+  const peerVolume = peerId
+    ? (settings.audioVideo.participantVolumes?.[peerId] ?? 100)
+    : 100;
+  const stageSplitRatio = settings.audioVideo.callStageSplitRatio ?? 65;
+  const hasAnyScreenStage = Boolean(
+    (isRemoteScreenSharing && remoteScreenStream) || (isScreenSharing && screenStream)
+  );
+
+  // Seleciona automaticamente a fonte principal do palco (prioriza tela remota quando ativa)
+  useEffect(() => {
+    if (isRemoteScreenSharing && remoteScreenStream) {
+      setActiveStageSource('remote');
+    } else if (isScreenSharing && screenStream) {
+      setActiveStageSource('local');
+    }
+  }, [isRemoteScreenSharing, remoteScreenStream, isScreenSharing, screenStream]);
+
+  // Carrega dispositivos de áudio para troca rápida em chamada
+  useEffect(() => {
+    let mounted = true;
+    audioDeviceService.getAvailableDevices().then((dev) => {
+      if (mounted) {
+        setInputDevices(dev.inputs);
+        setOutputDevices(dev.outputs);
+      }
+    });
+    const unsubscribe = audioDeviceService.onDeviceChange((dev) => {
+      if (mounted) {
+        setInputDevices(dev.inputs);
+        setOutputDevices(dev.outputs);
+      }
+    });
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  // Polling leve de diagnósticos APENAS quando o painel está aberto e a chamada ativa
+  useEffect(() => {
+    if (!showDiagnostics || (voiceCallState !== 'connected' && voiceCallState !== 'reconnecting')) {
+      return;
+    }
+
+    let cancelled = false;
+    const pollStats = async () => {
+      const stats = await callService.getTransportDiagnostics();
+      if (!cancelled) {
+        setDiagnostics(stats);
+      }
+    };
+
+    pollStats();
+    const timer = setInterval(pollStats, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [showDiagnostics, voiceCallState]);
 
   // Atualiza elemento HTML5 video com a faixa remota de vídeo
   useEffect(() => {
@@ -110,7 +215,7 @@ export const CallsView: React.FC = () => {
         remoteVideoRef.current.srcObject = null;
       }
     }
-  }, [remoteScreenStream]);
+  }, [remoteScreenStream, activeStageSource, isFullscreen]);
 
   // Atualiza elemento HTML5 video com a faixa da prévia local
   useEffect(() => {
@@ -118,20 +223,108 @@ export const CallsView: React.FC = () => {
       if (screenStream) {
         previewVideoRef.current.srcObject = screenStream;
         previewVideoRef.current.play().catch((err) => {
-          console.warn('[CallsView] Falha ao reproduzir elemento de vídeo:', err);
+          console.warn('[CallsView] Falha ao reproduzir elemento de vídeo local:', err);
         });
       } else {
         previewVideoRef.current.srcObject = null;
       }
     }
-  }, [screenStream]);
+  }, [screenStream, activeStageSource, isFullscreen]);
 
-  // Encerra captura ativa ao desmontar a visualização de chamadas
-  useEffect(() => {
-    return () => {
-      screenCaptureService.stopCapture();
-    };
+  // Sincronização de Tela Cheia (DOM Fullscreen API + Tauri Window Fullscreen)
+  const exitFullscreenCleanly = useCallback(async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen().catch(() => {});
+      }
+    } catch {}
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const win = getCurrentWindow();
+      const winFs = await win.isFullscreen().catch(() => false);
+      if (winFs) {
+        await win.setFullscreen(false).catch(() => {});
+      }
+    } catch {}
+    setIsFullscreen(false);
   }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    if (isFullscreen) {
+      await exitFullscreenCleanly();
+      return;
+    }
+
+    let enteredDomFullscreen = false;
+    if (fullscreenContainerRef.current && typeof fullscreenContainerRef.current.requestFullscreen === 'function') {
+      try {
+        await fullscreenContainerRef.current.requestFullscreen();
+        enteredDomFullscreen = true;
+      } catch {
+        enteredDomFullscreen = false;
+      }
+    }
+
+    if (!enteredDomFullscreen) {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().setFullscreen(true);
+      } catch {}
+    }
+    setIsFullscreen(true);
+  }, [isFullscreen, exitFullscreenCleanly]);
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      if (!document.fullscreenElement && isFullscreen) {
+        exitFullscreenCleanly();
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        exitFullscreenCleanly();
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFullscreen, exitFullscreenCleanly]);
+
+  // Sai de tela cheia automaticamente se a transmissão de tela encerrar
+  useEffect(() => {
+    if (!hasAnyScreenStage && isFullscreen) {
+      exitFullscreenCleanly();
+    }
+  }, [hasAnyScreenStage, isFullscreen, exitFullscreenCleanly]);
+
+  // Handler de arraste do divisor (splitter) para redimensionar o painel de transmissão
+  useEffect(() => {
+    if (!isDraggingSplitter) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!stageAreaRef.current) return;
+      const rect = stageAreaRef.current.getBoundingClientRect();
+      if (rect.height <= 0) return;
+      const relativeY = e.clientY - rect.top;
+      const rawPercent = Math.round((relativeY / rect.height) * 100);
+      const clamped = Math.max(30, Math.min(85, rawPercent));
+      setCallStageSplitRatio(clamped);
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingSplitter(false);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDraggingSplitter, setCallStageSplitRatio]);
 
   const [callHistory, setCallHistory] = useState<CallHistoryEntry[]>([]);
   const [isEnding, setIsEnding] = useState(false);
@@ -143,6 +336,8 @@ export const CallsView: React.FC = () => {
   useEffect(() => {
     if (voiceCallState === 'idle') {
       setIsEnding(false);
+      setActivePopover('none');
+      setShowDiagnostics(false);
       setCallHistory(callHistoryRepository.getHistory(currentAccountId));
     }
   }, [voiceCallState, currentAccountId]);
@@ -163,10 +358,23 @@ export const CallsView: React.FC = () => {
 
   const handleEndCall = () => {
     setIsEnding(true);
-    // Executa encerramento com resposta visual imediata
+    if (isFullscreen) {
+      exitFullscreenCleanly();
+    }
     setTimeout(() => {
       callService.endCall();
     }, 50);
+  };
+
+  const handlePeerVolumeChange = (newVolume: number) => {
+    if (!peerId) return;
+    setParticipantVolume(peerId, newVolume);
+    callService.setParticipantVolume(peerId, newVolume);
+  };
+
+  const handleQualitySelect = async (preset: ScreenShareQualityPreset) => {
+    await callService.setScreenShareQuality(preset);
+    setActivePopover('none');
   };
 
   // 1. Histórico de Chamadas (Quando estado está Idle)
@@ -208,7 +416,7 @@ export const CallsView: React.FC = () => {
             </div>
             <button
               onClick={() => setCallErrorMessage(null)}
-              className="px-2 py-0.5 rounded hover:bg-rose-500/20 text-xs font-bold transition-nexus"
+              className="px-2 py-0.5 rounded hover:bg-rose-500/20 text-xs font-bold transition-nexus cursor-pointer"
             >
               OK
             </button>
@@ -237,7 +445,6 @@ export const CallsView: React.FC = () => {
                     className="flex items-center justify-between p-3.5 rounded-xl bg-nexus-surface border border-nexus-border hover:border-nexus-border/80 transition-nexus"
                   >
                     <div className="flex items-center gap-3.5 min-w-0">
-                      {/* Ícone de Direção / Status */}
                       <div
                         className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
                           isMissed
@@ -256,7 +463,6 @@ export const CallsView: React.FC = () => {
                         )}
                       </div>
 
-                      {/* Avatar e Dados do Amigo */}
                       <div className="flex items-center gap-3 min-w-0">
                         <Avatar name={entry.peerName} size="md" />
                         <div className="min-w-0">
@@ -292,7 +498,6 @@ export const CallsView: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Botão de Retorno / Ligar Imediato */}
                     <button
                       onClick={() => handleCallBack(entry)}
                       className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white font-semibold text-xs transition-nexus shadow-sm shadow-emerald-950/30 shrink-0 cursor-pointer active:scale-95 ml-3"
@@ -329,7 +534,7 @@ export const CallsView: React.FC = () => {
             {activeCallPeer?.name || 'Amigo'}
           </h3>
           <p className="text-xs text-emerald-400 font-mono mt-1 animate-pulse">
-            Chamando via Tailscale...
+            Chamando...
           </p>
           <p className="text-[11px] text-nexus-muted mt-2">
             Aguardando resposta do destinatário (expira em 45 segundos).
@@ -402,7 +607,7 @@ export const CallsView: React.FC = () => {
             Estabelecendo Conexão P2P
           </h3>
           <p className="text-xs text-nexus-muted mt-1">
-            Negociando rota segura WebRTC via túnel privado Tailscale...
+            Negociando transporte seguro WebRTC DTLS-SRTP...
           </p>
 
           <button
@@ -416,26 +621,37 @@ export const CallsView: React.FC = () => {
     );
   }
 
-  // 5. Chamada Conectada / Ativa (Connected / Reconnecting)
+  // 5. Chamada Conectada / Em Reconexão (Connected / Reconnecting)
+  const showingRemoteVideo =
+    activeStageSource === 'remote' && isRemoteScreenSharing && Boolean(remoteScreenStream);
+  const showingLocalVideo =
+    activeStageSource === 'local' && isScreenSharing && Boolean(screenStream);
+
   return (
     <div className="flex-1 flex flex-col bg-nexus-bg overflow-hidden relative select-none">
       {/* Top Header */}
-      <div className="h-12 border-b border-nexus-border px-4 flex items-center justify-between bg-nexus-surface shrink-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-            <h2 className="text-xs font-bold text-nexus-text">
+      <div className="h-12 border-b border-nexus-border px-4 flex items-center justify-between bg-nexus-surface shrink-0 z-20">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <Radio
+              className={`w-4 h-4 shrink-0 ${
+                voiceCallState === 'reconnecting'
+                  ? 'text-amber-400 animate-ping'
+                  : 'text-emerald-400 animate-pulse'
+              }`}
+            />
+            <h2 className="text-xs font-bold text-nexus-text truncate">
               Chamada com {activeCallPeer?.name || 'Amigo'}
             </h2>
           </div>
-          <span className="text-[10px] text-nexus-muted border-l border-nexus-border pl-2 font-mono hidden sm:inline">
-            Opus Áudio • WebRTC DTLS-SRTP (Tailscale)
+          <span className="text-[10px] text-nexus-muted border-l border-nexus-border pl-2 font-mono hidden md:inline truncate">
+            Opus Áudio • WebRTC DTLS-SRTP
           </span>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           {/* Status Badge & Duration */}
-          <div className="flex items-center gap-2 px-2.5 py-1 rounded bg-nexus-panel border border-nexus-border text-[11px] font-mono">
+          <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-nexus-panel border border-nexus-border text-[11px] font-mono">
             <span
               className={`w-2 h-2 rounded-full ${
                 voiceCallState === 'reconnecting'
@@ -451,15 +667,30 @@ export const CallsView: React.FC = () => {
               }
             >
               {voiceCallState === 'reconnecting'
-                ? 'Reconectando...'
+                ? `Reconectando (${Math.max(1, reconnectAttempt)}/${maxReconnectAttempts})...`
                 : formatDuration(callDurationSecs)}
             </span>
           </div>
 
-          <Tooltip content="Configurações de Áudio" position="bottom">
+          {/* Toggle Diagnósticos de Mídia */}
+          <Tooltip content="Diagnósticos de Rede e Mídia WebRTC" position="bottom">
+            <button
+              onClick={() => setShowDiagnostics((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-nexus cursor-pointer ${
+                showDiagnostics
+                  ? 'bg-nexus-accent/20 border-nexus-accent/50 text-nexus-text font-semibold'
+                  : 'bg-nexus-panel border-nexus-border text-nexus-muted hover:text-nexus-text'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline text-[11px]">Diagnósticos</span>
+            </button>
+          </Tooltip>
+
+          <Tooltip content="Configurações de Áudio & Vídeo" position="bottom">
             <button
               onClick={() => setActiveTab('settings')}
-              className="p-1.5 rounded hover:bg-nexus-panel text-nexus-muted hover:text-nexus-text transition-nexus cursor-pointer"
+              className="p-1.5 rounded-lg hover:bg-nexus-panel text-nexus-muted hover:text-nexus-text transition-nexus cursor-pointer"
             >
               <Sliders className="w-4 h-4" />
             </button>
@@ -467,155 +698,418 @@ export const CallsView: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Call Stage - 2-Participant P2P Grid & Local Screen Preview */}
-      <div className="flex-1 flex flex-col items-center justify-center p-6 pb-24 overflow-y-auto">
-        {/* Alerta de erro de compartilhamento de tela */}
-        {screenShareError && (
-          <div className="w-full max-w-3xl mb-4 p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 flex items-center justify-between text-xs text-rose-300 font-mono animate-fadeIn">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>{screenShareError}</span>
+      {/* Painel Opcional de Diagnósticos de Mídia (Sob Demanda) */}
+      {showDiagnostics && (
+        <div className="bg-[#0b0d13]/95 border-b border-nexus-border px-5 py-3 z-20 animate-fadeIn">
+          <div className="max-w-5xl mx-auto flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="w-3.5 h-3.5 text-nexus-accent" />
+                <span className="text-[11px] font-bold text-nexus-text uppercase tracking-wider">
+                  Telemetria WebRTC em Tempo Real
+                </span>
+                <span className="text-[10px] text-nexus-muted font-mono">
+                  (RTT indica transporte de ida e volta, não latência unidirecional de voz)
+                </span>
+              </div>
+              <button
+                onClick={() => setShowDiagnostics(false)}
+                className="text-nexus-muted hover:text-nexus-text p-0.5 rounded cursor-pointer"
+                title="Fechar diagnósticos"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
-            <button
-              onClick={clearScreenShareError}
-              className="p-1 rounded hover:bg-rose-900/40 text-rose-400 hover:text-white transition-nexus cursor-pointer ml-3 shrink-0"
-              title="Fechar aviso"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
 
-        {/* Visualizador de Transmissão Remota de Tela (WebRTC) */}
-        {isRemoteScreenSharing && remoteScreenStream && (
-          <div
-            className={
-              isExpanded
-                ? 'fixed inset-0 z-50 bg-black/95 p-6 flex flex-col animate-fadeIn'
-                : 'w-full max-w-4xl mb-6 bg-nexus-surface/90 border border-nexus-border rounded-2xl overflow-hidden shadow-2xl transition-all animate-fadeIn'
-            }
-          >
-            {/* Header do Visualizador Remoto */}
-            <div className="px-4 py-2.5 bg-nexus-surface border-b border-nexus-border flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2.5">
-                <div className="p-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                  <ScreenShare className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-nexus-text">
-                      Tela de {activeCallPeer?.name || 'Amigo'}
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[10px] font-mono font-semibold flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                      Ao Vivo
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-nexus-muted font-mono mt-0.5">
-                    Transmissão P2P WebRTC direta (Tailscale DTLS-SRTP)
-                  </p>
-                </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5">
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  Estado / Rota ICE
+                </span>
+                <span className="text-xs font-mono font-bold text-emerald-400 truncate block mt-0.5">
+                  {diagnostics
+                    ? `${diagnostics.iceConnectionState} (${diagnostics.networkClassification})`
+                    : 'Coletando...'}
+                </span>
               </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setIsExpanded(!isExpanded)}
-                  className="p-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-border text-nexus-muted hover:text-nexus-text transition-all active:scale-95 cursor-pointer border border-nexus-border"
-                  title={isExpanded ? 'Reduzir tela' : 'Expandir tela'}
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  RTT (Ida e Volta)
+                </span>
+                <span className="text-xs font-mono font-bold text-nexus-text block mt-0.5">
+                  {diagnostics?.rttMs !== null && diagnostics?.rttMs !== undefined
+                    ? `${diagnostics.rttMs} ms`
+                    : '—'}
+                </span>
+              </div>
+
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  Jitter de Áudio
+                </span>
+                <span className="text-xs font-mono font-bold text-nexus-text block mt-0.5">
+                  {diagnostics?.jitterMs !== null && diagnostics?.jitterMs !== undefined
+                    ? `${diagnostics.jitterMs} ms`
+                    : '—'}
+                </span>
+              </div>
+
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  Perda de Pacotes
+                </span>
+                <span
+                  className={`text-xs font-mono font-bold block mt-0.5 ${
+                    (diagnostics?.packetLossPercent ?? 0) > 3 ? 'text-amber-400' : 'text-nexus-text'
+                  }`}
                 >
-                  {isExpanded ? (
-                    <Minimize2 className="w-4 h-4" />
+                  {diagnostics
+                    ? `${diagnostics.packetLossPercent ?? 0}% (${diagnostics.packetsLostInbound} pkts)`
+                    : '—'}
+                </span>
+              </div>
+
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  Bitrate (Áudio / Vídeo)
+                </span>
+                <span className="text-xs font-mono font-bold text-nexus-text block mt-0.5">
+                  {diagnostics
+                    ? `${diagnostics.audioBitrateKbps ?? 0} / ${diagnostics.videoBitrateKbps ?? 0} kbps`
+                    : '—'}
+                </span>
+              </div>
+
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  Vídeo Efetivo
+                </span>
+                <span className="text-xs font-mono font-bold text-nexus-text truncate block mt-0.5">
+                  {diagnostics?.videoWidth && diagnostics?.videoHeight
+                    ? `${diagnostics.videoWidth}x${diagnostics.videoHeight} @ ${diagnostics.videoFps ?? 0}fps`
+                    : screenEffectiveWidth && screenEffectiveHeight
+                    ? `${screenEffectiveWidth}x${screenEffectiveHeight} @ ${screenEffectiveFps ?? 30}fps`
+                    : 'Somente Voz'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Avisos de Fallback de Dispositivo / Qualidade / Erro de Captura */}
+      {(callDeviceNotice || screenQualityFallbackNotice || screenShareError) && (
+        <div className="px-6 pt-3 space-y-2 shrink-0 z-10 max-w-5xl w-full mx-auto">
+          {callDeviceNotice && (
+            <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300 font-mono">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>{callDeviceNotice}</span>
+              </div>
+              <button
+                onClick={() => setCallDeviceNotice(null)}
+                className="p-1 rounded hover:bg-amber-500/20 text-amber-300 cursor-pointer ml-3"
+                title="Fechar aviso"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {screenQualityFallbackNotice && (
+            <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-between text-xs text-blue-300 font-mono">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-blue-400 shrink-0" />
+                <span>{screenQualityFallbackNotice}</span>
+              </div>
+            </div>
+          )}
+
+          {screenShareError && (
+            <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-500/40 flex items-center justify-between text-xs text-rose-300 font-mono">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{screenShareError}</span>
+              </div>
+              <button
+                onClick={clearScreenShareError}
+                className="p-1 rounded hover:bg-rose-900/40 text-rose-400 hover:text-white transition-nexus cursor-pointer ml-3 shrink-0"
+                title="Fechar aviso"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Main Call Stage — Redimensionável quando há transmissão ativa */}
+      <div
+        ref={stageAreaRef}
+        className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 pb-24 overflow-y-auto min-h-0"
+      >
+        {hasAnyScreenStage && (
+          <div
+            ref={fullscreenContainerRef}
+            style={
+              isFullscreen
+                ? undefined
+                : {
+                    height: `${stageSplitRatio}%`,
+                    minHeight: '240px',
+                    maxHeight: '82vh',
+                  }
+            }
+            className={
+              isFullscreen
+                ? 'fixed inset-0 z-50 bg-black flex flex-col animate-fadeIn'
+                : 'w-full max-w-5xl bg-nexus-surface/95 border border-nexus-border rounded-2xl overflow-hidden shadow-2xl flex flex-col shrink-0 transition-colors'
+            }
+          >
+            {/* Header do Palco de Transmissão */}
+            <div className="px-4 py-2 bg-nexus-surface border-b border-nexus-border flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div
+                  className={`p-1.5 rounded-lg border ${
+                    showingRemoteVideo
+                      ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                      : 'bg-nexus-accent/15 text-nexus-accent border-nexus-accent/30'
+                  }`}
+                >
+                  {showingRemoteVideo ? (
+                    <ScreenShare className="w-4 h-4" />
                   ) : (
-                    <Maximize2 className="w-4 h-4" />
+                    <Monitor className="w-4 h-4" />
+                  )}
+                </div>
+
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-nexus-text truncate">
+                      {showingRemoteVideo
+                        ? `Tela de ${activeCallPeer?.name || 'Amigo'}`
+                        : screenShareLabel || 'Sua Transmissão de Tela'}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold flex items-center gap-1 ${
+                        showingRemoteVideo
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                          : 'bg-nexus-accent/20 text-nexus-accent border border-nexus-accent/40'
+                      }`}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full animate-pulse ${
+                          showingRemoteVideo ? 'bg-emerald-400' : 'bg-nexus-accent'
+                        }`}
+                      />
+                      {showingRemoteVideo ? 'Ao Vivo' : 'Transmitindo'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Alternador caso ambos estejam compartilhando tela simultaneamente */}
+                {isRemoteScreenSharing && remoteScreenStream && isScreenSharing && screenStream && (
+                  <div className="flex items-center gap-1 ml-2 bg-nexus-bg p-0.5 rounded-lg border border-nexus-border">
+                    <button
+                      onClick={() => setActiveStageSource('remote')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold cursor-pointer ${
+                        activeStageSource === 'remote'
+                          ? 'bg-nexus-panel text-emerald-400'
+                          : 'text-nexus-muted hover:text-nexus-text'
+                      }`}
+                    >
+                      Tela de {activeCallPeer?.name || 'Amigo'}
+                    </button>
+                    <button
+                      onClick={() => setActiveStageSource('local')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold cursor-pointer ${
+                        activeStageSource === 'local'
+                          ? 'bg-nexus-panel text-nexus-accent'
+                          : 'text-nexus-muted hover:text-nexus-text'
+                      }`}
+                    >
+                      Minha Prévia
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Controles de Proporção do Palco, Qualidade e Tela Cheia */}
+              <div className="flex items-center gap-1.5">
+                {!isFullscreen && (
+                  <div className="hidden md:flex items-center gap-1 bg-nexus-bg px-1.5 py-0.5 rounded-lg border border-nexus-border mr-1">
+                    {(
+                      [
+                        { label: 'Compacto', ratio: 45 },
+                        { label: 'Equilibrado', ratio: 65 },
+                        { label: 'Cinema', ratio: 80 },
+                      ] as const
+                    ).map((preset) => (
+                      <button
+                        key={preset.label}
+                        onClick={() => setCallStageSplitRatio(preset.ratio)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                          Math.abs(stageSplitRatio - preset.ratio) <= 5
+                            ? 'bg-nexus-panel text-nexus-text font-bold'
+                            : 'text-nexus-muted hover:text-nexus-text'
+                        }`}
+                        title={`Ajustar proporção do palco para ${preset.ratio}%`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {isScreenSharing && (
+                  <button
+                    onClick={stopScreenShare}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/30 text-[11px] font-semibold transition-all active:scale-95 cursor-pointer"
+                    title="Parar compartilhamento de tela"
+                  >
+                    <ScreenShareOff className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Parar</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={toggleFullscreen}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-nexus-panel hover:bg-nexus-border text-nexus-text border border-nexus-border text-[11px] font-semibold transition-all active:scale-95 cursor-pointer"
+                  title={isFullscreen ? 'Sair da tela cheia (Esc)' : 'Tela cheia real'}
+                >
+                  {isFullscreen ? (
+                    <>
+                      <Minimize2 className="w-3.5 h-3.5" />
+                      <span>Sair da Tela Cheia</span>
+                    </>
+                  ) : (
+                    <>
+                      <Maximize2 className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Tela Cheia</span>
+                    </>
                   )}
                 </button>
               </div>
             </div>
 
-            {/* Elemento de Vídeo Remoto */}
-            <div className="relative bg-black flex-1 flex items-center justify-center overflow-hidden min-h-[300px]">
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className={`w-full ${isExpanded ? 'h-full object-contain' : 'max-h-[460px] object-contain'}`}
-              />
+            {/* Área de Vídeo */}
+            <div className="relative bg-black flex-1 flex items-center justify-center overflow-hidden min-h-0">
+              {showingRemoteVideo ? (
+                <>
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className="w-full h-full object-contain"
+                  />
+                  {isRemoteScreenMuted && (
+                    <div className="absolute inset-0 bg-black/75 backdrop-blur-sm flex flex-col items-center justify-center p-4">
+                      <div className="p-3 rounded-full bg-nexus-surface/80 border border-nexus-border mb-2">
+                        <Monitor className="w-6 h-6 text-amber-400 animate-pulse" />
+                      </div>
+                      <span className="text-xs font-bold text-nexus-text">
+                        Transmissão temporariamente pausada
+                      </span>
+                      <span className="text-[11px] text-nexus-muted font-mono mt-1">
+                        Aguardando retomada pelo participante...
+                      </span>
+                    </div>
+                  )}
+                </>
+              ) : showingLocalVideo ? (
+                <video
+                  ref={previewVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className="w-full h-full object-contain"
+                />
+              ) : null}
 
-              {/* Overlay de pausa se a faixa remota estiver mutada */}
-              {isRemoteScreenMuted && (
-                <div className="absolute inset-0 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center p-4">
-                  <div className="p-3 rounded-full bg-nexus-surface/80 border border-nexus-border mb-2">
-                    <Monitor className="w-6 h-6 text-amber-400 animate-pulse" />
-                  </div>
-                  <span className="text-xs font-bold text-nexus-text">
-                    Transmissão temporariamente pausada
-                  </span>
-                  <span className="text-[11px] text-nexus-muted font-mono mt-1">
-                    Aguardando retomada pelo participante...
-                  </span>
+              {/* Badge de Resolução e FPS Efetivos */}
+              <div className="absolute bottom-2.5 right-2.5 px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur text-[10px] text-zinc-200 font-mono border border-white/10 flex items-center gap-1.5">
+                <span>
+                  {showingLocalVideo && screenEffectiveWidth && screenEffectiveHeight
+                    ? `${screenEffectiveWidth}×${screenEffectiveHeight} • ${screenEffectiveFps || 30} FPS`
+                    : diagnostics?.videoWidth && diagnostics?.videoHeight
+                    ? `${diagnostics.videoWidth}×${diagnostics.videoHeight} • ${diagnostics.videoFps || 30} FPS`
+                    : `Preset: ${screenShareQuality.toUpperCase()}`}
+                </span>
+              </div>
+
+              {/* Controles Flutuantes em Tela Cheia */}
+              {isFullscreen && (
+                <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 px-4 py-2 rounded-2xl bg-[#0b0d13]/90 backdrop-blur-md border border-white/15 shadow-2xl">
+                  <button
+                    onClick={() => callService.toggleMute()}
+                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                      isMicMuted
+                        ? 'bg-rose-600 text-white border-rose-500'
+                        : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border'
+                    }`}
+                    title={isMicMuted ? 'Ativar microfone' : 'Silenciar microfone'}
+                  >
+                    {isMicMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                  </button>
+
+                  <button
+                    onClick={() => callService.toggleDeafen()}
+                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                      isDeafened
+                        ? 'bg-rose-600 text-white border-rose-500'
+                        : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border'
+                    }`}
+                    title={isDeafened ? 'Ativar áudio' : 'Desativar áudio'}
+                  >
+                    <Headphones className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    onClick={exitFullscreenCleanly}
+                    className="px-3 py-2 rounded-xl bg-nexus-panel hover:bg-nexus-border text-nexus-text border border-nexus-border text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span>Reduzir (Esc)</span>
+                  </button>
+
+                  <button
+                    onClick={handleEndCall}
+                    className="p-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white cursor-pointer"
+                    title="Desligar chamada"
+                  >
+                    <PhoneOff className="w-4 h-4" />
+                  </button>
                 </div>
               )}
-
-              <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/60 backdrop-blur text-[10px] text-nexus-muted font-mono border border-nexus-border">
-                P2P • WebRTC Video
-              </div>
             </div>
           </div>
         )}
 
-        {/* Prévia da Transmissão de Tela Local */}
-        {isScreenSharing && screenStream && (
-          <div className="w-full max-w-3xl mb-6 bg-nexus-surface/90 border border-nexus-border rounded-2xl overflow-hidden shadow-2xl transition-all animate-fadeIn">
-            <div className="px-4 py-2.5 bg-nexus-surface border-b border-nexus-border flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-1.5 rounded-lg bg-nexus-accent/15 text-nexus-accent border border-nexus-accent/30">
-                  <Monitor className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-nexus-text">
-                      {screenShareLabel || 'Prévia da Tela / Janela'}
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full bg-nexus-accent/20 text-nexus-accent border border-nexus-accent/40 text-[10px] font-mono font-semibold flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-nexus-accent animate-pulse" />
-                      Transmitindo tela
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-nexus-muted font-mono mt-0.5">
-                    Transmitindo para {activeCallPeer?.name || 'Amigo'} via WebRTC P2P
-                  </p>
-                </div>
-              </div>
-
-              <button
-                onClick={stopScreenShare}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/30 hover:border-rose-500/50 text-xs font-semibold transition-all active:scale-95 cursor-pointer"
-                title="Parar compartilhamento de tela"
-              >
-                <ScreenShareOff className="w-3.5 h-3.5" />
-                <span>Parar compartilhamento</span>
-              </button>
-            </div>
-
-            <div className="relative bg-black flex items-center justify-center overflow-hidden">
-              <video
-                ref={previewVideoRef}
-                autoPlay
-                muted
-                playsInline
-                className="w-full max-h-[380px] object-contain"
-              />
-              <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/60 backdrop-blur text-[10px] text-nexus-muted font-mono border border-nexus-border">
-                30 FPS • Local
-              </div>
+        {/* Divisor Redimensionável (Splitter) entre Palco de Tela e Cards de Participantes */}
+        {hasAnyScreenStage && !isFullscreen && (
+          <div
+            onMouseDown={() => setIsDraggingSplitter(true)}
+            className="w-full max-w-5xl py-2 flex items-center justify-center cursor-row-resize group shrink-0"
+            title="Arraste para redimensionar o palco de transmissão"
+          >
+            <div className="w-24 h-1.5 rounded-full bg-nexus-border group-hover:bg-nexus-accent/70 transition-colors flex items-center justify-center">
+              <GripHorizontal className="w-3.5 h-3.5 text-nexus-muted opacity-0 group-hover:opacity-100 transition-opacity" />
             </div>
           </div>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 w-full max-w-3xl">
+        {/* Grid de Participantes (Local + Remoto com Controle Individual de Volume) */}
+        <div
+          className={`grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 w-full ${
+            hasAnyScreenStage ? 'max-w-5xl mt-1' : 'max-w-3xl'
+          }`}
+        >
           {/* Tile 1: Usuário Local (Você) */}
           <div
-            className={`bg-nexus-surface rounded-2xl border p-6 flex flex-col items-center justify-center relative shadow-sm transition-nexus ${
+            className={`bg-nexus-surface rounded-2xl border ${
+              hasAnyScreenStage ? 'p-4' : 'p-6'
+            } flex flex-col items-center justify-center relative shadow-sm transition-nexus ${
               isLocalSpeaking && !isMicMuted
                 ? 'border-emerald-500 ring-2 ring-emerald-500/30'
                 : isMicMuted
@@ -623,10 +1117,10 @@ export const CallsView: React.FC = () => {
                 : 'border-nexus-border'
             }`}
           >
-            <div className="relative mb-3">
+            <div className="relative mb-2.5">
               <Avatar
                 name={currentUser?.displayName || currentUser?.username || 'Você'}
-                size="xl"
+                size={hasAnyScreenStage ? 'lg' : 'xl'}
                 className={isLocalSpeaking && !isMicMuted ? 'ring-2 ring-emerald-500' : ''}
               />
               {isMicMuted && (
@@ -641,13 +1135,13 @@ export const CallsView: React.FC = () => {
             </span>
 
             {isMicMuted ? (
-              <span className="mt-2 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-mono font-semibold flex items-center gap-1.5">
+              <span className="mt-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-mono font-semibold flex items-center gap-1.5">
                 <MicOff className="w-3 h-3" />
                 <span>Microfone silenciado</span>
               </span>
             ) : (
               <span
-                className={`text-[10px] mt-2 font-mono font-medium ${
+                className={`text-[10px] mt-1.5 font-mono font-medium ${
                   isLocalSpeaking ? 'text-emerald-400 font-bold' : 'text-nexus-muted'
                 }`}
               >
@@ -656,9 +1150,11 @@ export const CallsView: React.FC = () => {
             )}
           </div>
 
-          {/* Tile 2: Participante Remoto */}
+          {/* Tile 2: Participante Remoto + Volume Individual (0% a 200%) */}
           <div
-            className={`bg-nexus-surface rounded-2xl border p-6 flex flex-col items-center justify-center relative shadow-sm transition-nexus ${
+            className={`bg-nexus-surface rounded-2xl border ${
+              hasAnyScreenStage ? 'p-4' : 'p-6'
+            } flex flex-col items-center justify-center relative shadow-sm transition-nexus ${
               isRemoteSpeaking && !isPeerMuted
                 ? 'border-emerald-500 ring-2 ring-emerald-500/30'
                 : isPeerMuted
@@ -666,10 +1162,10 @@ export const CallsView: React.FC = () => {
                 : 'border-nexus-border'
             }`}
           >
-            <div className="relative mb-3">
+            <div className="relative mb-2.5">
               <Avatar
                 name={activeCallPeer?.name || 'Amigo'}
-                size="xl"
+                size={hasAnyScreenStage ? 'lg' : 'xl'}
                 className={isRemoteSpeaking && !isPeerMuted ? 'ring-2 ring-emerald-500' : ''}
               />
               {isPeerMuted && (
@@ -684,26 +1180,215 @@ export const CallsView: React.FC = () => {
             </span>
 
             {isPeerMuted ? (
-              <span className="mt-2 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-mono font-semibold flex items-center gap-1.5">
+              <span className="mt-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-mono font-semibold flex items-center gap-1.5">
                 <MicOff className="w-3 h-3" />
-                <span>Microfone silenciado pelo amigo</span>
+                <span>Silenciado pelo amigo</span>
               </span>
             ) : (
               <span
-                className={`text-[10px] mt-2 font-mono font-medium ${
+                className={`text-[10px] mt-1.5 font-mono font-medium ${
                   isRemoteSpeaking ? 'text-emerald-400 font-bold' : 'text-nexus-muted'
                 }`}
               >
                 {isRemoteSpeaking ? 'Falando...' : 'Conectado'}
               </span>
             )}
+
+            {/* Controle Individual de Volume do Participante (0% a 200%) */}
+            {peerId && (
+              <div className="w-full max-w-[240px] mt-3 pt-2.5 border-t border-nexus-border/60 flex flex-col gap-1">
+                <div className="flex items-center justify-between text-[10px] font-mono">
+                  <button
+                    type="button"
+                    onClick={() => handlePeerVolumeChange(peerVolume === 0 ? 100 : 0)}
+                    className="flex items-center gap-1 text-nexus-muted hover:text-nexus-text cursor-pointer"
+                    title={peerVolume === 0 ? 'Restaurar volume para 100%' : 'Silenciar participante localmente'}
+                  >
+                    {peerVolume === 0 ? (
+                      <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                    ) : (
+                      <Volume2 className="w-3.5 h-3.5 text-nexus-accent" />
+                    )}
+                    <span>Volume Individual</span>
+                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`font-bold ${
+                        peerVolume > 100
+                          ? 'text-amber-400'
+                          : peerVolume === 0
+                          ? 'text-rose-400'
+                          : 'text-nexus-text'
+                      }`}
+                    >
+                      {peerVolume}%
+                    </span>
+                    {peerVolume !== 100 && (
+                      <button
+                        type="button"
+                        onClick={() => handlePeerVolumeChange(100)}
+                        className="text-[9px] px-1 py-0.2 rounded bg-nexus-panel hover:bg-nexus-border text-nexus-muted hover:text-nexus-text cursor-pointer"
+                        title="Redefinir para 100%"
+                      >
+                        100%
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="200"
+                  step="5"
+                  value={peerVolume}
+                  onChange={(e) => handlePeerVolumeChange(Number(e.target.value))}
+                  aria-label={`Volume de ${activeCallPeer?.name || 'participante'}`}
+                  className="w-full h-1.5 accent-nexus-accent cursor-pointer"
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
 
+      {/* Popovers de Troca Rápida de Dispositivos de Áudio e Qualidade de Tela */}
+      {activePopover !== 'none' && (
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-40 w-[340px] sm:w-[380px] rounded-2xl bg-[#0d0f16]/95 backdrop-blur-xl border border-nexus-border shadow-2xl p-4 animate-fadeIn">
+          {activePopover === 'audio' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between border-b border-nexus-border pb-2">
+                <span className="text-xs font-bold text-nexus-text flex items-center gap-1.5">
+                  <Volume2 className="w-3.5 h-3.5 text-nexus-accent" />
+                  Dispositivos de Áudio na Chamada
+                </span>
+                <button
+                  onClick={() => setActivePopover('none')}
+                  className="text-nexus-muted hover:text-nexus-text cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-semibold text-nexus-muted uppercase block mb-1">
+                  Microfone (Entrada)
+                </label>
+                <select
+                  value={settings.audioVideo.inputDevice}
+                  onChange={(e) => {
+                    const devId = e.target.value;
+                    updateAudioVideo({ inputDevice: devId });
+                    callService.switchInputDevice(devId);
+                  }}
+                  className="w-full bg-nexus-bg border border-nexus-border rounded-lg p-2 text-xs text-nexus-text focus:outline-none cursor-pointer"
+                >
+                  <option value="default">Microfone Padrão do Sistema</option>
+                  {inputDevices
+                    .filter((d) => d.deviceId !== 'default')
+                    .map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-semibold text-nexus-muted uppercase block mb-1">
+                  Saída de Áudio (Fones / Alto-falantes)
+                </label>
+                <select
+                  value={settings.audioVideo.outputDevice}
+                  onChange={(e) => {
+                    const devId = e.target.value;
+                    updateAudioVideo({ outputDevice: devId });
+                    callService.switchOutputDevice(devId);
+                  }}
+                  className="w-full bg-nexus-bg border border-nexus-border rounded-lg p-2 text-xs text-nexus-text focus:outline-none cursor-pointer"
+                >
+                  <option value="default">Saída Padrão do Sistema</option>
+                  {outputDevices
+                    .filter((d) => d.deviceId !== 'default')
+                    .map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-[10px] font-mono text-nexus-muted mb-1">
+                  <span>Volume Geral de Saída</span>
+                  <span className="text-nexus-text font-bold">
+                    {settings.audioVideo.outputVolume}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={settings.audioVideo.outputVolume}
+                  onChange={(e) => {
+                    const vol = Number(e.target.value);
+                    updateAudioVideo({ outputVolume: vol });
+                    callService.setOutputVolume(vol);
+                  }}
+                  className="w-full accent-nexus-accent cursor-pointer"
+                />
+              </div>
+            </div>
+          )}
+
+          {activePopover === 'quality' && (
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between border-b border-nexus-border pb-2">
+                <span className="text-xs font-bold text-nexus-text flex items-center gap-1.5">
+                  <Monitor className="w-3.5 h-3.5 text-nexus-accent" />
+                  Qualidade de Compartilhamento de Tela
+                </span>
+                <button
+                  onClick={() => setActivePopover('none')}
+                  className="text-nexus-muted hover:text-nexus-text cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                {QUALITY_PRESET_OPTIONS.map((opt) => {
+                  const isSelected = screenShareQuality === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => handleQualitySelect(opt.id)}
+                      className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-nexus-accent/15 border-nexus-accent text-nexus-text'
+                          : 'bg-nexus-bg border-nexus-border text-nexus-muted hover:text-nexus-text'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold">{opt.label}</div>
+                        <div className="text-[10px] opacity-80">{opt.desc}</div>
+                      </div>
+                      {isSelected && (
+                        <span className="px-2 py-0.5 rounded bg-nexus-accent text-white text-[10px] font-mono font-bold">
+                          Ativo
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Floating Centered Bottom Dock */}
       <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-30">
-        <div className="flex items-center gap-3 px-5 py-2.5 rounded-2xl bg-nexus-surface/95 backdrop-blur-md border border-nexus-border shadow-2xl">
+        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-nexus-surface/95 backdrop-blur-md border border-nexus-border shadow-2xl">
           {/* Microfone */}
           <Tooltip content={isMicMuted ? 'Ativar microfone' : 'Silenciar microfone'} position="top">
             <button
@@ -734,6 +1419,25 @@ export const CallsView: React.FC = () => {
             </button>
           </Tooltip>
 
+          {/* Seletor Rápido de Dispositivos de Áudio */}
+          <Tooltip content="Trocar Microfone / Saída de Áudio" position="top">
+            <button
+              onClick={() =>
+                setActivePopover((prev) => (prev === 'audio' ? 'none' : 'audio'))
+              }
+              aria-label="Selecionar dispositivos de áudio"
+              className={`p-3 rounded-xl border transition-all active:scale-95 cursor-pointer ${
+                activePopover === 'audio'
+                  ? 'bg-nexus-accent/20 border-nexus-accent text-nexus-text'
+                  : 'bg-nexus-panel border-nexus-border text-nexus-muted hover:text-nexus-text'
+              }`}
+            >
+              <ChevronUp className="w-4 h-4" />
+            </button>
+          </Tooltip>
+
+          <div className="w-[1px] h-6 bg-nexus-border mx-0.5" />
+
           {/* Compartilhar Tela / Parar Compartilhamento */}
           <Tooltip
             content={
@@ -751,7 +1455,7 @@ export const CallsView: React.FC = () => {
               aria-label={isScreenSharing ? 'Parar compartilhamento' : 'Compartilhar tela'}
               className={`p-3 rounded-xl border transition-all active:scale-95 cursor-pointer flex items-center justify-center ${
                 isScreenSharing
-                  ? 'bg-nexus-accent text-white border-cyan-400 shadow-lg shadow-cyan-950/50'
+                  ? 'bg-nexus-accent text-white border-nexus-accent shadow-lg'
                   : isStartingScreenShare
                   ? 'bg-nexus-panel border-nexus-border text-nexus-muted cursor-wait'
                   : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border hover:text-white'
@@ -767,9 +1471,26 @@ export const CallsView: React.FC = () => {
             </button>
           </Tooltip>
 
-          <div className="w-[1px] h-6 bg-nexus-border mx-1" />
+          {/* Seletor de Qualidade de Transmissão (720p/1080p • 30/60 FPS) */}
+          <Tooltip content="Qualidade da Transmissão de Tela" position="top">
+            <button
+              onClick={() =>
+                setActivePopover((prev) => (prev === 'quality' ? 'none' : 'quality'))
+              }
+              aria-label="Qualidade da transmissão de tela"
+              className={`px-2.5 py-2 rounded-xl border text-[10px] font-mono font-bold transition-all active:scale-95 cursor-pointer ${
+                activePopover === 'quality'
+                  ? 'bg-nexus-accent/20 border-nexus-accent text-nexus-text'
+                  : 'bg-nexus-panel border-nexus-border text-nexus-muted hover:text-nexus-text'
+              }`}
+            >
+              {QUALITY_PRESET_OPTIONS.find((o) => o.id === screenShareQuality)?.shortLabel || 'Auto'}
+            </button>
+          </Tooltip>
 
-          {/* Encerrar Chamada - Com Feedback Visual Imediato */}
+          <div className="w-[1px] h-6 bg-nexus-border mx-0.5" />
+
+          {/* Encerrar Chamada */}
           <Tooltip content="Desligar chamada" position="top">
             <button
               onClick={handleEndCall}
