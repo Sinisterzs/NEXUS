@@ -67,6 +67,10 @@ export const initialAppSettings: AppSettings = {
     outputVolume: 85,
     noiseSuppression: true,
     echoCancellation: true,
+    autoGainControl: true,
+    screenShareQuality: 'auto',
+    participantVolumes: {},
+    callStageSplitRatio: 65,
     cameraDevice: 'default',
   },
   notifications: {

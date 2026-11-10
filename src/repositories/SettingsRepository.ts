@@ -26,6 +26,10 @@ export const DEFAULT_PREFERENCES: PersistedPreferences = {
   outputVolume: initialAppSettings.audioVideo.outputVolume,
   noiseSuppression: initialAppSettings.audioVideo.noiseSuppression,
   echoCancellation: initialAppSettings.audioVideo.echoCancellation,
+  autoGainControl: initialAppSettings.audioVideo.autoGainControl ?? true,
+  screenShareQuality: initialAppSettings.audioVideo.screenShareQuality ?? 'auto',
+  participantVolumes: initialAppSettings.audioVideo.participantVolumes ?? {},
+  callStageSplitRatio: initialAppSettings.audioVideo.callStageSplitRatio ?? 65,
   desktopAlerts: initialAppSettings.notifications.desktopAlerts,
   soundEffects: initialAppSettings.notifications.soundEffects,
   mentionsOnly: initialAppSettings.notifications.mentionsOnly,
@@ -458,6 +462,25 @@ class SettingsRepository {
         ? saved.updateChannel
         : DEFAULT_PREFERENCES.updateChannel;
 
+    const validQualities = ['auto', '720p30', '1080p30', '1080p60'];
+    const validScreenShareQuality = validQualities.includes(saved.screenShareQuality as string)
+      ? (saved.screenShareQuality as any)
+      : DEFAULT_PREFERENCES.screenShareQuality ?? 'auto';
+
+    const validParticipantVolumes: Record<string, number> = {};
+    if (saved.participantVolumes && typeof saved.participantVolumes === 'object') {
+      for (const [peerId, vol] of Object.entries(saved.participantVolumes)) {
+        if (typeof peerId === 'string' && peerId.trim() && typeof vol === 'number' && Number.isFinite(vol)) {
+          validParticipantVolumes[peerId] = Math.max(0, Math.min(200, Math.round(vol)));
+        }
+      }
+    }
+
+    const validStageSplit =
+      typeof saved.callStageSplitRatio === 'number' && Number.isFinite(saved.callStageSplitRatio)
+        ? Math.max(30, Math.min(85, Math.round(saved.callStageSplitRatio)))
+        : DEFAULT_PREFERENCES.callStageSplitRatio ?? 65;
+
     return {
       theme: validThemes.includes(saved.theme as string) ? (saved.theme as any) : DEFAULT_PREFERENCES.theme,
       compactMode: typeof saved.compactMode === 'boolean' ? saved.compactMode : DEFAULT_PREFERENCES.compactMode,
@@ -469,10 +492,14 @@ class SettingsRepository {
       activeDmId: saved.activeDmId !== undefined ? saved.activeDmId : DEFAULT_PREFERENCES.activeDmId,
       inputDevice: saved.inputDevice || DEFAULT_PREFERENCES.inputDevice,
       outputDevice: saved.outputDevice || DEFAULT_PREFERENCES.outputDevice,
-      inputSensitivity: typeof saved.inputSensitivity === 'number' ? saved.inputSensitivity : DEFAULT_PREFERENCES.inputSensitivity,
-      outputVolume: typeof saved.outputVolume === 'number' ? saved.outputVolume : DEFAULT_PREFERENCES.outputVolume,
+      inputSensitivity: typeof saved.inputSensitivity === 'number' && Number.isFinite(saved.inputSensitivity) ? Math.max(0, Math.min(100, Math.round(saved.inputSensitivity))) : DEFAULT_PREFERENCES.inputSensitivity,
+      outputVolume: typeof saved.outputVolume === 'number' && Number.isFinite(saved.outputVolume) ? Math.max(0, Math.min(100, Math.round(saved.outputVolume))) : DEFAULT_PREFERENCES.outputVolume,
       noiseSuppression: typeof saved.noiseSuppression === 'boolean' ? saved.noiseSuppression : DEFAULT_PREFERENCES.noiseSuppression,
       echoCancellation: typeof saved.echoCancellation === 'boolean' ? saved.echoCancellation : DEFAULT_PREFERENCES.echoCancellation,
+      autoGainControl: typeof saved.autoGainControl === 'boolean' ? saved.autoGainControl : (DEFAULT_PREFERENCES.autoGainControl ?? true),
+      screenShareQuality: validScreenShareQuality,
+      participantVolumes: validParticipantVolumes,
+      callStageSplitRatio: validStageSplit,
       desktopAlerts: typeof saved.desktopAlerts === 'boolean' ? saved.desktopAlerts : DEFAULT_PREFERENCES.desktopAlerts,
       soundEffects: typeof saved.soundEffects === 'boolean' ? saved.soundEffects : DEFAULT_PREFERENCES.soundEffects,
       mentionsOnly: typeof saved.mentionsOnly === 'boolean' ? saved.mentionsOnly : DEFAULT_PREFERENCES.mentionsOnly,

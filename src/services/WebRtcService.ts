@@ -1,12 +1,15 @@
 /**
- * NEXUS - WebRTC 1:1 Voice Call Engine (Phase 2.4B / 2.4.5B2)
- * Gerencia a captura de microfone com consentimento explícito, DTLS-SRTP,
- * negociação SDP/ICE serializada e idempotente, VAD (Voice Activity Detection),
- * diagnóstico seguro de transporte e reprodução de áudio Opus.
+ * NEXUS - WebRTC 1:1 Voice & Screen Call Engine (Calls & Streaming 2.0)
+ * Gerencia captura de microfone com consentimento explícito, seleção e fallback
+ * dinâmico de periféricos, controle de volume individual por participante,
+ * DSP (AEC, NS, AGC), compartilhamento de tela com controle de qualidade/bitrate,
+ * ICE Restart controlado e diagnóstico de mídia via getStats().
  */
 
 import { useAppStore } from '../stores/useAppStore';
 import { audioDeviceService } from './AudioDeviceService';
+import { screenCaptureService } from './ScreenCaptureService';
+import { ScreenShareQualityPreset } from '../lib/types';
 
 export type WebRtcConnectionState =
   | 'idle'
@@ -25,6 +28,7 @@ export type WebRtcCallbacks = {
   onRemoteVideoTrack?: (track: MediaStreamTrack, stream: MediaStream) => void;
   onRemoteVideoMuteChange?: (isMuted: boolean) => void;
   onRemoteVideoEnded?: () => void;
+  onDeviceFallback?: (kind: 'input' | 'output', reason: string) => void;
 };
 
 export interface WebRtcTransportDiagnostics {
@@ -44,9 +48,16 @@ export interface WebRtcTransportDiagnostics {
   packetsLostInbound: number;
   packetsReceived: number;
   packetsSent: number;
+  packetLossPercent: number;
   bytesReceived: number;
   bytesSent: number;
   jitterMs: number | null;
+  audioBitrateKbps: number;
+  videoBitrateKbps: number;
+  videoWidth: number | null;
+  videoHeight: number | null;
+  videoFps: number | null;
+  qualityLimitationReason: string | null;
 }
 
 export const MAX_CANDIDATE_QUEUE_SIZE = 256;
@@ -101,6 +112,7 @@ export class WebRtcService {
   private localAnalyser: AnalyserNode | null = null;
   private remoteAudioContext: AudioContext | null = null;
   private remoteAnalyser: AnalyserNode | null = null;
+  private remoteBoostGain: GainNode | null = null;
   private vadInterval: any = null;
   private iceDisconnectTimer: any = null;
   private iceDisconnectTimeoutMs = DEFAULT_ICE_DISCONNECT_TIMEOUT_MS;
@@ -112,6 +124,11 @@ export class WebRtcService {
   private remoteVideoStream: MediaStream | null = null;
   private isMuted = false;
   private isDeafened = false;
+  private outputVolumePercent = 85;
+  private peerVolumePercent = 100;
+  private boundLocalMicEndedHandler: (() => void) | null = null;
+  private boundLocalMicTrack: MediaStreamTrack | null = null;
+
   private candidateQueue: RTCIceCandidateInit[] = [];
   private isRemoteDescriptionSet = false;
   private isFlushingCandidates = false;
@@ -121,13 +138,23 @@ export class WebRtcService {
   private signalingChain: Promise<any> = Promise.resolve();
   private currentState: WebRtcConnectionState = 'idle';
   private lastDiagnostics: WebRtcTransportDiagnostics | null = null;
+  private prevStatsSnapshot: {
+    timestampMs: number;
+    audioBytes: number;
+    videoBytes: number;
+  } | null = null;
   private isDestroyed = false;
   private cachedIceServers: RTCIceServer[] | null = null;
   private lastIceServersFetch = 0;
 
   constructor(
     callbacks: WebRtcCallbacks,
-    options?: { iceDisconnectTimeoutMs?: number; isPolite?: boolean }
+    options?: {
+      iceDisconnectTimeoutMs?: number;
+      isPolite?: boolean;
+      outputVolumePercent?: number;
+      peerVolumePercent?: number;
+    }
   ) {
     this.callbacks = callbacks;
     if (options?.iceDisconnectTimeoutMs !== undefined) {
@@ -135,6 +162,12 @@ export class WebRtcService {
     }
     if (options?.isPolite !== undefined) {
       this.isPolite = options.isPolite;
+    }
+    if (options?.outputVolumePercent !== undefined) {
+      this.outputVolumePercent = Math.max(0, Math.min(100, options.outputVolumePercent));
+    }
+    if (options?.peerVolumePercent !== undefined) {
+      this.peerVolumePercent = Math.max(0, Math.min(200, options.peerVolumePercent));
     }
   }
 
@@ -144,6 +177,14 @@ export class WebRtcService {
 
   public getRemoteVideoStream(): MediaStream | null {
     return this.remoteVideoStream;
+  }
+
+  public getOutputVolume(): number {
+    return this.outputVolumePercent;
+  }
+
+  public getPeerVolume(): number {
+    return this.peerVolumePercent;
   }
 
   private enqueueSignaling<T>(operation: () => Promise<T>): Promise<T> {
@@ -207,16 +248,45 @@ export class WebRtcService {
     }, this.iceDisconnectTimeoutMs);
   }
 
+  private attachLocalMicEndedListener(track: MediaStreamTrack | null): void {
+    this.detachLocalMicEndedListener();
+    if (!track || typeof track.addEventListener !== 'function') return;
+
+    this.boundLocalMicTrack = track;
+    this.boundLocalMicEndedHandler = () => {
+      if (this.isDestroyed || this.boundLocalMicTrack !== track) return;
+      console.warn('[WebRtcService] Microfone ativo desconectado inesperadamente (ended). Acionando fallback padrão...');
+      this.callbacks.onDeviceFallback?.(
+        'input',
+        'O microfone em uso foi desconectado. Alternado automaticamente para o microfone padrão.'
+      );
+      this.switchInputDevice('default').catch((err) => {
+        console.warn('[WebRtcService] Falha no fallback automático de microfone:', err);
+      });
+    };
+    track.addEventListener('ended', this.boundLocalMicEndedHandler);
+  }
+
+  private detachLocalMicEndedListener(): void {
+    if (this.boundLocalMicTrack && this.boundLocalMicEndedHandler) {
+      try {
+        this.boundLocalMicTrack.removeEventListener('ended', this.boundLocalMicEndedHandler);
+      } catch {}
+    }
+    this.boundLocalMicTrack = null;
+    this.boundLocalMicEndedHandler = null;
+  }
+
   /**
-   * Captura o microfone com autorização explícita e configurações reais de DSP (Echo / Noise Suppression)
+   * Captura o microfone com autorização explícita e configurações reais de DSP (AEC / NS / AGC)
    */
   async initLocalAudio(selectedDeviceId?: string): Promise<MediaStream> {
     try {
       this.isDestroyed = false;
 
       // 1. Sinaliza permissão explícita no runtime nativo Tauri
-      const { invoke } = await import('@tauri-apps/api/core');
       try {
+        const { invoke } = await import('@tauri-apps/api/core');
         await invoke('call_set_mic_consent', { granted: true });
       } catch (nativeErr) {
         console.warn('[WebRtcService] Falha ao registrar consentimento nativo:', nativeErr);
@@ -227,46 +297,55 @@ export class WebRtcService {
         throw new Error('Captura de áudio cancelada pois a chamada já foi encerrada.');
       }
 
-      // 2. Lê configurações reais do usuário (Dispositivo, Supressão de Ruído e Cancelamento de Eco)
+      // 2. Lê configurações reais do usuário (Dispositivo, Supressão de Ruído, Cancelamento de Eco e AGC)
       const audioSettings = useAppStore.getState().settings.audioVideo;
+      const caps = audioDeviceService.getCapabilities();
       const deviceIdToUse =
         selectedDeviceId ||
         (audioSettings.inputDevice && audioSettings.inputDevice !== 'default'
           ? audioSettings.inputDevice
           : undefined);
 
+      const useEcho = caps.echoCancellation ? Boolean(audioSettings.echoCancellation) : false;
+      const useNoise = caps.noiseSuppression ? Boolean(audioSettings.noiseSuppression) : false;
+      const useAgc = caps.autoGainControl ? Boolean(audioSettings.autoGainControl ?? true) : false;
+
       const constraints: MediaStreamConstraints = {
         audio: {
           deviceId: deviceIdToUse ? { ideal: deviceIdToUse } : undefined,
-          echoCancellation: Boolean(audioSettings.echoCancellation),
-          noiseSuppression: Boolean(audioSettings.noiseSuppression),
-          autoGainControl: true,
+          echoCancellation: useEcho,
+          noiseSuppression: useNoise,
+          autoGainControl: useAgc,
         },
         video: false,
       };
 
       console.log(
-        `[WebRtcService] Inicializando captura com restrições reais: EchoCancellation=${audioSettings.echoCancellation}, NoiseSuppression=${audioSettings.noiseSuppression}, DeviceId=${deviceIdToUse || 'default'}`
+        `[WebRtcService] Inicializando captura: AEC=${useEcho}, NS=${useNoise}, AGC=${useAgc}, DeviceId=${deviceIdToUse || 'default'}`
       );
 
       let stream: MediaStream;
+      let didFallbackDevice = false;
       try {
         stream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (err: any) {
+        const errName = err?.name || '';
+        if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {
+          throw err;
+        }
         console.warn('[WebRtcService] Falha com restrições solicitadas, tentando fallback resiliente:', err);
+        didFallbackDevice = Boolean(deviceIdToUse);
         try {
-          // Fallback 1: mantém DSP mas remove restrição de deviceId para evitar OverconstrainedError
           stream = await navigator.mediaDevices.getUserMedia({
             audio: {
-              echoCancellation: Boolean(audioSettings.echoCancellation),
-              noiseSuppression: Boolean(audioSettings.noiseSuppression),
-              autoGainControl: true,
+              echoCancellation: useEcho,
+              noiseSuppression: useNoise,
+              autoGainControl: useAgc,
             },
             video: false,
           });
         } catch (fallbackErr) {
           console.warn('[WebRtcService] Fallback com DSP falhou, capturando áudio padrão do sistema:', fallbackErr);
-          // Fallback 2: áudio padrão absoluto
           stream = await navigator.mediaDevices.getUserMedia({
             audio: true,
             video: false,
@@ -274,8 +353,6 @@ export class WebRtcService {
         }
       }
 
-      // Se a sessão foi destruída/cancelada enquanto getUserMedia aguardava permissão ou hardware,
-      // encerra imediatamente todas as trilhas recém-abertas para não manter o microfone ativo.
       if (this.isDestroyed) {
         stream.getTracks().forEach((track) => {
           try {
@@ -286,19 +363,27 @@ export class WebRtcService {
         throw new Error('Captura de áudio cancelada pois a chamada já foi encerrada.');
       }
 
+      if (didFallbackDevice) {
+        this.callbacks.onDeviceFallback?.(
+          'input',
+          'Dispositivo de microfone selecionado indisponível; utilizando microfone padrão do sistema.'
+        );
+      }
+
       // Garante que o estado real da faixa de áudio corresponda ao mute atual desde o primeiro frame
+      const audioTrack = stream.getAudioTracks()[0] || null;
       stream.getAudioTracks().forEach((track) => {
         track.enabled = !this.isMuted;
       });
 
       this.localStream = stream;
+      this.attachLocalMicEndedListener(audioTrack);
 
       // 3. Inicializa Voice Activity Detection (VAD) local
       this.setupLocalVad(stream);
 
       return stream;
     } catch (err: any) {
-      // Revoga consentimento nativo em caso de erro
       this.revokeMicConsent();
       const msg =
         err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError'
@@ -358,7 +443,6 @@ export class WebRtcService {
       { urls: 'stun:stun2.l.google.com:19302' },
     ];
 
-    // Configuração com servidores ICE (STUN/TURN)
     const config: RTCConfiguration = {
       iceServers,
       bundlePolicy: 'max-bundle',
@@ -373,7 +457,6 @@ export class WebRtcService {
     this.lastAnsweredOfferSdp = null;
     this.lastGeneratedAnswerSdp = null;
 
-    // Adiciona tracks de áudio local se já capturados
     if (this.localStream) {
       this.localStream.getAudioTracks().forEach((track) => {
         track.enabled = !this.isMuted;
@@ -381,11 +464,9 @@ export class WebRtcService {
       });
     }
 
-    // ICE Candidate gerado
     pc.onicecandidate = (event) => {
       if (this.isDestroyed || this.peerConnection !== pc) return;
       if (event.candidate && event.candidate.candidate) {
-        // Diagnóstico seguro: registra tipo e protocolo sem expor IP privado nos logs
         const cand = event.candidate;
         console.log(
           `[WebRtcService] ICE Candidate gerado: tipo=${cand.type || 'desconhecido'}, proto=${cand.protocol || 'udp'}, mid=${cand.sdpMid}`
@@ -399,7 +480,6 @@ export class WebRtcService {
       }
     };
 
-    // Track remoto (áudio ou vídeo de tela) recebido
     pc.ontrack = (event) => {
       if (this.isDestroyed || this.peerConnection !== pc) return;
       console.log('[WebRtcService] Track remoto recebido:', event.track.kind, event.track.id);
@@ -436,7 +516,6 @@ export class WebRtcService {
       }
     };
 
-    // Monitoramento do estado da conexão
     pc.onconnectionstatechange = () => {
       if (this.isDestroyed || this.peerConnection !== pc) return;
       const state = pc.connectionState;
@@ -489,9 +568,40 @@ export class WebRtcService {
   }
 
   /**
+   * Aplica parâmetros de bitrate e framerate no RTCRtpSender de vídeo conforme o preset de qualidade
+   */
+  public async applySenderQualityParameters(preset?: ScreenShareQualityPreset): Promise<void> {
+    if (!this.screenVideoSender || typeof this.screenVideoSender.getParameters !== 'function') {
+      return;
+    }
+
+    const targets = screenCaptureService.getEncodingTargets(preset);
+    try {
+      const params = this.screenVideoSender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = targets.maxBitrate;
+      params.encodings[0].maxFramerate = targets.maxFramerate;
+      if (typeof this.screenVideoSender.setParameters === 'function') {
+        await this.screenVideoSender.setParameters(params);
+      }
+      console.log(
+        `[WebRtcService] Parâmetros de codificação de vídeo aplicados: maxBitrate=${targets.maxBitrate} bps, maxFramerate=${targets.maxFramerate} fps`
+      );
+    } catch (paramErr) {
+      console.warn('[WebRtcService] Aviso ao configurar parâmetros do sender de vídeo:', paramErr);
+    }
+  }
+
+  /**
    * Vincula a track de vídeo de tela local à conexão WebRTC existente e retorna o novo SDP Offer
    */
-  async attachScreenTrack(track: MediaStreamTrack, stream: MediaStream): Promise<string> {
+  async attachScreenTrack(
+    track: MediaStreamTrack,
+    stream: MediaStream,
+    preset?: ScreenShareQualityPreset
+  ): Promise<string> {
     return this.enqueueSignaling(async () => {
       if (this.isDestroyed) {
         throw new Error('Sessão WebRTC já encerrada.');
@@ -499,7 +609,6 @@ export class WebRtcService {
       const pc = this.peerConnection || this.createPeerConnection();
       this.screenVideoTrack = track;
 
-      // 1. Procura se já existe um sender de vídeo (ex: compartilhamento reiniciado)
       const existingSender = pc.getSenders().find(
         (s) => s.track?.kind === 'video' || (s.track === null && (s as any).kind === 'video')
       );
@@ -513,24 +622,8 @@ export class WebRtcService {
         console.log('[WebRtcService] Nova faixa de vídeo anexada via addTrack.');
       }
 
-      // 2. Aplica parâmetros de codificação (30 FPS, máx 2.5 Mbps conservador)
-      if (this.screenVideoSender && typeof this.screenVideoSender.getParameters === 'function') {
-        try {
-          const params = this.screenVideoSender.getParameters();
-          if (!params.encodings || params.encodings.length === 0) {
-            params.encodings = [{}];
-          }
-          params.encodings[0].maxBitrate = 2_500_000;
-          params.encodings[0].maxFramerate = 30;
-          if (typeof this.screenVideoSender.setParameters === 'function') {
-            await this.screenVideoSender.setParameters(params);
-          }
-        } catch (paramErr) {
-          console.warn('[WebRtcService] Aviso ao configurar parâmetros do sender de vídeo:', paramErr);
-        }
-      }
+      await this.applySenderQualityParameters(preset);
 
-      // 3. Gera SDP Offer de renegociação
       this.hasAppliedRemoteAnswer = false;
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -558,7 +651,6 @@ export class WebRtcService {
       }
       this.screenVideoTrack = null;
 
-      // Gera SDP Offer de renegociação para atualizar transceivers
       if (pc.signalingState === 'stable') {
         this.hasAppliedRemoteAnswer = false;
         const offer = await pc.createOffer();
@@ -581,7 +673,6 @@ export class WebRtcService {
 
       const pc = this.peerConnection || this.createPeerConnection();
 
-      // Idempotência: se já geramos uma offer local ativa aguardando resposta, reutiliza o SDP
       if (pc.signalingState === 'have-local-offer' && pc.localDescription?.sdp) {
         console.log('[WebRtcService] Reutilizando SDP Offer local já ativa (have-local-offer).');
         return pc.localDescription.sdp;
@@ -605,6 +696,46 @@ export class WebRtcService {
   }
 
   /**
+   * Cria SDP Offer com iceRestart=true para recuperar conexão de mídia após oscilação de rede
+   */
+  async createIceRestartOffer(): Promise<string | null> {
+    return this.enqueueSignaling(async () => {
+      if (this.isDestroyed || !this.peerConnection) {
+        return null;
+      }
+      const pc = this.peerConnection;
+
+      try {
+        if (typeof pc.restartIce === 'function') {
+          pc.restartIce();
+        }
+      } catch {}
+
+      if (pc.signalingState !== 'stable') {
+        console.warn(
+          `[WebRtcService] Aguardando estado stable para ICE Restart (atual=${pc.signalingState}).`
+        );
+        return null;
+      }
+
+      this.hasAppliedRemoteAnswer = false;
+      const offer = await pc.createOffer({
+        iceRestart: true,
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: this.screenVideoTrack !== null,
+      });
+
+      if (this.isDestroyed || this.peerConnection !== pc) {
+        return null;
+      }
+
+      await pc.setLocalDescription(offer);
+      console.log('[WebRtcService] SDP Offer de ICE Restart gerada com sucesso.');
+      return offer.sdp || null;
+    });
+  }
+
+  /**
    * Processa SDP Offer e cria SDP Answer (Destinatário) de forma serializada e idempotente
    */
   async handleOffer(sdp: string): Promise<string> {
@@ -615,7 +746,6 @@ export class WebRtcService {
 
       const pc = this.peerConnection || this.createPeerConnection();
 
-      // 1. Idempotência exata: se esta mesma Offer já foi processada e respondida, retorna a Answer existente
       if (
         (this.lastAnsweredOfferSdp === sdp || pc.remoteDescription?.sdp === sdp) &&
         (this.lastGeneratedAnswerSdp || pc.localDescription?.sdp)
@@ -626,7 +756,6 @@ export class WebRtcService {
         return this.lastGeneratedAnswerSdp || pc.localDescription?.sdp || '';
       }
 
-      // 2. Tratamento de colisão de ofertas (Glare / Perfect Negotiation)
       const isOfferCollision = pc.signalingState === 'have-local-offer';
       if (isOfferCollision) {
         if (!this.isPolite) {
@@ -641,7 +770,6 @@ export class WebRtcService {
         }
       }
 
-      // 3. Aplica nova Remote Description
       if (pc.signalingState === 'have-remote-offer') {
         console.warn(
           '[WebRtcService] Conexão já em have-remote-offer, gerando answer sem re-executar setRemoteDescription.'
@@ -722,7 +850,6 @@ export class WebRtcService {
       candidateInit = candidateInput;
     }
 
-    // Ignora candidato vazio de fim de coleta (end-of-candidates) para não disparar TypeError
     if (
       !candidateInit ||
       (!candidateInit.candidate &&
@@ -765,7 +892,6 @@ export class WebRtcService {
         try {
           await this.peerConnection.addIceCandidate(new RTCIceCandidate(cand));
         } catch (e) {
-          // Um candidato inválido jamais deve derrubar a chamada ou interromper os demais candidatos da fila
           console.warn('[WebRtcService] Candidato ICE inválido ou obsoleto ignorado:', e);
         }
       }
@@ -775,7 +901,7 @@ export class WebRtcService {
   }
 
   /**
-   * Coleta diagnóstico seguro de transporte via RTCPeerConnection.getStats()
+   * Coleta diagnóstico seguro de transporte e mídia (áudio + vídeo) via RTCPeerConnection.getStats()
    * Nunca expõe endereços IP brutos, SDP ou credenciais nos logs ou retorno.
    */
   async collectTransportDiagnostics(): Promise<WebRtcTransportDiagnostics | null> {
@@ -830,19 +956,111 @@ export class WebRtcService {
       let packetsSent = 0;
       let bytesSent = 0;
 
+      let totalAudioBytes = 0;
+      let totalVideoBytes = 0;
+      let videoWidth: number | null = null;
+      let videoHeight: number | null = null;
+      let videoFps: number | null = null;
+      let qualityLimitationReason: string | null = null;
+
       report.forEach((stat: any) => {
-        if (stat?.type === 'inbound-rtp' && (!stat.kind || stat.kind === 'audio')) {
-          packetsLostInbound += Number(stat.packetsLost || 0);
-          packetsReceived += Number(stat.packetsReceived || 0);
-          bytesReceived += Number(stat.bytesReceived || 0);
-          if (typeof stat.jitter === 'number') {
-            jitterMs = Math.round(stat.jitter * 1000);
+        const mediaKind = stat?.kind || stat?.mediaType;
+        if (stat?.type === 'inbound-rtp') {
+          const rxBytes = Number(stat.bytesReceived || 0);
+          const rxPkts = Number(stat.packetsReceived || 0);
+          const lostPkts = Number(stat.packetsLost || 0);
+          packetsLostInbound += Math.max(0, lostPkts);
+          packetsReceived += rxPkts;
+          bytesReceived += rxBytes;
+
+          if (!mediaKind || mediaKind === 'audio') {
+            totalAudioBytes += rxBytes;
+            if (typeof stat.jitter === 'number') {
+              jitterMs = Math.round(stat.jitter * 1000);
+            }
+          } else if (mediaKind === 'video') {
+            totalVideoBytes += rxBytes;
+            if (typeof stat.frameWidth === 'number' && stat.frameWidth > 0) {
+              videoWidth = stat.frameWidth;
+            }
+            if (typeof stat.frameHeight === 'number' && stat.frameHeight > 0) {
+              videoHeight = stat.frameHeight;
+            }
+            if (typeof stat.framesPerSecond === 'number' && stat.framesPerSecond > 0) {
+              videoFps = Math.round(stat.framesPerSecond);
+            }
           }
-        } else if (stat?.type === 'outbound-rtp' && (!stat.kind || stat.kind === 'audio')) {
-          packetsSent += Number(stat.packetsSent || 0);
-          bytesSent += Number(stat.bytesSent || 0);
+        } else if (stat?.type === 'outbound-rtp') {
+          const txBytes = Number(stat.bytesSent || 0);
+          const txPkts = Number(stat.packetsSent || 0);
+          packetsSent += txPkts;
+          bytesSent += txBytes;
+
+          if (!mediaKind || mediaKind === 'audio') {
+            totalAudioBytes += txBytes;
+          } else if (mediaKind === 'video') {
+            totalVideoBytes += txBytes;
+            if (typeof stat.frameWidth === 'number' && stat.frameWidth > 0) {
+              videoWidth = stat.frameWidth;
+            }
+            if (typeof stat.frameHeight === 'number' && stat.frameHeight > 0) {
+              videoHeight = stat.frameHeight;
+            }
+            if (typeof stat.framesPerSecond === 'number' && stat.framesPerSecond > 0) {
+              videoFps = Math.round(stat.framesPerSecond);
+            }
+            if (typeof stat.qualityLimitationReason === 'string') {
+              qualityLimitationReason = stat.qualityLimitationReason;
+            }
+          }
         }
       });
+
+      // Fallback para configurações reais da faixa de vídeo ativa caso o WebRTC report ainda não traga frameWidth
+      if (!videoWidth || !videoHeight || !videoFps) {
+        const activeVideoTrack =
+          this.screenVideoTrack || this.remoteVideoStream?.getVideoTracks()[0] || null;
+        if (activeVideoTrack && typeof activeVideoTrack.getSettings === 'function') {
+          try {
+            const trackSettings = activeVideoTrack.getSettings();
+            if (!videoWidth && typeof trackSettings.width === 'number' && trackSettings.width > 0) {
+              videoWidth = trackSettings.width;
+            }
+            if (!videoHeight && typeof trackSettings.height === 'number' && trackSettings.height > 0) {
+              videoHeight = trackSettings.height;
+            }
+            if (!videoFps && typeof trackSettings.frameRate === 'number' && trackSettings.frameRate > 0) {
+              videoFps = Math.round(trackSettings.frameRate);
+            }
+          } catch {}
+        }
+      }
+
+      const nowMs = Date.now();
+      let audioBitrateKbps = 0;
+      let videoBitrateKbps = 0;
+
+      if (this.prevStatsSnapshot && nowMs > this.prevStatsSnapshot.timestampMs) {
+        const elapsedSec = (nowMs - this.prevStatsSnapshot.timestampMs) / 1000;
+        if (elapsedSec >= 0.2) {
+          const deltaAudio = Math.max(0, totalAudioBytes - this.prevStatsSnapshot.audioBytes);
+          const deltaVideo = Math.max(0, totalVideoBytes - this.prevStatsSnapshot.videoBytes);
+          audioBitrateKbps = Math.round((deltaAudio * 8) / 1000 / elapsedSec);
+          videoBitrateKbps = Math.round((deltaVideo * 8) / 1000 / elapsedSec);
+        }
+      }
+
+      this.prevStatsSnapshot = {
+        timestampMs: nowMs,
+        audioBytes: totalAudioBytes,
+        videoBytes: totalVideoBytes,
+      };
+
+      const totalExpectedInbound = packetsReceived + Math.max(0, packetsLostInbound);
+      const packetLossPercent =
+        totalExpectedInbound > 0
+          ? Number(((Math.max(0, packetsLostInbound) / totalExpectedInbound) * 100).toFixed(1))
+          : 0;
 
       const rttMs =
         typeof selectedPair?.currentRoundTripTime === 'number'
@@ -861,15 +1079,19 @@ export class WebRtcService {
         packetsLostInbound,
         packetsReceived,
         packetsSent,
+        packetLossPercent,
         bytesReceived,
         bytesSent,
         jitterMs,
+        audioBitrateKbps,
+        videoBitrateKbps,
+        videoWidth,
+        videoHeight,
+        videoFps,
+        qualityLimitationReason,
       };
 
       this.lastDiagnostics = diagnostics;
-      console.log(
-        `[WebRtcService] Diagnóstico de transporte: par=${diagnostics.localCandidateType || '?'}/${diagnostics.remoteCandidateType || '?'} proto=${diagnostics.transportProtocol || '?'} rede=${diagnostics.networkClassification} rtt=${diagnostics.rttMs ?? '?'}ms rx=${diagnostics.packetsReceived} tx=${diagnostics.packetsSent} loss=${diagnostics.packetsLostInbound}`
-      );
       return diagnostics;
     } catch (err) {
       console.warn('[WebRtcService] Falha ao coletar getStats():', err);
@@ -878,7 +1100,41 @@ export class WebRtcService {
   }
 
   /**
-   * Reproduz o áudio remoto em elemento <audio> dedicado
+   * Calcula e aplica o volume efetivo combinando volume geral de saída (0-100%)
+   * e volume individual do participante (0-200%), respeitando estado de Deafen.
+   */
+  private applyEffectiveRemoteVolume(): void {
+    const combinedRatio = (this.outputVolumePercent / 100) * (this.peerVolumePercent / 100);
+
+    if (this.remoteAudioElement) {
+      this.remoteAudioElement.muted = this.isDeafened || combinedRatio <= 0;
+      this.remoteAudioElement.volume = this.isDeafened
+        ? 0
+        : Math.max(0, Math.min(1, combinedRatio));
+    }
+
+    if (this.remoteBoostGain) {
+      if (this.isDeafened || combinedRatio <= 1) {
+        this.remoteBoostGain.gain.value = 0;
+      } else {
+        // Ganho adicional para faixa 101% a 200% (0.0 a 1.0 extra somado ao 1.0 do elemento de áudio)
+        this.remoteBoostGain.gain.value = Math.min(1, combinedRatio - 1);
+      }
+    }
+  }
+
+  public setOutputVolume(volumePercent: number): void {
+    this.outputVolumePercent = Math.max(0, Math.min(100, Math.round(volumePercent)));
+    this.applyEffectiveRemoteVolume();
+  }
+
+  public setPeerVolume(volumePercent: number): void {
+    this.peerVolumePercent = Math.max(0, Math.min(200, Math.round(volumePercent)));
+    this.applyEffectiveRemoteVolume();
+  }
+
+  /**
+   * Reproduz o áudio remoto em elemento <audio> dedicado com suporte a volume individual e setSinkId
    */
   private playRemoteAudio(stream: MediaStream): void {
     if (this.isDestroyed) return;
@@ -886,20 +1142,33 @@ export class WebRtcService {
     if (!this.remoteAudioElement) {
       this.remoteAudioElement = new Audio();
       this.remoteAudioElement.autoplay = true;
-      // Garante que não apareça na tela
       this.remoteAudioElement.style.display = 'none';
       if (typeof document !== 'undefined' && document.body) {
         document.body.appendChild(this.remoteAudioElement);
       }
     }
 
-    this.remoteAudioElement.srcObject = stream;
-    this.remoteAudioElement.muted = this.isDeafened;
+    const storeState = useAppStore.getState();
+    const audioSettings = storeState.settings.audioVideo;
+    this.outputVolumePercent = audioSettings.outputVolume ?? 85;
+    const peerId = storeState.activeCallPeer?.id;
+    if (peerId && audioSettings.participantVolumes && typeof audioSettings.participantVolumes[peerId] === 'number') {
+      this.peerVolumePercent = audioSettings.participantVolumes[peerId];
+    }
 
-    // Aplica dispositivo de saída configurado pelo usuário se houver
-    const outputDevice = useAppStore.getState().settings.audioVideo.outputDevice;
+    this.remoteAudioElement.srcObject = stream;
+    this.applyEffectiveRemoteVolume();
+
+    const outputDevice = audioSettings.outputDevice;
     if (outputDevice && outputDevice !== 'default') {
-      audioDeviceService.setAudioSink(this.remoteAudioElement, outputDevice).catch(() => {});
+      audioDeviceService.setAudioSink(this.remoteAudioElement, outputDevice).then((res) => {
+        if (res.didFallback) {
+          this.callbacks.onDeviceFallback?.(
+            'output',
+            'Dispositivo de saída selecionado indisponível; áudio direcionado para a saída padrão.'
+          );
+        }
+      }).catch(() => {});
     }
 
     const playPromise = this.remoteAudioElement.play();
@@ -911,20 +1180,25 @@ export class WebRtcService {
   }
 
   /**
-   * Aplica configurações de DSP nativo (Echo Cancellation & Noise Suppression) em tempo real
+   * Aplica configurações de DSP nativo (Echo Cancellation, Noise Suppression, Auto Gain Control) em tempo real
    */
-  async applyAudioConstraints(noiseSuppression: boolean, echoCancellation: boolean): Promise<void> {
+  async applyAudioConstraints(
+    noiseSuppression: boolean,
+    echoCancellation: boolean,
+    autoGainControl = true
+  ): Promise<void> {
     if (this.localStream) {
+      const caps = audioDeviceService.getCapabilities();
       const audioTracks = this.localStream.getAudioTracks();
       for (const track of audioTracks) {
         try {
           await track.applyConstraints({
-            noiseSuppression,
-            echoCancellation,
-            autoGainControl: true,
+            noiseSuppression: caps.noiseSuppression ? noiseSuppression : undefined,
+            echoCancellation: caps.echoCancellation ? echoCancellation : undefined,
+            autoGainControl: caps.autoGainControl ? autoGainControl : undefined,
           });
           console.log(
-            `[WebRtcService] DSP atualizado com sucesso: NS=${noiseSuppression}, EC=${echoCancellation}`
+            `[WebRtcService] DSP atualizado: NS=${noiseSuppression}, AEC=${echoCancellation}, AGC=${autoGainControl}`
           );
         } catch (err) {
           console.warn('[WebRtcService] Falha ao aplicar restrições de áudio:', err);
@@ -936,26 +1210,37 @@ export class WebRtcService {
   /**
    * Troca o microfone ativo durante a chamada sem desconectar e preservando o estado de mute/deafen
    */
-  async switchInputDevice(deviceId: string): Promise<void> {
-    if (this.isDestroyed || !this.peerConnection || !this.localStream) return;
+  async switchInputDevice(deviceId: string): Promise<boolean> {
+    if (this.isDestroyed || !this.peerConnection) return false;
 
     try {
       const audioSettings = useAppStore.getState().settings.audioVideo;
+      const caps = audioDeviceService.getCapabilities();
+      const useEcho = caps.echoCancellation ? Boolean(audioSettings.echoCancellation) : false;
+      const useNoise = caps.noiseSuppression ? Boolean(audioSettings.noiseSuppression) : false;
+      const useAgc = caps.autoGainControl ? Boolean(audioSettings.autoGainControl ?? true) : false;
+
       let newStream: MediaStream;
+      let didFallback = false;
       try {
         newStream = await navigator.mediaDevices.getUserMedia({
           audio: {
-            deviceId: deviceId && deviceId !== 'default' ? { ideal: deviceId } : undefined,
-            echoCancellation: Boolean(audioSettings.echoCancellation),
-            noiseSuppression: Boolean(audioSettings.noiseSuppression),
-            autoGainControl: true,
+            deviceId: deviceId && deviceId !== 'default' ? { exact: deviceId } : undefined,
+            echoCancellation: useEcho,
+            noiseSuppression: useNoise,
+            autoGainControl: useAgc,
           },
           video: false,
         });
       } catch (e) {
-        console.warn('[WebRtcService] Falha ao trocar dispositivo com ideal, tentando padrão:', e);
+        console.warn('[WebRtcService] Falha ao trocar dispositivo com exact, tentando padrão:', e);
+        didFallback = Boolean(deviceId && deviceId !== 'default');
         newStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
+          audio: {
+            echoCancellation: useEcho,
+            noiseSuppression: useNoise,
+            autoGainControl: useAgc,
+          },
           video: false,
         });
       }
@@ -966,7 +1251,7 @@ export class WebRtcService {
             t.stop();
           } catch {}
         });
-        return;
+        return false;
       }
 
       const newTrack = newStream.getAudioTracks()[0];
@@ -974,10 +1259,14 @@ export class WebRtcService {
         newTrack.enabled = !this.isMuted;
       }
       const senders = this.peerConnection.getSenders();
-      const audioSender = senders.find((s) => s.track && s.track.kind === 'audio');
+      const audioSender = senders.find(
+        (s) => s.track?.kind === 'audio' || (s.track === null && (s as any).kind === 'audio')
+      );
 
       if (audioSender && newTrack) {
         await audioSender.replaceTrack(newTrack);
+      } else if (newTrack) {
+        this.peerConnection.addTrack(newTrack, newStream);
       }
 
       if (this.isDestroyed || !this.peerConnection) {
@@ -986,15 +1275,14 @@ export class WebRtcService {
             t.stop();
           } catch {}
         });
-        return;
+        return false;
       }
 
-      // Garante novamente que o mute atual seja respeitado caso tenha mudado durante replaceTrack
       newStream.getAudioTracks().forEach((t) => {
         t.enabled = !this.isMuted;
       });
 
-      // Finaliza stream anterior
+      this.detachLocalMicEndedListener();
       if (this.localStream) {
         this.localStream.getAudioTracks().forEach((t) => {
           try {
@@ -1003,21 +1291,37 @@ export class WebRtcService {
         });
       }
       this.localStream = newStream;
+      this.attachLocalMicEndedListener(newTrack || null);
       this.setupLocalVad(newStream);
 
-      console.log(`[WebRtcService] Microfone alterado com sucesso para: ${deviceId}`);
+      if (didFallback) {
+        this.callbacks.onDeviceFallback?.(
+          'input',
+          'O microfone solicitado não pôde ser ativado; mantendo o microfone padrão do sistema.'
+        );
+      }
+
+      console.log(`[WebRtcService] Microfone alterado com sucesso para: ${didFallback ? 'default' : deviceId}`);
+      return true;
     } catch (err) {
       console.warn('[WebRtcService] Falha ao trocar dispositivo de microfone:', err);
+      return false;
     }
   }
 
   /**
-   * Troca o dispositivo de saída (alto-falante / fone)
+   * Troca o dispositivo de saída (alto-falante / fone) com fallback automático para o padrão
    */
-  async switchOutputDevice(deviceId: string): Promise<void> {
-    if (this.remoteAudioElement) {
-      await audioDeviceService.setAudioSink(this.remoteAudioElement, deviceId);
+  async switchOutputDevice(deviceId: string): Promise<boolean> {
+    if (!this.remoteAudioElement) return false;
+    const res = await audioDeviceService.setAudioSink(this.remoteAudioElement, deviceId);
+    if (res.didFallback) {
+      this.callbacks.onDeviceFallback?.(
+        'output',
+        'Dispositivo de saída desconectado ou indisponível. Alternado para a saída padrão do sistema.'
+      );
     }
+    return res.applied;
   }
 
   /**
@@ -1048,7 +1352,7 @@ export class WebRtcService {
   }
 
   /**
-   * Configura VAD (Voice Activity Detection) para o áudio remoto
+   * Configura VAD (Voice Activity Detection) e amplificação (boost > 100%) para o áudio remoto
    */
   private setupRemoteVad(stream: MediaStream): void {
     try {
@@ -1056,6 +1360,7 @@ export class WebRtcService {
         this.remoteAudioContext.close().catch(() => {});
         this.remoteAudioContext = null;
         this.remoteAnalyser = null;
+        this.remoteBoostGain = null;
       }
 
       if (typeof window === 'undefined') return;
@@ -1067,20 +1372,28 @@ export class WebRtcService {
       this.remoteAnalyser = this.remoteAudioContext.createAnalyser();
       this.remoteAnalyser.fftSize = 256;
       source.connect(this.remoteAnalyser);
+
+      if (typeof this.remoteAudioContext.createGain === 'function' && this.remoteAudioContext.destination) {
+        this.remoteBoostGain = this.remoteAudioContext.createGain();
+        this.remoteBoostGain.gain.value = 0;
+        source.connect(this.remoteBoostGain);
+        this.remoteBoostGain.connect(this.remoteAudioContext.destination);
+        this.applyEffectiveRemoteVolume();
+      }
     } catch (e) {
       console.warn('[WebRtcService] Falha ao iniciar VAD remoto:', e);
     }
   }
 
   /**
-   * Loop de análise de energia sonora em tempo real (100ms)
+   * Loop de análise de energia sonora em tempo real (100ms) com sensibilidade ajustável
    */
   private startVadLoop(): void {
     if (this.vadInterval) clearInterval(this.vadInterval);
 
     const dataArrayLocal = new Uint8Array(128);
     const dataArrayRemote = new Uint8Array(128);
-    const VAD_THRESHOLD = 18; // Sensibilidade de fala
+    const REMOTE_VAD_THRESHOLD = 16;
 
     let lastLocalSpeaking = false;
     let lastRemoteSpeaking = false;
@@ -1088,12 +1401,15 @@ export class WebRtcService {
     this.vadInterval = setInterval(() => {
       if (this.isDestroyed) return;
 
+      const sensitivity = useAppStore.getState().settings.audioVideo.inputSensitivity ?? 78;
+      const localThreshold = Math.max(5, Math.round(46 - sensitivity * 0.36));
+
       // Local
       if (this.localAnalyser && !this.isMuted) {
         this.localAnalyser.getByteFrequencyData(dataArrayLocal);
         const sum = dataArrayLocal.reduce((acc, val) => acc + val, 0);
         const avg = sum / dataArrayLocal.length;
-        const isSpeaking = avg > VAD_THRESHOLD;
+        const isSpeaking = avg > localThreshold;
         if (isSpeaking !== lastLocalSpeaking) {
           lastLocalSpeaking = isSpeaking;
           this.callbacks.onLocalSpeaking(isSpeaking);
@@ -1104,11 +1420,11 @@ export class WebRtcService {
       }
 
       // Remoto
-      if (this.remoteAnalyser && !this.isDeafened) {
+      if (this.remoteAnalyser && !this.isDeafened && this.peerVolumePercent > 0 && this.outputVolumePercent > 0) {
         this.remoteAnalyser.getByteFrequencyData(dataArrayRemote);
         const sum = dataArrayRemote.reduce((acc, val) => acc + val, 0);
         const avg = sum / dataArrayRemote.length;
-        const isSpeaking = avg > VAD_THRESHOLD;
+        const isSpeaking = avg > REMOTE_VAD_THRESHOLD;
         if (isSpeaking !== lastRemoteSpeaking) {
           lastRemoteSpeaking = isSpeaking;
           this.callbacks.onRemoteSpeaking(isSpeaking);
@@ -1130,6 +1446,9 @@ export class WebRtcService {
         track.enabled = !muted;
       });
     }
+    if (muted) {
+      this.callbacks.onLocalSpeaking(false);
+    }
   }
 
   /**
@@ -1137,8 +1456,9 @@ export class WebRtcService {
    */
   setDeafened(deafened: boolean): void {
     this.isDeafened = deafened;
-    if (this.remoteAudioElement) {
-      this.remoteAudioElement.muted = deafened;
+    this.applyEffectiveRemoteVolume();
+    if (deafened) {
+      this.callbacks.onRemoteSpeaking(false);
     }
   }
 
@@ -1152,13 +1472,13 @@ export class WebRtcService {
     console.log('[WebRtcService] Destruindo sessão WebRTC e liberando microfone...');
 
     this.clearIceDisconnectTimer();
+    this.detachLocalMicEndedListener();
 
     if (this.vadInterval) {
       clearInterval(this.vadInterval);
       this.vadInterval = null;
     }
 
-    // Interrompe captura de microfone imediatamente
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => {
         try {
@@ -1187,6 +1507,7 @@ export class WebRtcService {
       this.remoteAudioContext.close().catch(() => {});
       this.remoteAudioContext = null;
       this.remoteAnalyser = null;
+      this.remoteBoostGain = null;
     }
 
     if (this.remoteAudioElement) {
@@ -1200,6 +1521,7 @@ export class WebRtcService {
       this.remoteAudioElement = null;
     }
 
+    this.prevStatsSnapshot = null;
     this.cleanupPeerConnection(true);
     this.revokeMicConsent();
 

@@ -1,13 +1,21 @@
 /**
- * NEXUS - Audio Device Manager
- * Gerencia enumeração de dispositivos reais de áudio (microfones e saídas de som)
- * e aplicação de setSinkId() no WebView2 / Chromium.
+ * NEXUS - Audio Device Manager (Calls & Streaming 2.0)
+ * Gerencia enumeração de dispositivos reais de áudio (microfones e saídas de som),
+ * verificação de capacidades do WebView2/Chromium (setSinkId, constraints DSP),
+ * detecção de desconexão de periféricos e fallback seguro para dispositivo padrão.
  */
 
 export interface AudioDeviceInfo {
   deviceId: string;
   label: string;
   kind: 'audioinput' | 'audiooutput';
+}
+
+export interface SupportedAudioCapabilities {
+  outputSinkSelection: boolean;
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
 }
 
 type DeviceChangeListener = (devices: {
@@ -18,6 +26,9 @@ type DeviceChangeListener = (devices: {
 export class AudioDeviceService {
   private listeners: Set<DeviceChangeListener> = new Set();
   private isListening = false;
+  private boundDeviceChangeHandler: (() => void) | null = null;
+  private lastKnownInputs: AudioDeviceInfo[] = [];
+  private lastKnownOutputs: AudioDeviceInfo[] = [];
 
   constructor() {
     if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
@@ -25,21 +36,102 @@ export class AudioDeviceService {
     }
   }
 
-  private initEventListener(): void {
+  public initEventListener(): void {
     if (this.isListening) return;
-    this.isListening = true;
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.addEventListener !== 'function'
+    ) {
+      return;
+    }
 
-    navigator.mediaDevices.addEventListener('devicechange', async () => {
+    this.isListening = true;
+    this.boundDeviceChangeHandler = async () => {
       console.log('[AudioDeviceService] Mudança de dispositivos de áudio detectada.');
-      const devices = await this.getAvailableDevices();
-      this.listeners.forEach((listener) => {
-        try {
-          listener(devices);
-        } catch (e) {
-          console.warn('[AudioDeviceService] Erro ao notificar listener:', e);
-        }
-      });
+      await this.refreshDevices();
+    };
+
+    navigator.mediaDevices.addEventListener('devicechange', this.boundDeviceChangeHandler);
+  }
+
+  /**
+   * Verifica as capacidades reais suportadas pelo runtime WebView2 / Chromium atual
+   */
+  public getCapabilities(): SupportedAudioCapabilities {
+    let outputSinkSelection = false;
+    try {
+      if (typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype) {
+        outputSinkSelection = true;
+      } else if (typeof Audio !== 'undefined') {
+        const probe = new Audio();
+        outputSinkSelection = typeof (probe as any).setSinkId === 'function';
+      }
+    } catch {
+      outputSinkSelection = false;
+    }
+
+    let echoCancellation = true;
+    let noiseSuppression = true;
+    let autoGainControl = true;
+
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.mediaDevices &&
+        typeof navigator.mediaDevices.getSupportedConstraints === 'function'
+      ) {
+        const supported = navigator.mediaDevices.getSupportedConstraints();
+        echoCancellation = Boolean(supported.echoCancellation ?? true);
+        noiseSuppression = Boolean(supported.noiseSuppression ?? true);
+        autoGainControl = Boolean(supported.autoGainControl ?? true);
+      }
+    } catch {}
+
+    return {
+      outputSinkSelection,
+      echoCancellation,
+      noiseSuppression,
+      autoGainControl,
+    };
+  }
+
+  /**
+   * Valida se o deviceId selecionado continua presente na lista atual de dispositivos.
+   * Caso tenha sido desconectado ou removido, realiza fallback seguro para 'default'.
+   */
+  public resolveValidDeviceId(
+    requestedDeviceId: string | undefined | null,
+    availableDevices: AudioDeviceInfo[]
+  ): { deviceId: string; didFallback: boolean } {
+    if (!requestedDeviceId || requestedDeviceId === 'default') {
+      return { deviceId: 'default', didFallback: false };
+    }
+
+    const exists = availableDevices.some((d) => d.deviceId === requestedDeviceId);
+    if (exists) {
+      return { deviceId: requestedDeviceId, didFallback: false };
+    }
+
+    return { deviceId: 'default', didFallback: true };
+  }
+
+  /**
+   * Atualiza a lista de dispositivos e notifica todos os listeners registrados
+   */
+  public async refreshDevices(): Promise<{
+    inputs: AudioDeviceInfo[];
+    outputs: AudioDeviceInfo[];
+  }> {
+    const devices = await this.getAvailableDevices();
+    this.listeners.forEach((listener) => {
+      try {
+        listener(devices);
+      } catch (e) {
+        console.warn('[AudioDeviceService] Erro ao notificar listener:', e);
+      }
     });
+    return devices;
   }
 
   /**
@@ -50,7 +142,13 @@ export class AudioDeviceService {
     outputs: AudioDeviceInfo[];
   }> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
-      return { inputs: [], outputs: [] };
+      const fallback = {
+        inputs: [{ deviceId: 'default', label: 'Microfone Padrão do Sistema', kind: 'audioinput' as const }],
+        outputs: [{ deviceId: 'default', label: 'Alto-falantes / Fones Padrão', kind: 'audiooutput' as const }],
+      };
+      this.lastKnownInputs = fallback.inputs;
+      this.lastKnownOutputs = fallback.outputs;
+      return fallback;
     }
 
     try {
@@ -63,16 +161,23 @@ export class AudioDeviceService {
       let speakerIndex = 1;
 
       for (const dev of allDevices) {
+        if (!dev || !dev.deviceId) continue;
         if (dev.kind === 'audioinput') {
           inputs.push({
             deviceId: dev.deviceId,
-            label: dev.label || `Microfone ${micIndex++}`,
+            label:
+              dev.deviceId === 'default'
+                ? dev.label || 'Microfone Padrão do Sistema'
+                : dev.label || `Microfone ${micIndex++}`,
             kind: 'audioinput',
           });
         } else if (dev.kind === 'audiooutput') {
           outputs.push({
             deviceId: dev.deviceId,
-            label: dev.label || `Alto-falantes / Fones ${speakerIndex++}`,
+            label:
+              dev.deviceId === 'default'
+                ? dev.label || 'Alto-falantes / Fones Padrão'
+                : dev.label || `Alto-falantes / Fones ${speakerIndex++}`,
             kind: 'audiooutput',
           });
         }
@@ -95,14 +200,27 @@ export class AudioDeviceService {
         });
       }
 
+      this.lastKnownInputs = inputs;
+      this.lastKnownOutputs = outputs;
+
       return { inputs, outputs };
     } catch (err) {
       console.warn('[AudioDeviceService] Erro ao enumerar dispositivos:', err);
-      return {
-        inputs: [{ deviceId: 'default', label: 'Microfone Padrão do Sistema', kind: 'audioinput' }],
-        outputs: [{ deviceId: 'default', label: 'Alto-falantes / Fones Padrão', kind: 'audiooutput' }],
+      const fallback = {
+        inputs: [{ deviceId: 'default', label: 'Microfone Padrão do Sistema', kind: 'audioinput' as const }],
+        outputs: [{ deviceId: 'default', label: 'Alto-falantes / Fones Padrão', kind: 'audiooutput' as const }],
       };
+      this.lastKnownInputs = fallback.inputs;
+      this.lastKnownOutputs = fallback.outputs;
+      return fallback;
     }
+  }
+
+  public getLastKnownDevices(): { inputs: AudioDeviceInfo[]; outputs: AudioDeviceInfo[] } {
+    return {
+      inputs: this.lastKnownInputs,
+      outputs: this.lastKnownOutputs,
+    };
   }
 
   /**
@@ -129,24 +247,45 @@ export class AudioDeviceService {
   }
 
   /**
-   * Define o dispositivo de saída (setSinkId) no elemento de áudio remoto
+   * Define o dispositivo de saída (setSinkId) no elemento de áudio remoto com fallback para padrão
    */
-  async setAudioSink(audioElement: HTMLAudioElement | null, deviceId: string): Promise<boolean> {
-    if (!audioElement) return false;
+  async setAudioSink(
+    audioElement: HTMLAudioElement | null,
+    deviceId: string
+  ): Promise<{ applied: boolean; didFallback: boolean; activeSinkId: string }> {
+    if (!audioElement) {
+      return { applied: false, didFallback: false, activeSinkId: 'default' };
+    }
+
+    const sinkTarget = !deviceId || deviceId === 'default' ? '' : deviceId;
 
     // setSinkId é suportado no Chromium / WebView2
     if (typeof (audioElement as any).setSinkId === 'function') {
       try {
-        await (audioElement as any).setSinkId(deviceId === 'default' ? '' : deviceId);
-        console.log(`[AudioDeviceService] Dispositivo de saída alterado para: ${deviceId}`);
-        return true;
+        await (audioElement as any).setSinkId(sinkTarget);
+        console.log(`[AudioDeviceService] Dispositivo de saída alterado para: ${deviceId || 'default'}`);
+        return {
+          applied: true,
+          didFallback: false,
+          activeSinkId: sinkTarget ? deviceId : 'default',
+        };
       } catch (err) {
-        console.warn('[AudioDeviceService] Falha ao executar setSinkId:', err);
-        return false;
+        console.warn('[AudioDeviceService] Falha ao executar setSinkId para dispositivo específico, tentando fallback padrão:', err);
+        if (sinkTarget !== '') {
+          try {
+            await (audioElement as any).setSinkId('');
+            return {
+              applied: true,
+              didFallback: true,
+              activeSinkId: 'default',
+            };
+          } catch {}
+        }
+        return { applied: false, didFallback: true, activeSinkId: 'default' };
       }
     } else {
       console.log('[AudioDeviceService] setSinkId não suportado neste navegador/ambiente.');
-      return false;
+      return { applied: false, didFallback: false, activeSinkId: 'default' };
     }
   }
 
@@ -154,6 +293,7 @@ export class AudioDeviceService {
    * Registra listener para conexão/desconexão de dispositivos
    */
   onDeviceChange(listener: DeviceChangeListener): () => void {
+    this.initEventListener();
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }

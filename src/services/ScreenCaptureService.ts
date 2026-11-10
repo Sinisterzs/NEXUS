@@ -1,18 +1,21 @@
 /**
- * NEXUS - Phase 3.0: Screen Capture Service (Local Preview Only)
+ * NEXUS - Screen Capture Service 2.0 (Calls & Streaming 2.0)
  *
- * Gerencia a captura local de monitores ou janelas de aplicativos utilizando a API
- * navigator.mediaDevices.getDisplayMedia() com consentimento restrito via Tauri 2 IPC.
- *
- * Princípios de Segurança e Escopo:
- * 1. Somente captura local para prévia: Nenhum frame ou pacote de vídeo é transmitido pela rede.
- * 2. Consentimento temporário: A permissão DisplayCapture no WebView2 é autorizada apenas
- *    durante a abertura do seletor nativo e revogada imediatamente ao concluir ou cancelar.
- * 3. Ciclo de vida estrito: Interrupção automática ao encerrar faixa (onended), ao fechar janela,
- *    ao efetuar logout ou ao encerrar chamada.
- * 4. Isolamento de áudio: Não afeta ou interrompe as faixas de microfone do WebRtcService.
- * 5. Sem persistência: Nenhuma imagem ou frame é salvo em disco ou banco de dados.
+ * Gerencia a captura de monitores ou janelas de aplicativos utilizando a API
+ * navigator.mediaDevices.getDisplayMedia() com consentimento restrito via Tauri 2 IPC,
+ * presets de qualidade (Auto, 720p30, 1080p30, 1080p60), fallback automático resiliente
+ * e ciclo de vida estrito contra tracks órfãs.
  */
+
+import { ScreenShareQualityPreset } from '../lib/types';
+
+export interface ScreenEncodingTargets {
+  maxBitrate: number;
+  maxFramerate: number;
+  targetWidth: number;
+  targetHeight: number;
+  label: string;
+}
 
 export interface ScreenCaptureState {
   isCapturing: boolean;
@@ -20,20 +23,83 @@ export interface ScreenCaptureState {
   stream: MediaStream | null;
   trackId: string | null;
   sourceLabel: string | null;
+  qualityPreset: ScreenShareQualityPreset;
+  effectiveWidth: number | null;
+  effectiveHeight: number | null;
+  effectiveFrameRate: number | null;
+  displaySurface: string | null;
+  qualityFallbackNotice: string | null;
   error: string | null;
 }
 
 export type ScreenCaptureListener = (state: ScreenCaptureState) => void;
+
+export const SCREEN_QUALITY_CONFIGS: Record<ScreenShareQualityPreset, ScreenEncodingTargets> = {
+  auto: {
+    maxBitrate: 3_000_000,
+    maxFramerate: 30,
+    targetWidth: 1920,
+    targetHeight: 1080,
+    label: 'Automático (Adaptativo)',
+  },
+  '720p30': {
+    maxBitrate: 2_200_000,
+    maxFramerate: 30,
+    targetWidth: 1280,
+    targetHeight: 720,
+    label: '720p • 30 FPS',
+  },
+  '1080p30': {
+    maxBitrate: 3_500_000,
+    maxFramerate: 30,
+    targetWidth: 1920,
+    targetHeight: 1080,
+    label: '1080p • 30 FPS',
+  },
+  '1080p60': {
+    maxBitrate: 5_000_000,
+    maxFramerate: 60,
+    targetWidth: 1920,
+    targetHeight: 1080,
+    label: '1080p • 60 FPS',
+  },
+};
+
+export function buildDisplayVideoConstraints(preset: ScreenShareQualityPreset): MediaTrackConstraints {
+  const cfg = SCREEN_QUALITY_CONFIGS[preset] || SCREEN_QUALITY_CONFIGS.auto;
+  if (preset === 'auto') {
+    return {
+      cursor: 'always',
+      width: { ideal: cfg.targetWidth, max: 1920 },
+      height: { ideal: cfg.targetHeight, max: 1080 },
+      frameRate: { ideal: cfg.maxFramerate, max: 30 },
+    } as MediaTrackConstraints;
+  }
+
+  return {
+    cursor: 'always',
+    width: { ideal: cfg.targetWidth, max: cfg.targetWidth },
+    height: { ideal: cfg.targetHeight, max: cfg.targetHeight },
+    frameRate: { ideal: cfg.maxFramerate, max: cfg.maxFramerate },
+  } as MediaTrackConstraints;
+}
 
 export class ScreenCaptureService {
   private stream: MediaStream | null = null;
   private isStarting = false;
   private isCapturing = false;
   private sourceLabel: string | null = null;
+  private qualityPreset: ScreenShareQualityPreset = 'auto';
+  private effectiveWidth: number | null = null;
+  private effectiveHeight: number | null = null;
+  private effectiveFrameRate: number | null = null;
+  private displaySurface: string | null = null;
+  private qualityFallbackNotice: string | null = null;
   private error: string | null = null;
   private sessionToken = 0;
   private listeners: Set<ScreenCaptureListener> = new Set();
   private boundTrackEndedHandler: (() => void) | null = null;
+  private boundTrackWithListener: MediaStreamTrack | null = null;
   private windowUnloadHandler: (() => void) | null = null;
 
   constructor() {
@@ -49,17 +115,61 @@ export class ScreenCaptureService {
     }
   }
 
+  public getEncodingTargets(preset?: ScreenShareQualityPreset): ScreenEncodingTargets {
+    const key = preset || this.qualityPreset || 'auto';
+    return SCREEN_QUALITY_CONFIGS[key] || SCREEN_QUALITY_CONFIGS.auto;
+  }
+
+  public getQualityPreset(): ScreenShareQualityPreset {
+    return this.qualityPreset;
+  }
+
+  private extractTrackSettings(track: MediaStreamTrack | null): void {
+    if (!track || typeof track.getSettings !== 'function') {
+      this.effectiveWidth = null;
+      this.effectiveHeight = null;
+      this.effectiveFrameRate = null;
+      this.displaySurface = null;
+      return;
+    }
+
+    try {
+      const settings = track.getSettings() as MediaTrackSettings & { displaySurface?: string };
+      this.effectiveWidth = typeof settings.width === 'number' && settings.width > 0 ? settings.width : null;
+      this.effectiveHeight = typeof settings.height === 'number' && settings.height > 0 ? settings.height : null;
+      this.effectiveFrameRate =
+        typeof settings.frameRate === 'number' && settings.frameRate > 0
+          ? Math.round(settings.frameRate)
+          : null;
+      this.displaySurface = typeof settings.displaySurface === 'string' ? settings.displaySurface : null;
+    } catch {
+      this.effectiveWidth = null;
+      this.effectiveHeight = null;
+      this.effectiveFrameRate = null;
+      this.displaySurface = null;
+    }
+  }
+
   /**
    * Retorna o estado atual da captura de tela
    */
   public getState(): ScreenCaptureState {
     const track = this.stream?.getVideoTracks()[0] || null;
+    if (track && this.isCapturing) {
+      this.extractTrackSettings(track);
+    }
     return {
       isCapturing: this.isCapturing,
       isStarting: this.isStarting,
       stream: this.stream,
       trackId: track ? track.id : null,
       sourceLabel: this.sourceLabel,
+      qualityPreset: this.qualityPreset,
+      effectiveWidth: this.effectiveWidth,
+      effectiveHeight: this.effectiveHeight,
+      effectiveFrameRate: this.effectiveFrameRate,
+      displaySurface: this.displaySurface,
+      qualityFallbackNotice: this.qualityFallbackNotice,
       error: this.error,
     };
   }
@@ -69,7 +179,6 @@ export class ScreenCaptureService {
    */
   public addListener(listener: ScreenCaptureListener): () => void {
     this.listeners.add(listener);
-    // Notifica imediatamente com o estado atual
     try {
       listener(this.getState());
     } catch (err) {
@@ -99,10 +208,67 @@ export class ScreenCaptureService {
   }
 
   /**
+   * Altera a preferência de qualidade de captura. Se uma transmissão já estiver ativa,
+   * aplica as novas restrições em tempo real com fallback automático caso o hardware rejeite.
+   */
+  public async setQualityPreset(
+    preset: ScreenShareQualityPreset
+  ): Promise<{ applied: boolean; didFallback: boolean; activePreset: ScreenShareQualityPreset }> {
+    const validPreset: ScreenShareQualityPreset = SCREEN_QUALITY_CONFIGS[preset] ? preset : 'auto';
+    this.qualityPreset = validPreset;
+    this.qualityFallbackNotice = null;
+
+    if (!this.isCapturing || !this.stream) {
+      this.notify();
+      return { applied: true, didFallback: false, activePreset: validPreset };
+    }
+
+    const track = this.stream.getVideoTracks()[0];
+    if (!track || typeof track.applyConstraints !== 'function') {
+      this.notify();
+      return { applied: false, didFallback: false, activePreset: validPreset };
+    }
+
+    try {
+      const constraints = buildDisplayVideoConstraints(validPreset);
+      await track.applyConstraints(constraints);
+      this.extractTrackSettings(track);
+      console.log(
+        `[ScreenCaptureService] Qualidade de transmissão ajustada para ${validPreset} (efetivo: ${this.effectiveWidth || '?'}x${this.effectiveHeight || '?'} @ ${this.effectiveFrameRate || '?'}fps)`
+      );
+      this.notify();
+      return { applied: true, didFallback: false, activePreset: validPreset };
+    } catch (err) {
+      console.warn(
+        `[ScreenCaptureService] Fonte não suportou restrições de ${validPreset}, aplicando fallback 720p30:`,
+        err
+      );
+      try {
+        await track.applyConstraints(buildDisplayVideoConstraints('720p30'));
+        this.qualityPreset = '720p30';
+        this.qualityFallbackNotice = `O perfil ${SCREEN_QUALITY_CONFIGS[validPreset].label} não foi suportado pela fonte; ajustado automaticamente para 720p • 30 FPS.`;
+        this.extractTrackSettings(track);
+        this.notify();
+        return { applied: true, didFallback: true, activePreset: '720p30' };
+      } catch {
+        this.qualityFallbackNotice =
+          'A fonte capturada mantém sua resolução nativa do sistema operacional.';
+        this.extractTrackSettings(track);
+        this.notify();
+        return { applied: false, didFallback: true, activePreset: this.qualityPreset };
+      }
+    }
+  }
+
+  /**
    * Solicita e inicia a captura de tela ou janela.
    * Deve ser invocado exclusivamente após ação explícita do usuário (ex: clique de botão).
    */
-  public async startCapture(): Promise<MediaStream | null> {
+  public async startCapture(requestedPreset?: ScreenShareQualityPreset): Promise<MediaStream | null> {
+    if (requestedPreset && SCREEN_QUALITY_CONFIGS[requestedPreset]) {
+      this.qualityPreset = requestedPreset;
+    }
+
     // 1. Previne múltiplas tentativas simultâneas de captura
     if (this.isCapturing) {
       console.warn('[ScreenCaptureService] Captura já está em andamento.');
@@ -133,33 +299,47 @@ export class ScreenCaptureService {
 
     this.isStarting = true;
     this.error = null;
+    this.qualityFallbackNotice = null;
     this.notify();
 
     // 4. Sinaliza consentimento temporário na camada nativa Tauri 2 (DisplayCapture)
     await this.setNativeConsent(true);
 
-    // Se o usuário cancelou durante a preparação assíncrona
     if (currentToken !== this.sessionToken) {
       await this.setNativeConsent(false);
       return null;
     }
 
     let acquiredStream: MediaStream | null = null;
+    let usedFallback = false;
 
     try {
-      // 5. Invoca o seletor nativo do Windows / WebView2
-      // Vídeo estrito a 30fps máximo, cursor visível, sem captura de áudio (Phase 3.0)
-      acquiredStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'always',
-          frameRate: { max: 30 },
-        } as MediaTrackConstraints,
-        audio: false,
-      });
+      // 5. Invoca o seletor nativo do Windows / WebView2 com as preferências de qualidade
+      const videoConstraints = buildDisplayVideoConstraints(this.qualityPreset);
+      try {
+        acquiredStream = await navigator.mediaDevices.getDisplayMedia({
+          video: videoConstraints,
+          audio: false,
+        });
+      } catch (firstErr: any) {
+        const errName = firstErr?.name || '';
+        // Se foi recusa/cancelamento do usuário, não tenta reabrir o seletor!
+        if (errName === 'NotAllowedError' || errName === 'AbortError' || errName === 'NotFoundError') {
+          throw firstErr;
+        }
+        // Se falhou por OverconstrainedError ou limitação do driver, tenta fallback 720p30 conservador
+        console.warn('[ScreenCaptureService] Fallback de restrições em getDisplayMedia:', firstErr);
+        usedFallback = true;
+        acquiredStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always',
+            frameRate: { max: 30 },
+          } as MediaTrackConstraints,
+          audio: false,
+        });
+      }
     } catch (err: any) {
-      // Trata cancelamento pelo usuário vs permissão negada
       if (currentToken !== this.sessionToken) {
-        // Solicitação obsoleta
         return null;
       }
 
@@ -168,7 +348,10 @@ export class ScreenCaptureService {
       const errorMessage = err?.message || '';
 
       if (errorName === 'NotAllowedError') {
-        if (errorMessage.toLowerCase().includes('cancel') || errorMessage.toLowerCase().includes('user denied')) {
+        if (
+          errorMessage.toLowerCase().includes('cancel') ||
+          errorMessage.toLowerCase().includes('user denied')
+        ) {
           this.error = 'Seleção de tela cancelada pelo usuário.';
         } else {
           this.error = 'Permissão de captura de tela negada.';
@@ -211,26 +394,50 @@ export class ScreenCaptureService {
     }
 
     const videoTrack = videoTracks[0];
+    try {
+      if ('contentHint' in videoTrack) {
+        (videoTrack as any).contentHint = this.qualityPreset === '1080p60' ? 'motion' : 'detail';
+      }
+    } catch {}
 
-    // 8. Registra listener para encerramento nativo pelo sistema operacional ou pelo botão nativo do Windows
+    // 8. Remove qualquer listener anterior e registra listener único para encerramento nativo
+    this.detachTrackEndedListener();
     this.boundTrackEndedHandler = () => {
       console.log('[ScreenCaptureService] Faixa de vídeo encerrada pelo sistema/usuário nativo.');
       if (currentToken === this.sessionToken) {
         this.stopCapture();
       }
     };
+    this.boundTrackWithListener = videoTrack;
     videoTrack.addEventListener('ended', this.boundTrackEndedHandler);
 
-    // 9. Atualiza estado ativo
+    // 9. Atualiza estado ativo e lê resolução/FPS efetivos
     this.stream = acquiredStream;
     this.sourceLabel = videoTrack.label || 'Tela / Janela';
     this.isCapturing = true;
     this.isStarting = false;
     this.error = null;
+    if (usedFallback) {
+      this.qualityFallbackNotice =
+        'Restrições ajustadas automaticamente para compatibilidade com a fonte selecionada.';
+    }
+    this.extractTrackSettings(videoTrack);
 
-    console.log(`[ScreenCaptureService] Captura de tela ativa: "${this.sourceLabel}" (id: ${videoTrack.id})`);
+    console.log(
+      `[ScreenCaptureService] Captura ativa: "${this.sourceLabel}" (id: ${videoTrack.id}, preset: ${this.qualityPreset}, efetivo: ${this.effectiveWidth || '?'}x${this.effectiveHeight || '?'} @ ${this.effectiveFrameRate || '?'}fps)`
+    );
     this.notify();
     return this.stream;
+  }
+
+  private detachTrackEndedListener(): void {
+    if (this.boundTrackWithListener && this.boundTrackEndedHandler) {
+      try {
+        this.boundTrackWithListener.removeEventListener('ended', this.boundTrackEndedHandler);
+      } catch {}
+    }
+    this.boundTrackWithListener = null;
+    this.boundTrackEndedHandler = null;
   }
 
   /**
@@ -239,13 +446,11 @@ export class ScreenCaptureService {
   public stopCapture(): void {
     this.sessionToken++;
     this.isStarting = false;
+    this.detachTrackEndedListener();
 
     if (this.stream) {
       const tracks = this.stream.getTracks();
       for (const track of tracks) {
-        if (this.boundTrackEndedHandler) {
-          track.removeEventListener('ended', this.boundTrackEndedHandler);
-        }
         try {
           track.stop();
         } catch (err) {
@@ -255,10 +460,14 @@ export class ScreenCaptureService {
       this.stream = null;
     }
 
-    this.boundTrackEndedHandler = null;
     const wasCapturing = this.isCapturing;
     this.isCapturing = false;
     this.sourceLabel = null;
+    this.effectiveWidth = null;
+    this.effectiveHeight = null;
+    this.effectiveFrameRate = null;
+    this.displaySurface = null;
+    this.qualityFallbackNotice = null;
 
     // Garante que o consentimento nativo fique revogado
     this.setNativeConsent(false).catch(() => {});
@@ -270,11 +479,12 @@ export class ScreenCaptureService {
   }
 
   /**
-   * Limpa mensagem de erro manualmente (ex: dismiss de toast ou fechamento de alerta)
+   * Limpa mensagem de erro manualmente
    */
   public clearError(): void {
-    if (this.error) {
+    if (this.error || this.qualityFallbackNotice) {
       this.error = null;
+      this.qualityFallbackNotice = null;
       this.notify();
     }
   }

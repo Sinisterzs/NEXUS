@@ -1,8 +1,9 @@
 /**
- * NEXUS - 1:1 Voice Call Coordinator (Phase 2.4B / 2.4.5B2)
+ * NEXUS - 1:1 Voice & Screen Call Coordinator (Calls & Streaming 2.0)
  * Coordena a sinalização WebSocket via GatewayClient e o motor de mídia WebRtcService,
  * garantindo máquina de estados determinística, proteção contra eventos atrasados/duplicados,
- * recuperação controlada de reconexão e limpeza completa de recursos.
+ * controle de volume individual, seleção de qualidade de transmissão, recuperação controlada
+ * de reconexão com backoff exponencial (ICE Restart) e limpeza completa de recursos.
  */
 
 import { gatewayClient } from './GatewayClient';
@@ -16,10 +17,14 @@ import { useAppStore } from '../stores/useAppStore';
 import { callHistoryRepository } from '../repositories/CallHistoryRepository';
 import { soundEffects } from '../lib/soundEffects';
 import { screenCaptureService } from './ScreenCaptureService';
+import { audioDeviceService } from './AudioDeviceService';
+import { ScreenShareQualityPreset } from '../lib/types';
 
 export const DEFAULT_CALLING_TIMEOUT_MS = 47000;
 export const DEFAULT_CONNECTING_TIMEOUT_MS = 20000;
 export const DEFAULT_RECONNECTING_TIMEOUT_MS = 15000;
+export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 3;
+export const DEFAULT_RECONNECT_BACKOFF_BASE_MS = 1800;
 const MAX_TERMINATED_CALL_IDS = 128;
 
 export class CallService {
@@ -28,11 +33,14 @@ export class CallService {
   private callingTimer: any = null;
   private connectingTimer: any = null;
   private reconnectingTimer: any = null;
+  private reconnectAttemptTimer: any = null;
 
   private callingTimeoutMs = DEFAULT_CALLING_TIMEOUT_MS;
   private connectingTimeoutMs = DEFAULT_CONNECTING_TIMEOUT_MS;
   private reconnectingTimeoutMs = DEFAULT_RECONNECTING_TIMEOUT_MS;
   private iceDisconnectTimeoutMs = DEFAULT_ICE_DISCONNECT_TIMEOUT_MS;
+  private maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS;
+  private reconnectBackoffBaseMs = DEFAULT_RECONNECT_BACKOFF_BASE_MS;
 
   private initialized = false;
   private isCleaningUp = false;
@@ -46,6 +54,8 @@ export class CallService {
     connectingTimeoutMs?: number;
     reconnectingTimeoutMs?: number;
     iceDisconnectTimeoutMs?: number;
+    maxReconnectAttempts?: number;
+    reconnectBackoffBaseMs?: number;
   }): void {
     if (options.callingTimeoutMs !== undefined) {
       this.callingTimeoutMs = options.callingTimeoutMs;
@@ -58,6 +68,12 @@ export class CallService {
     }
     if (options.iceDisconnectTimeoutMs !== undefined) {
       this.iceDisconnectTimeoutMs = options.iceDisconnectTimeoutMs;
+    }
+    if (options.maxReconnectAttempts !== undefined) {
+      this.maxReconnectAttempts = Math.max(1, options.maxReconnectAttempts);
+    }
+    if (options.reconnectBackoffBaseMs !== undefined) {
+      this.reconnectBackoffBaseMs = Math.max(50, options.reconnectBackoffBaseMs);
     }
   }
 
@@ -91,7 +107,7 @@ export class CallService {
     if (this.initialized) return;
     this.initialized = true;
 
-    // Sincroniza encerramentos locais de tela com a chamada WebRTC
+    // 1. Sincroniza encerramentos locais de tela com a chamada WebRTC
     screenCaptureService.addListener((state) => {
       if (!state.isCapturing && this.webRtc && !this.isCleaningUp) {
         const store = useAppStore.getState();
@@ -101,6 +117,37 @@ export class CallService {
               gatewayClient.sendCallWebrtcOffer(store.activeCallId, store.activeCallPeer.id, offerSdp);
             }
           }).catch(() => {});
+        }
+      }
+    });
+
+    // 2. Monitora conexão/desconexão física de periféricos de áudio durante a sessão
+    audioDeviceService.onDeviceChange((devices) => {
+      const store = useAppStore.getState();
+      const currentInput = store.settings.audioVideo.inputDevice;
+      const currentOutput = store.settings.audioVideo.outputDevice;
+
+      const inputCheck = audioDeviceService.resolveValidDeviceId(currentInput, devices.inputs);
+      if (inputCheck.didFallback) {
+        console.warn('[CallService] Microfone selecionado removido do sistema. Fallback para padrão.');
+        store.updateAudioVideo({ inputDevice: 'default' });
+        if (store.voiceCallState !== 'idle') {
+          store.setCallDeviceNotice(
+            'Microfone desconectado. Alternado automaticamente para o microfone padrão.'
+          );
+          this.webRtc?.switchInputDevice('default').catch(() => {});
+        }
+      }
+
+      const outputCheck = audioDeviceService.resolveValidDeviceId(currentOutput, devices.outputs);
+      if (outputCheck.didFallback) {
+        console.warn('[CallService] Dispositivo de saída removido do sistema. Fallback para padrão.');
+        store.updateAudioVideo({ outputDevice: 'default' });
+        if (store.voiceCallState !== 'idle') {
+          store.setCallDeviceNotice(
+            'Saída de áudio desconectada. Alternado automaticamente para o dispositivo padrão.'
+          );
+          this.webRtc?.switchOutputDevice('default').catch(() => {});
         }
       }
     });
@@ -135,8 +182,6 @@ export class CallService {
             gatewayClient.sendCallMute(data.callId, true);
           }
         } else {
-          // Se o chamador já cancelou localmente ou iniciou outra chamada antes de call.ringing chegar,
-          // cancela apenas o callId órfão no servidor sem destruir uma chamada nova em andamento.
           this.markCallTerminated(data.callId);
           gatewayClient.sendCallCancel(data.callId);
           if (store.activeCallId === data.callId) {
@@ -154,14 +199,10 @@ export class CallService {
         const store = useAppStore.getState();
         const currentState = store?.voiceCallState ?? 'idle';
 
-        // Idempotência: mesmo convite já exibido na tela
         if (currentState === 'incoming' && store.incomingCall?.callId === data.callId) {
           return;
         }
 
-        // Resolução determinística de convites simultâneos (glare) entre os mesmos dois usuários:
-        // Se estávamos discando para o mesmo peer e o convite dele chegou primeiro pelo servidor
-        // (antes do nosso call.ringing ou com desempate determinístico por ID), adotamos a chamada recebida.
         const isCallingSamePeer =
           currentState === 'calling' &&
           Boolean(data.caller?.id && store.activeCallPeer?.id === data.caller.id);
@@ -195,7 +236,6 @@ export class CallService {
           return;
         }
 
-        // Rejeita automaticamente se o usuário estiver ocupado em outra chamada
         if (
           currentState === 'calling' ||
           currentState === 'connecting' ||
@@ -250,7 +290,6 @@ export class CallService {
         store.setVoiceCallState('connecting');
         this.startConnectingTimer();
 
-        // Como chamador, gera SDP Offer e envia ao peer
         try {
           if (!this.webRtc) {
             this.webRtc = this.createWebRtcInstance();
@@ -333,7 +372,6 @@ export class CallService {
         }
 
         const store = useAppStore.getState();
-        // Apenas processa se ESTA instância tiver explicitamente aceitado a chamada
         if (
           store.activeCallId !== data.callId ||
           (store.voiceCallState !== 'connecting' &&
@@ -446,7 +484,6 @@ export class CallService {
       onCallError: (data) => {
         console.warn('[CallService] Erro recebido na chamada:', data.message);
         const store = useAppStore.getState();
-        // Se já cedemos para uma chamada incoming válida durante convite simultâneo, ignora o erro do convite cedido
         if (store.voiceCallState === 'incoming' && store.incomingCall) {
           return;
         }
@@ -463,27 +500,35 @@ export class CallService {
             store.voiceCallState === 'connected' ||
             store.voiceCallState === 'connecting'
           ) {
-            // Não destrói mídia P2P funcional imediatamente por oscilação breve do WebSocket;
-            // entra em reconnecting com timeout controlado.
             store.setVoiceCallState('reconnecting');
             this.startReconnectingTimer();
           } else if (store.voiceCallState === 'calling' || store.voiceCallState === 'incoming') {
             this.cleanup();
           }
         } else {
-          // Gateway reconectado: se a mídia P2P continua ativa, restaura estado visual 'connected'
-          if (store.voiceCallState === 'reconnecting' && this.webRtc?.isMediaConnected()) {
-            this.clearReconnectingTimer();
-            store.setVoiceCallState('connected');
+          if (store.voiceCallState === 'reconnecting') {
+            if (this.webRtc?.isMediaConnected()) {
+              this.clearReconnectingTimer();
+              store.setReconnectStatus(0, this.maxReconnectAttempts);
+              store.setVoiceCallState('connected');
+            } else {
+              // WebSocket reconectou, mas a mídia P2P precisa de ICE Restart
+              this.triggerIceRestartAttempt();
+            }
           }
         }
       },
 
       onReconnected: () => {
         const store = useAppStore.getState();
-        if (store.voiceCallState === 'reconnecting' && this.webRtc?.isMediaConnected()) {
-          this.clearReconnectingTimer();
-          store.setVoiceCallState('connected');
+        if (store.voiceCallState === 'reconnecting') {
+          if (this.webRtc?.isMediaConnected()) {
+            this.clearReconnectingTimer();
+            store.setReconnectStatus(0, this.maxReconnectAttempts);
+            store.setVoiceCallState('connected');
+          } else {
+            this.triggerIceRestartAttempt();
+          }
         }
       },
     });
@@ -495,6 +540,11 @@ export class CallService {
     const myId = store.onlineUser?.id || '';
     const peerId = store.activeCallPeer?.id || '';
     const isPolite = myId ? (peerId ? myId > peerId : false) : true;
+    const outputVolumePercent = store.settings.audioVideo.outputVolume ?? 85;
+    const peerVolumePercent =
+      peerId && store.settings.audioVideo.participantVolumes?.[peerId] !== undefined
+        ? store.settings.audioVideo.participantVolumes[peerId]
+        : 100;
 
     return new WebRtcService(
       {
@@ -515,6 +565,7 @@ export class CallService {
           if (state === 'connected') {
             this.clearConnectingTimer();
             this.clearReconnectingTimer();
+            currentStore.setReconnectStatus(0, this.maxReconnectAttempts);
             currentStore.setVoiceCallState('connected');
             this.startDurationTimer();
           } else if (state === 'reconnecting') {
@@ -546,6 +597,10 @@ export class CallService {
           if (instanceToken !== this.callSessionToken) return;
           useAppStore.getState().setCallErrorMessage(errMsg);
         },
+        onDeviceFallback: (_kind, reason) => {
+          if (instanceToken !== this.callSessionToken) return;
+          useAppStore.getState().setCallDeviceNotice(reason);
+        },
         onRemoteVideoTrack: (track, stream) => {
           if (instanceToken !== this.callSessionToken) return;
           console.log('[CallService] Exibindo transmissão de tela remota:', track.id);
@@ -561,7 +616,12 @@ export class CallService {
           useAppStore.getState().setRemoteScreenStream(null, null);
         },
       },
-      { iceDisconnectTimeoutMs: this.iceDisconnectTimeoutMs, isPolite }
+      {
+        iceDisconnectTimeoutMs: this.iceDisconnectTimeoutMs,
+        isPolite,
+        outputVolumePercent,
+        peerVolumePercent,
+      }
     );
   }
 
@@ -590,6 +650,8 @@ export class CallService {
     const initialDeafened = Boolean(store.isDeafened);
 
     store.setCallErrorMessage(null);
+    store.setCallDeviceNotice(null);
+    store.setReconnectStatus(0, this.maxReconnectAttempts);
     store.setVoiceCallState('calling');
     store.setActiveCall(null, targetUser);
     this.startCallingTimer();
@@ -600,7 +662,6 @@ export class CallService {
       rtc.setDeafened(initialDeafened);
       this.webRtc = rtc;
 
-      // Captura áudio local solicitando consentimento explícito
       await rtc.initLocalAudio();
 
       if (
@@ -618,7 +679,6 @@ export class CallService {
       await rtc.fetchIceServers().catch(() => {});
       rtc.createPeerConnection();
 
-      // Dispara convite no backend
       gatewayClient.sendCallInvite(targetUser.id);
     } catch (err: any) {
       if (attemptToken !== this.callSessionToken) {
@@ -646,6 +706,8 @@ export class CallService {
     const initialDeafened = Boolean(store.isDeafened);
 
     store.setCallErrorMessage(null);
+    store.setCallDeviceNotice(null);
+    store.setReconnectStatus(0, this.maxReconnectAttempts);
     store.setVoiceCallState('connecting');
     store.setActiveCall(inc.callId, {
       id: inc.caller.id,
@@ -682,7 +744,6 @@ export class CallService {
       await rtc.fetchIceServers().catch(() => {});
       rtc.createPeerConnection();
 
-      // Responde aceite ao backend
       gatewayClient.sendCallAccept(inc.callId);
       if (currentMuted) {
         gatewayClient.sendCallMute(inc.callId, true);
@@ -722,7 +783,6 @@ export class CallService {
       this.markCallTerminated(store.activeCallId);
       gatewayClient.sendCallCancel(store.activeCallId);
     } else if (store.voiceCallState === 'calling') {
-      // Usuário cancelou antes de call.ringing retornar do servidor
       this.pendingCancelBeforeRinging = true;
     }
     this.cleanup('canceled');
@@ -797,11 +857,69 @@ export class CallService {
   }
 
   /**
+   * Define o volume individual de um participante (0% a 200%) e persiste a preferência
+   */
+  setParticipantVolume(peerId: string, volumePercent: number): void {
+    if (!peerId) return;
+    const clamped = Math.max(0, Math.min(200, Math.round(volumePercent)));
+    const store = useAppStore.getState();
+    const existing = store.settings.audioVideo.participantVolumes || {};
+    store.updateAudioVideo({
+      participantVolumes: {
+        ...existing,
+        [peerId]: clamped,
+      },
+    });
+
+    if (this.webRtc && store.activeCallPeer?.id === peerId) {
+      this.webRtc.setPeerVolume(clamped);
+    }
+  }
+
+  /**
+   * Obtém o volume individual configurado para um participante (padrão 100%)
+   */
+  getParticipantVolume(peerId?: string | null): number {
+    if (!peerId) return 100;
+    const vols = useAppStore.getState().settings.audioVideo.participantVolumes;
+    if (vols && typeof vols[peerId] === 'number') {
+      return vols[peerId];
+    }
+    return 100;
+  }
+
+  /**
+   * Define o volume mestre de saída (0% a 100%) em tempo real
+   */
+  setOutputVolume(volumePercent: number): void {
+    const clamped = Math.max(0, Math.min(100, Math.round(volumePercent)));
+    useAppStore.getState().updateAudioVideo({ outputVolume: clamped });
+    if (this.webRtc) {
+      this.webRtc.setOutputVolume(clamped);
+    }
+  }
+
+  /**
+   * Altera o preset de qualidade da transmissão de tela (antes ou durante uma captura ativa)
+   */
+  async setScreenShareQuality(preset: ScreenShareQualityPreset): Promise<void> {
+    const store = useAppStore.getState();
+    store.updateAudioVideo({ screenShareQuality: preset });
+    const res = await screenCaptureService.setQualityPreset(preset);
+    if (this.webRtc) {
+      await this.webRtc.applySenderQualityParameters(res.activePreset);
+    }
+  }
+
+  /**
    * Inicia compartilhamento de tela na chamada ativa e renegocia a conexão WebRTC
    */
-  async startScreenShare(): Promise<MediaStream | null> {
+  async startScreenShare(preset?: ScreenShareQualityPreset): Promise<MediaStream | null> {
     const store = useAppStore.getState();
-    const stream = await screenCaptureService.startCapture();
+    const effectivePreset =
+      preset || store.settings.audioVideo.screenShareQuality || 'auto';
+
+    const stream = await screenCaptureService.startCapture(effectivePreset);
     if (!stream) return null;
 
     const videoTrack = stream.getVideoTracks()[0];
@@ -810,7 +928,7 @@ export class CallService {
     const token = this.callSessionToken;
     if (this.webRtc && store.voiceCallState === 'connected' && store.activeCallId && store.activeCallPeer?.id) {
       try {
-        const offerSdp = await this.webRtc.attachScreenTrack(videoTrack, stream);
+        const offerSdp = await this.webRtc.attachScreenTrack(videoTrack, stream, effectivePreset);
         if (token === this.callSessionToken && store.activeCallId && store.activeCallPeer?.id) {
           console.log('[CallService] Enviando SDP Offer de renegociação (tela iniciada).');
           gatewayClient.sendCallWebrtcOffer(store.activeCallId, store.activeCallPeer.id, offerSdp);
@@ -919,13 +1037,99 @@ export class CallService {
     }
   }
 
+  private triggerIceRestartAttempt(): void {
+    const store = useAppStore.getState();
+    if (
+      !this.webRtc ||
+      store.voiceCallState !== 'reconnecting' ||
+      !store.activeCallId ||
+      !store.activeCallPeer?.id
+    ) {
+      return;
+    }
+
+    const token = this.callSessionToken;
+    this.webRtc
+      .createIceRestartOffer()
+      .then((offerSdp) => {
+        const latest = useAppStore.getState();
+        if (
+          offerSdp &&
+          token === this.callSessionToken &&
+          latest.voiceCallState === 'reconnecting' &&
+          latest.activeCallId &&
+          latest.activeCallPeer?.id
+        ) {
+          console.log('[CallService] Enviando SDP Offer de ICE Restart ao peer...');
+          gatewayClient.sendCallWebrtcOffer(
+            latest.activeCallId,
+            latest.activeCallPeer.id,
+            offerSdp
+          );
+        }
+      })
+      .catch((err) => {
+        console.warn('[CallService] Aviso durante tentativa de ICE Restart:', err);
+      });
+  }
+
+  private scheduleNextReconnectAttempt(attemptNumber: number): void {
+    if (this.reconnectAttemptTimer) {
+      clearTimeout(this.reconnectAttemptTimer);
+      this.reconnectAttemptTimer = null;
+    }
+
+    if (attemptNumber > this.maxReconnectAttempts) {
+      return;
+    }
+
+    const token = this.callSessionToken;
+    const delayMs = Math.round(
+      this.reconnectBackoffBaseMs * Math.pow(1.6, attemptNumber - 1)
+    );
+
+    this.reconnectAttemptTimer = setTimeout(() => {
+      this.reconnectAttemptTimer = null;
+      const store = useAppStore.getState();
+      if (token !== this.callSessionToken || store.voiceCallState !== 'reconnecting') {
+        return;
+      }
+
+      if (this.webRtc?.isMediaConnected()) {
+        this.clearReconnectingTimer();
+        store.setReconnectStatus(0, this.maxReconnectAttempts);
+        store.setVoiceCallState('connected');
+        return;
+      }
+
+      store.setReconnectStatus(attemptNumber, this.maxReconnectAttempts);
+      console.log(
+        `[CallService] Tentativa de reconexão controlada ${attemptNumber}/${this.maxReconnectAttempts}...`
+      );
+      this.triggerIceRestartAttempt();
+
+      if (attemptNumber < this.maxReconnectAttempts) {
+        this.scheduleNextReconnectAttempt(attemptNumber + 1);
+      }
+    }, delayMs);
+  }
+
   private startReconnectingTimer(): void {
     if (this.reconnectingTimer) return;
     const token = this.callSessionToken;
+    const store = useAppStore.getState();
+    store.setReconnectStatus(1, this.maxReconnectAttempts);
+
+    this.scheduleNextReconnectAttempt(1);
+
     this.reconnectingTimer = setTimeout(() => {
       this.reconnectingTimer = null;
-      const store = useAppStore.getState();
-      if (token === this.callSessionToken && store.voiceCallState === 'reconnecting') {
+      if (this.reconnectAttemptTimer) {
+        clearTimeout(this.reconnectAttemptTimer);
+        this.reconnectAttemptTimer = null;
+      }
+      const currentStore = useAppStore.getState();
+      if (token === this.callSessionToken && currentStore.voiceCallState === 'reconnecting') {
         this.endCall('Não foi possível restabelecer a conexão da chamada.');
       }
     }, this.reconnectingTimeoutMs);
@@ -935,6 +1139,10 @@ export class CallService {
     if (this.reconnectingTimer) {
       clearTimeout(this.reconnectingTimer);
       this.reconnectingTimer = null;
+    }
+    if (this.reconnectAttemptTimer) {
+      clearTimeout(this.reconnectAttemptTimer);
+      this.reconnectAttemptTimer = null;
     }
   }
 
@@ -984,7 +1192,6 @@ export class CallService {
       const duration = store.callDurationSecs;
       const state = store.voiceCallState;
 
-      // Grava no histórico de chamadas se havia um participante envolvido
       if (peer) {
         const status =
           state === 'connected' || duration > 0
@@ -1020,20 +1227,28 @@ export class CallService {
       store.setActiveCall(null, null);
       store.setIncomingCall(null);
       store.setCallDurationSecs(0);
+      store.setReconnectStatus(0, this.maxReconnectAttempts);
       store.setSpeakingState('local', false);
       store.setSpeakingState('remote', false);
       store.setPeerMuted(false);
+      store.setCallDeviceNotice(null);
     } finally {
       this.isCleaningUp = false;
     }
   }
 
   /**
-   * Atualiza restrições de cancelamento de eco e supressão de ruído no stream ativo
+   * Atualiza restrições de cancelamento de eco, supressão de ruído e controle de ganho automático no stream ativo
    */
-  applyAudioConstraints(noiseSuppression: boolean, echoCancellation: boolean): void {
+  applyAudioConstraints(
+    noiseSuppression: boolean,
+    echoCancellation: boolean,
+    autoGainControl = true
+  ): void {
     if (this.webRtc) {
-      this.webRtc.applyAudioConstraints(noiseSuppression, echoCancellation).catch(console.warn);
+      this.webRtc
+        .applyAudioConstraints(noiseSuppression, echoCancellation, autoGainControl)
+        .catch(console.warn);
     }
   }
 

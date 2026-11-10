@@ -108,6 +108,8 @@ export interface CallParticipant {
   role?: string;
 }
 
+export type ScreenShareQualityPreset = 'auto' | '720p30' | '1080p30' | '1080p60';
+
 export interface AppSettings {
   profile: {
     displayName: string;
@@ -129,6 +131,10 @@ export interface AppSettings {
     outputVolume: number;
     noiseSuppression: boolean;
     echoCancellation: boolean;
+    autoGainControl?: boolean;
+    screenShareQuality?: ScreenShareQualityPreset;
+    participantVolumes?: Record<string, number>;
+    callStageSplitRatio?: number;
     cameraDevice: string;
   };
   notifications: {
@@ -181,6 +187,10 @@ export interface PersistedPreferences {
   outputVolume: number;
   noiseSuppression: boolean;
   echoCancellation: boolean;
+  autoGainControl?: boolean;
+  screenShareQuality?: ScreenShareQualityPreset;
+  participantVolumes?: Record<string, number>;
+  callStageSplitRatio?: number;
   desktopAlerts: boolean;
   soundEffects: boolean;
   mentionsOnly: boolean;

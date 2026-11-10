@@ -15,6 +15,7 @@ import {
   DirectMessageDto,
   NetworkStatus,
   PersistedPreferences,
+  ScreenShareQualityPreset,
 } from '../lib/types';
 import {
   mockCurrentUser,
@@ -247,15 +248,24 @@ interface AppState {
   isRemoteSpeaking: boolean;
   isPeerMuted: boolean;
   callErrorMessage: string | null;
+  callDeviceNotice: string | null;
+  reconnectAttempt: number;
+  maxReconnectAttempts: number;
 
-  // Phase 3.0: Local Screen Capture State (Preview only)
+  // Phase 3.0: Local Screen Capture State
   isScreenSharing: boolean;
   isStartingScreenShare: boolean;
   screenStream: MediaStream | null;
   screenShareLabel: string | null;
+  screenShareQuality: ScreenShareQualityPreset;
+  screenEffectiveWidth: number | null;
+  screenEffectiveHeight: number | null;
+  screenEffectiveFps: number | null;
+  screenQualityFallbackNotice: string | null;
   screenShareError: string | null;
-  startScreenShare: () => Promise<MediaStream | null>;
+  startScreenShare: (preset?: ScreenShareQualityPreset) => Promise<MediaStream | null>;
   stopScreenShare: () => void;
+  setScreenShareQuality: (preset: ScreenShareQualityPreset) => Promise<void>;
   clearScreenShareError: () => void;
 
   // Phase 3.1: Remote Screen Share State (Received via WebRTC)
@@ -354,6 +364,10 @@ interface AppState {
   setSpeakingState: (target: 'local' | 'remote', isSpeaking: boolean) => void;
   setPeerMuted: (isPeerMuted: boolean) => void;
   setCallErrorMessage: (msg: string | null) => void;
+  setCallDeviceNotice: (notice: string | null) => void;
+  setReconnectStatus: (attempt: number, maxAttempts?: number) => void;
+  setParticipantVolume: (peerId: string, volume: number) => void;
+  setCallStageSplitRatio: (ratio: number) => void;
 
   // User & Settings Actions
   setUserStatus: (status: UserStatus) => void;
@@ -422,6 +436,10 @@ function createAuthenticatedState(
           outputVolume: accountPrefs.outputVolume ?? state.settings.audioVideo.outputVolume,
           noiseSuppression: accountPrefs.noiseSuppression ?? state.settings.audioVideo.noiseSuppression,
           echoCancellation: accountPrefs.echoCancellation ?? state.settings.audioVideo.echoCancellation,
+          autoGainControl: accountPrefs.autoGainControl ?? state.settings.audioVideo.autoGainControl ?? true,
+          screenShareQuality: accountPrefs.screenShareQuality ?? state.settings.audioVideo.screenShareQuality ?? 'auto',
+          participantVolumes: accountPrefs.participantVolumes ?? state.settings.audioVideo.participantVolumes ?? {},
+          callStageSplitRatio: accountPrefs.callStageSplitRatio ?? state.settings.audioVideo.callStageSplitRatio ?? 65,
         },
         notifications: {
           desktopAlerts: accountPrefs.desktopAlerts ?? state.settings.notifications.desktopAlerts,
@@ -547,12 +565,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   isRemoteSpeaking: false,
   isPeerMuted: false,
   callErrorMessage: null,
+  callDeviceNotice: null,
+  reconnectAttempt: 0,
+  maxReconnectAttempts: 3,
 
-  // Phase 3.0 Screen Sharing Initial State (Local Preview Only)
+  // Phase 3.0 Screen Sharing Initial State
   isScreenSharing: false,
   isStartingScreenShare: false,
   screenStream: null,
   screenShareLabel: null,
+  screenShareQuality: 'auto',
+  screenEffectiveWidth: null,
+  screenEffectiveHeight: null,
+  screenEffectiveFps: null,
+  screenQualityFallbackNotice: null,
   screenShareError: null,
 
   // Phase 3.1 Remote Screen Share Initial State
@@ -611,6 +637,10 @@ export const useAppStore = create<AppState>((set, get) => ({
             outputVolume: prefs.outputVolume,
             noiseSuppression: prefs.noiseSuppression,
             echoCancellation: prefs.echoCancellation,
+            autoGainControl: prefs.autoGainControl ?? true,
+            screenShareQuality: prefs.screenShareQuality ?? 'auto',
+            participantVolumes: prefs.participantVolumes ?? {},
+            callStageSplitRatio: prefs.callStageSplitRatio ?? 65,
             cameraDevice: initialAppSettings.audioVideo.cameraDevice,
           },
           notifications: {
@@ -1775,12 +1805,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
 
-  startScreenShare: async () => {
-    return callService.startScreenShare();
+  startScreenShare: async (preset) => {
+    return callService.startScreenShare(preset);
   },
 
   stopScreenShare: () => {
     callService.stopScreenShare();
+  },
+
+  setScreenShareQuality: async (preset) => {
+    await callService.setScreenShareQuality(preset);
   },
 
   clearScreenShareError: () => {
@@ -1828,6 +1862,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     set(target === 'local' ? { isLocalSpeaking: isSpeaking } : { isRemoteSpeaking: isSpeaking }),
   setPeerMuted: (isPeerMuted) => set({ isPeerMuted }),
   setCallErrorMessage: (callErrorMessage) => set({ callErrorMessage }),
+  setCallDeviceNotice: (callDeviceNotice) => set({ callDeviceNotice }),
+  setReconnectStatus: (reconnectAttempt, maxReconnectAttempts = 3) =>
+    set({ reconnectAttempt, maxReconnectAttempts }),
+  setParticipantVolume: (peerId, volume) => {
+    callService.setParticipantVolume(peerId, volume);
+  },
+  setCallStageSplitRatio: (ratio) => {
+    const clamped = Math.max(30, Math.min(85, Math.round(ratio)));
+    get().updateAudioVideo({ callStageSplitRatio: clamped });
+  },
 
   setUserStatus: (status) => {
     set((state) => ({
@@ -1925,13 +1969,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         audioVideo: { ...state.settings.audioVideo, ...audioVideoUpdate },
       },
     }));
+    const currentAv = get().settings.audioVideo;
     settingsRepository.savePreferences({
-      inputDevice: audioVideoUpdate.inputDevice ?? get().settings.audioVideo.inputDevice,
-      outputDevice: audioVideoUpdate.outputDevice ?? get().settings.audioVideo.outputDevice,
-      inputSensitivity: audioVideoUpdate.inputSensitivity ?? get().settings.audioVideo.inputSensitivity,
-      outputVolume: audioVideoUpdate.outputVolume ?? get().settings.audioVideo.outputVolume,
-      noiseSuppression: audioVideoUpdate.noiseSuppression ?? get().settings.audioVideo.noiseSuppression,
-      echoCancellation: audioVideoUpdate.echoCancellation ?? get().settings.audioVideo.echoCancellation,
+      inputDevice: audioVideoUpdate.inputDevice ?? currentAv.inputDevice,
+      outputDevice: audioVideoUpdate.outputDevice ?? currentAv.outputDevice,
+      inputSensitivity: audioVideoUpdate.inputSensitivity ?? currentAv.inputSensitivity,
+      outputVolume: audioVideoUpdate.outputVolume ?? currentAv.outputVolume,
+      noiseSuppression: audioVideoUpdate.noiseSuppression ?? currentAv.noiseSuppression,
+      echoCancellation: audioVideoUpdate.echoCancellation ?? currentAv.echoCancellation,
+      autoGainControl: audioVideoUpdate.autoGainControl ?? currentAv.autoGainControl ?? true,
+      screenShareQuality: audioVideoUpdate.screenShareQuality ?? currentAv.screenShareQuality ?? 'auto',
+      participantVolumes: audioVideoUpdate.participantVolumes ?? currentAv.participantVolumes ?? {},
+      callStageSplitRatio: audioVideoUpdate.callStageSplitRatio ?? currentAv.callStageSplitRatio ?? 65,
     });
   },
 
@@ -1972,6 +2021,11 @@ screenCaptureService.addListener((state) => {
     isStartingScreenShare: state.isStarting,
     screenStream: state.stream,
     screenShareLabel: state.sourceLabel,
+    screenShareQuality: state.qualityPreset,
+    screenEffectiveWidth: state.effectiveWidth,
+    screenEffectiveHeight: state.effectiveHeight,
+    screenEffectiveFps: state.effectiveFrameRate,
+    screenQualityFallbackNotice: state.qualityFallbackNotice,
     screenShareError: state.error,
   });
 });
