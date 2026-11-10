@@ -129,8 +129,16 @@ function updateReadmeContent(params) {
       headerLinksBlock
     );
 
-    // 3. Stable Row na Tabela
-    const stableRowBlock = `| **Estável (Recomendado)** | **\`${tag}\`** | ${resolvedStatus} | [**${resolvedArtifact}**](https://github.com/${repo}/releases/download/${tag}/${resolvedArtifact}) | [\`latest.json\`](https://github.com/${repo}/releases/latest/download/latest.json) |`;
+    // 3. Stable Row na Tabela HTML
+    const stableRowBlock = [
+      '    <tr>',
+      `      <td align="left"><strong>Estável (Recomendado)</strong></td>`,
+      `      <td align="center"><strong><code>${tag}</code></strong></td>`,
+      `      <td align="center">${resolvedStatus}</td>`,
+      `      <td align="left"><a href="https://github.com/${repo}/releases/download/${tag}/${resolvedArtifact}"><strong>${resolvedArtifact}</strong></a></td>`,
+      `      <td align="left"><a href="https://github.com/${repo}/releases/latest/download/latest.json"><code>latest.json</code></a></td>`,
+      '    </tr>',
+    ].join('\n');
     updated = replaceBetweenMarkers(
       updated,
       MARKERS.STABLE_ROW.start,
@@ -138,9 +146,17 @@ function updateReadmeContent(params) {
       stableRowBlock
     );
   } else {
-    // Canal Beta / Nightly
+    // Canal Beta / Nightly Row na Tabela HTML
     const resolvedStatus = status || 'Homologação Ativa';
-    const betaRowBlock = `| **Pré-lançamento (Beta)** | \`${tag}\` | ${resolvedStatus} | [${resolvedArtifact}](https://github.com/${repo}/releases/download/${tag}/${resolvedArtifact}) | [\`latest-nightly.json\`](https://github.com/${repo}/releases/download/${tag}/latest-nightly.json) |`;
+    const betaRowBlock = [
+      '    <tr>',
+      `      <td align="left"><strong>Pré-lançamento (Beta)</strong></td>`,
+      `      <td align="center"><code>${tag}</code></td>`,
+      `      <td align="center">${resolvedStatus}</td>`,
+      `      <td align="left"><a href="https://github.com/${repo}/releases/download/${tag}/${resolvedArtifact}">${resolvedArtifact}</a></td>`,
+      `      <td align="left"><a href="https://github.com/${repo}/releases/download/${tag}/latest-nightly.json"><code>latest-nightly.json</code></a></td>`,
+      '    </tr>',
+    ].join('\n');
 
     updated = replaceBetweenMarkers(
       updated,
