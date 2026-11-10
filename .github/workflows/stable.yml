@@ -284,3 +284,22 @@ jobs:
             Write-Error "[FALHA CRÍTICA] Falha ao promover release para pública."
             exit 1
           }
+
+      - name: Synchronize README Stable Channel
+        if: success()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main:main
+          git checkout main
+          node scripts/sync-readme-release.cjs --channel stable --version "${{ github.event.inputs.version }}"
+          $diff = git status --porcelain README.md
+          if ($diff) {
+            git add README.md
+            git commit -m "docs: sync README with Stable v${{ github.event.inputs.version }} [skip ci]"
+            git push origin main
+          } else {
+            Write-Host "[INFO] README.md já estava atualizado para a versão Stable."
+          }
