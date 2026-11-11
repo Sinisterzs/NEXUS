@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { X, Lock, Mail, User, Shield, AlertCircle, Loader2, Sparkles, CheckCircle2 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
-import { mapGoogleAuthError } from '../../lib/authErrorMapping';
+import { mapGoogleAuthError, isAccountRecoveryCandidateError } from '../../lib/authErrorMapping';
+import { PasswordRecoveryView } from './PasswordRecoveryView';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -44,6 +45,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [offerRecovery, setOfferRecovery] = useState(false);
 
   const loginOnline = useAppStore((state) => state.loginOnline);
   const registerOnline = useAppStore((state) => state.registerOnline);
@@ -59,6 +62,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setTab(newTab);
     setLocalError(null);
     setSuccessMessage(null);
+    setOfferRecovery(false);
+    setRecoveryMode(false);
+    clearAuthError();
+  };
+
+  const openRecovery = () => {
+    setLocalError(null);
+    setSuccessMessage(null);
+    setOfferRecovery(false);
+    clearAuthError();
+    setRecoveryMode(true);
+  };
+
+  const closeRecovery = () => {
+    setRecoveryMode(false);
+    setTab('login');
+    setPassword('');
+    setLocalError(null);
+    setSuccessMessage(null);
+    setOfferRecovery(false);
     clearAuthError();
   };
 
@@ -138,6 +161,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const handleGoogleSignIn = async () => {
     setLocalError(null);
     setSuccessMessage(null);
+    setOfferRecovery(false);
     clearAuthError();
 
     try {
@@ -150,6 +174,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       }
     } catch (err: any) {
       setLocalError(mapGoogleAuthError(err, 'modal'));
+      setOfferRecovery(isAccountRecoveryCandidateError(err));
     }
   };
 
@@ -176,15 +201,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             <span className="text-xl font-black text-nexus-accent tracking-tighter">N</span>
           </div>
           <h2 className="text-lg font-bold text-nexus-text tracking-wide">
-            {tab === 'login' ? 'Conectar ao NEXUS' : 'Criar Conta no NEXUS'}
+            {recoveryMode ? 'Recuperar Senha' : tab === 'login' ? 'Conectar ao NEXUS' : 'Criar Conta no NEXUS'}
           </h2>
           <p className="text-xs text-nexus-muted mt-1">
-            {tab === 'login'
+            {recoveryMode
+              ? 'Redefina sua senha com um código de uso único enviado por e-mail'
+              : tab === 'login'
               ? 'Acesse seus canais, perfil e comunidades online'
               : 'Registre sua identidade definitiva no ecossistema'}
           </p>
 
           {/* Tab Selector */}
+          {!recoveryMode && (
           <div className="flex bg-nexus-panel p-1 rounded-xl mt-5 border border-nexus-border/60">
             <button
               type="button"
@@ -209,14 +237,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               Cadastrar
             </button>
           </div>
+          )}
         </div>
 
         {/* Form Body */}
         <div className="px-6 pb-6 flex-1">
+          {recoveryMode ? (
+            <PasswordRecoveryView
+              onBackToLogin={closeRecovery}
+              initialEmail={loginInput}
+            />
+          ) : (
+          <>
           {currentError && (
             <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-start gap-2.5 text-xs text-rose-300 animate-slideDown">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <div className="flex-1 leading-relaxed">{currentError}</div>
+              <div className="flex-1 leading-relaxed">
+                <span>{currentError}</span>
+                {offerRecovery && (
+                  <button
+                    type="button"
+                    onClick={openRecovery}
+                    className="block mt-1.5 font-semibold text-rose-200 hover:text-white underline cursor-pointer"
+                  >
+                    Esqueceu sua senha?
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -330,6 +377,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                   </>
                 )}
               </button>
+              <div className="mt-3 text-center">
+                <button
+                  type="button"
+                  onClick={openRecovery}
+                  className="text-[11px] text-nexus-muted hover:text-nexus-accent underline transition-colors cursor-pointer"
+                >
+                  Esqueceu sua senha?
+                </button>
+              </div>
             </form>
           ) : (
             <form onSubmit={handleRegisterSubmit} className="space-y-3">
@@ -430,6 +486,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 )}
               </button>
             </form>
+          )}
+          </>
           )}
         </div>
       </div>

@@ -69,3 +69,53 @@ export function mapGoogleAuthError(
 
   return rawMsg;
 }
+
+/**
+ * Returns true when a Google sign-in failure should offer "Esqueceu sua senha?"
+ * as a direct action (existing account conflict / unlinked Google identity).
+ */
+export function isAccountRecoveryCandidateError(rawError: unknown): boolean {
+  const rawMsg =
+    typeof rawError === 'string' ? rawError : (rawError as any)?.message || '';
+  return (
+    rawMsg.includes('ACCOUNT_CONFLICT_EMAIL_EXISTS') ||
+    rawMsg.includes('GOOGLE_IDENTITY_NOT_LINKED')
+  );
+}
+
+/**
+ * Maps password recovery (forgot / reset) errors into user-facing Portuguese.
+ * Never echoes the reset token back to the user or to logs.
+ */
+export function mapPasswordResetError(rawError: unknown): string {
+  const rawMsg =
+    typeof rawError === 'string'
+      ? rawError
+      : (rawError as any)?.message || 'Não foi possível concluir a recuperação de senha.';
+
+  if (rawMsg.includes('RESET_TOKEN_INVALID_OR_EXPIRED')) {
+    return 'O código ou link de recuperação é inválido, já foi usado ou expirou. Solicite um novo código.';
+  }
+  if (rawMsg.includes('RESET_PASSWORD_WEAK')) {
+    return 'A nova senha é muito fraca. Use no mínimo 8 caracteres.';
+  }
+  if (rawMsg.includes('RATE_LIMITED') || rawMsg.includes('TOO_MANY_REQUESTS')) {
+    return 'Muitas tentativas de recuperação. Aguarde alguns minutos e tente novamente.';
+  }
+  if (rawMsg.includes('NETWORK_ERROR') || rawMsg.includes('Falha de conexão')) {
+    return 'Não foi possível conectar ao servidor NEXUS. Verifique sua conexão e tente novamente.';
+  }
+
+  const codeMatch = rawMsg.match(/^[A-Z0-9_]+:\s*(.+)$/);
+  if (codeMatch && codeMatch[1]) {
+    return codeMatch[1].trim();
+  }
+  return rawMsg;
+}
+
+/** True when the error means the reset token is unusable and a new one must be requested. */
+export function isResetTokenInvalidError(rawError: unknown): boolean {
+  const rawMsg =
+    typeof rawError === 'string' ? rawError : (rawError as any)?.message || '';
+  return rawMsg.includes('RESET_TOKEN_INVALID_OR_EXPIRED');
+}

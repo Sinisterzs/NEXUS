@@ -813,6 +813,157 @@ pub async fn auth_update_profile(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Password recovery (forgot / verify / reset)
+// Tokens are single-use secrets: they are NEVER logged, and error messages
+// never echo them back.
+// ---------------------------------------------------------------------------
+
+/// Neutral confirmation shown regardless of whether the e-mail is registered
+/// (prevents account enumeration).
+pub const NEUTRAL_RESET_MESSAGE: &str = "Se o e-mail informado estiver cadastrado, enviaremos um código de recuperação de uso único, válido por 15 minutos.";
+const RESET_SUCCESS_MESSAGE: &str = "Senha redefinida com sucesso. Todas as sessões anteriores foram encerradas por segurança.";
+const RESET_MIN_PASSWORD_LEN: usize = 8;
+
+fn reset_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|_| "Falha ao preparar a conexão com o servidor NEXUS.".to_string())
+}
+
+fn build_forgot_payload(email: &str) -> serde_json::Value {
+    serde_json::json!({ "email": email.trim() })
+}
+
+fn build_verify_payload(token: &str) -> serde_json::Value {
+    serde_json::json!({ "token": token.trim() })
+}
+
+fn build_reset_payload(token: &str, new_password: &str) -> serde_json::Value {
+    serde_json::json!({ "token": token.trim(), "new_password": new_password })
+}
+
+fn validate_reset_inputs(token: &str, new_password: &str) -> Result<(), String> {
+    if token.trim().is_empty() {
+        return Err(
+            "RESET_TOKEN_INVALID_OR_EXPIRED: Informe o código de recuperação recebido por e-mail."
+                .to_string(),
+        );
+    }
+    if new_password.chars().count() < RESET_MIN_PASSWORD_LEN {
+        return Err(
+            "RESET_PASSWORD_WEAK: A nova senha deve ter no mínimo 8 caracteres.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Reads an optional `message` string from a JSON body, falling back to `default`.
+fn extract_message(body: &serde_json::Value, default: &str) -> String {
+    body.get("message")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+/// Reads the validity flag from a verify response (`valid` or `ok`).
+fn extract_valid_flag(body: &serde_json::Value) -> bool {
+    body.get("valid")
+        .or_else(|| body.get("ok"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+async fn read_reset_error(resp: reqwest::Response, fallback: &str) -> String {
+    let status = resp.status();
+    match resp.json::<ApiErrorResponse>().await {
+        Ok(err) => format_api_error(err),
+        Err(_) if status == StatusCode::TOO_MANY_REQUESTS => {
+            "RATE_LIMITED: Muitas tentativas. Aguarde alguns minutos e tente novamente.".to_string()
+        }
+        Err(_) => fallback.to_string(),
+    }
+}
+
+#[tauri::command]
+pub async fn auth_request_password_reset(email: String) -> Result<String, String> {
+    let trimmed = email.trim();
+    if trimmed.is_empty() || !trimmed.contains('@') {
+        return Err("Informe um e-mail válido.".to_string());
+    }
+    let client = reset_client()?;
+    let url = format!("{}/v1/auth/password/forgot", get_api_base());
+    let resp = client
+        .post(&url)
+        .json(&build_forgot_payload(trimmed))
+        .send()
+        .await
+        .map_err(|e| format!("Falha de conexão com o servidor NEXUS: {}", e))?;
+
+    if resp.status().is_success() {
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        Ok(extract_message(&body, NEUTRAL_RESET_MESSAGE))
+    } else {
+        Err(read_reset_error(resp, "Não foi possível solicitar a recuperação de senha.").await)
+    }
+}
+
+#[tauri::command]
+pub async fn auth_verify_reset_token(token: String) -> Result<bool, String> {
+    if token.trim().is_empty() {
+        return Ok(false);
+    }
+    let client = reset_client()?;
+    let url = format!("{}/v1/auth/password/verify", get_api_base());
+    let resp = client
+        .post(&url)
+        .json(&build_verify_payload(&token))
+        .send()
+        .await
+        .map_err(|e| format!("Falha de conexão com o servidor NEXUS: {}", e))?;
+
+    if resp.status().is_success() {
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        Ok(extract_valid_flag(&body))
+    } else {
+        let msg = read_reset_error(resp, "Não foi possível validar o código de recuperação.").await;
+        if msg.starts_with("RESET_TOKEN_INVALID_OR_EXPIRED") {
+            Ok(false)
+        } else {
+            Err(msg)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn auth_confirm_password_reset(
+    token: String,
+    new_password: String,
+) -> Result<String, String> {
+    validate_reset_inputs(&token, &new_password)?;
+    let client = reset_client()?;
+    let url = format!("{}/v1/auth/password/reset", get_api_base());
+    let resp = client
+        .post(&url)
+        .json(&build_reset_payload(&token, &new_password))
+        .send()
+        .await
+        .map_err(|e| format!("Falha de conexão com o servidor NEXUS: {}", e))?;
+
+    if resp.status().is_success() {
+        // All server-side sessions were revoked: guarantee a clean local state.
+        set_active_user_id(None);
+        delete_secure_token()?;
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        Ok(extract_message(&body, RESET_SUCCESS_MESSAGE))
+    } else {
+        Err(read_reset_error(resp, "Não foi possível redefinir a senha.").await)
+    }
+}
+
 #[tauri::command]
 pub fn auth_cancel_google_login() {
     crate::oauth::cancel_google_flow();
@@ -1016,5 +1167,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_password_reset_payloads_trim_token_and_email() {
+        let p = build_forgot_payload("  user@nexus.chat \n");
+        assert_eq!(p["email"], "user@nexus.chat");
+        let p = build_verify_payload("  abc123\t");
+        assert_eq!(p["token"], "abc123");
+        let p = build_reset_payload(" tok ", "  keep spaces  ");
+        assert_eq!(p["token"], "tok");
+        assert_eq!(p["new_password"], "  keep spaces  ");
+    }
+
+    #[test]
+    fn test_password_reset_input_validation() {
+        let e = validate_reset_inputs("   ", "longenough1").unwrap_err();
+        assert!(e.starts_with("RESET_TOKEN_INVALID_OR_EXPIRED"));
+        let e = validate_reset_inputs("tok", "short").unwrap_err();
+        assert!(e.starts_with("RESET_PASSWORD_WEAK"));
+        assert!(!e.contains("tok"));
+        assert!(validate_reset_inputs("tok", "12345678").is_ok());
+    }
+
+    #[test]
+    fn test_password_reset_response_parsing() {
+        let body = serde_json::json!({ "message": "  Enviado  " });
+        assert_eq!(extract_message(&body, "x"), "Enviado");
+        assert_eq!(extract_message(&serde_json::Value::Null, "padrão"), "padrão");
+        assert_eq!(extract_message(&serde_json::json!({"message": " "}), "d"), "d");
+        assert!(extract_valid_flag(&serde_json::json!({"valid": true})));
+        assert!(!extract_valid_flag(&serde_json::json!({"valid": false})));
+        assert!(!extract_valid_flag(&serde_json::json!({"ok": false})));
+        assert!(NEUTRAL_RESET_MESSAGE.contains("15 minutos"));
+    }
+
+    #[tokio::test]
+    async fn test_password_reset_commands_reject_invalid_input_without_network() {
+        assert!(auth_request_password_reset("   ".to_string()).await.is_err());
+        assert!(auth_request_password_reset("sem-arroba".to_string()).await.is_err());
+        assert_eq!(auth_verify_reset_token("  ".to_string()).await, Ok(false));
+        let err = auth_confirm_password_reset("tok".to_string(), "curta".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("RESET_PASSWORD_WEAK"));
     }
 }

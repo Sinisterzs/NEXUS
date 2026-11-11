@@ -153,6 +153,35 @@ class AuthRepository {
     }
   }
 
+  /** Requests a password recovery code. Always resolves with a neutral message. Never logs the e-mail. */
+  async requestPasswordReset(email: string): Promise<string> {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<string>('auth_request_password_reset', { email });
+    } catch (err: any) {
+      throw new Error(typeof err === 'string' ? err : err?.message || 'Falha ao solicitar recuperação de senha');
+    }
+  }
+
+  /** Checks whether a reset token is still valid. The token is never logged. */
+  async verifyResetToken(token: string): Promise<boolean> {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<boolean>('auth_verify_reset_token', { token });
+    } catch (err: any) {
+      throw new Error(typeof err === 'string' ? err : err?.message || 'Falha ao validar código de recuperação');
+    }
+  }
+
+  /** Redefines the password; the backend revokes all sessions and the local token is cleared. */
+  async confirmPasswordReset(token: string, newPassword: string): Promise<string> {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<string>('auth_confirm_password_reset', { token, newPassword });
+    } catch (err: any) {
+      throw new Error(typeof err === 'string' ? err : err?.message || 'Falha ao redefinir a senha');
+    }
+  }
   async cancelGoogleLogin(): Promise<void> {
     try {
       const { invoke } = await import('@tauri-apps/api/core');

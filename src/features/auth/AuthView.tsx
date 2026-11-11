@@ -3,7 +3,8 @@ import { Lock, Mail, User, Shield, AlertCircle, Loader2, CheckCircle2, ShieldChe
 import { useAppStore } from '../../stores/useAppStore';
 import { APP_VERSION } from '../../version';
 import { WindowControls } from '../../components/WindowControls';
-import { mapGoogleAuthError } from '../../lib/authErrorMapping';
+import { mapGoogleAuthError, isAccountRecoveryCandidateError } from '../../lib/authErrorMapping';
+import { PasswordRecoveryView } from './PasswordRecoveryView';
 
 const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
   <svg className={className} viewBox="0 0 24 24">
@@ -41,6 +42,8 @@ export const AuthView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [offerRecovery, setOfferRecovery] = useState(false);
 
   const loginOnline = useAppStore((state) => state.loginOnline);
   const registerOnline = useAppStore((state) => state.registerOnline);
@@ -55,6 +58,26 @@ export const AuthView: React.FC = () => {
     setTab(newTab);
     setLocalError(null);
     setSuccessMessage(null);
+    setOfferRecovery(false);
+    setRecoveryMode(false);
+    clearAuthError();
+  };
+
+  const openRecovery = () => {
+    setLocalError(null);
+    setSuccessMessage(null);
+    setOfferRecovery(false);
+    clearAuthError();
+    setRecoveryMode(true);
+  };
+
+  const closeRecovery = () => {
+    setRecoveryMode(false);
+    setTab('login');
+    setPassword('');
+    setLocalError(null);
+    setSuccessMessage(null);
+    setOfferRecovery(false);
     clearAuthError();
   };
 
@@ -128,6 +151,7 @@ export const AuthView: React.FC = () => {
   const handleGoogleSignIn = async () => {
     setLocalError(null);
     setSuccessMessage(null);
+    setOfferRecovery(false);
     clearAuthError();
 
     try {
@@ -137,6 +161,7 @@ export const AuthView: React.FC = () => {
       }
     } catch (err: any) {
       setLocalError(mapGoogleAuthError(err, 'view'));
+      setOfferRecovery(isAccountRecoveryCandidateError(err));
     }
   };
 
@@ -181,15 +206,18 @@ export const AuthView: React.FC = () => {
               <span className="text-xl font-black text-nexus-accent tracking-tighter">N</span>
             </div>
             <h2 className="text-lg font-bold text-nexus-text tracking-wide">
-              {tab === 'login' ? 'Conectar ao NEXUS' : 'Criar Conta no NEXUS'}
+              {recoveryMode ? 'Recuperar Senha' : tab === 'login' ? 'Conectar ao NEXUS' : 'Criar Conta no NEXUS'}
             </h2>
             <p className="text-xs text-nexus-muted mt-1">
-              {tab === 'login'
+              {recoveryMode
+                ? 'Redefina sua senha com um código de uso único enviado por e-mail'
+                : tab === 'login'
                 ? 'Autenticação obrigatória para acessar seus canais e mensagens'
                 : 'Registre sua identidade definitiva no ecossistema'}
             </p>
 
             {/* Tab Selector */}
+            {!recoveryMode && (
             <div className="flex bg-nexus-panel p-1 rounded-xl mt-5 border border-nexus-border/60">
               <button
                 type="button"
@@ -214,15 +242,34 @@ export const AuthView: React.FC = () => {
                 Criar Conta
               </button>
             </div>
+            )}
           </div>
 
           {/* Form Area */}
           <div className="p-6 pt-2">
+            {recoveryMode ? (
+              <PasswordRecoveryView
+                onBackToLogin={closeRecovery}
+                initialEmail={loginInput}
+              />
+            ) : (
+            <>
             {/* Feedback messages */}
             {currentError && (
               <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-                <span className="flex-1 leading-relaxed">{currentError}</span>
+                <div className="flex-1 leading-relaxed">
+                  <span>{currentError}</span>
+                  {offerRecovery && (
+                    <button
+                      type="button"
+                      onClick={openRecovery}
+                      className="block mt-1.5 font-semibold text-rose-200 hover:text-white underline cursor-pointer"
+                    >
+                      Esqueceu sua senha?
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -328,6 +375,18 @@ export const AuthView: React.FC = () => {
               </form>
             )}
 
+            {tab === 'login' && (
+              <div className="mt-3 text-center">
+                <button
+                  type="button"
+                  onClick={openRecovery}
+                  className="text-[11px] text-nexus-muted hover:text-nexus-accent underline transition-colors cursor-pointer"
+                >
+                  Esqueceu sua senha?
+                </button>
+              </div>
+            )}
+
             {/* Tab: REGISTER */}
             {tab === 'register' && (
               <form onSubmit={handleRegisterSubmit} className="space-y-3">
@@ -425,6 +484,9 @@ export const AuthView: React.FC = () => {
                   )}
                 </button>
               </form>
+            )}
+
+            </>
             )}
 
             {/* Footer with connection status and security badge */}
