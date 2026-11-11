@@ -12,10 +12,10 @@ const path = require('path');
 
 const version = process.argv[2] ? process.argv[2].trim() : '0.3.0-homolog.1';
 
-// Validação SemVer estrita
-const semverRegex = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-[a-zA-Z0-9.-]+$/;
-if (!semverRegex.test(version)) {
-  console.error(`[ERRO] Versão '${version}' deve seguir formato SemVer pré-lançamento (ex: 0.3.0-homolog.1)`);
+// Validação estrita do formato de homologação: MAJOR.MINOR.PATCH-homolog.N
+const homologRegex = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-homolog\.[1-9]\d*$/;
+if (!homologRegex.test(version)) {
+  console.error(`[ERRO] Versão '${version}' deve seguir exclusivamente o formato de homologação: MAJOR.MINOR.PATCH-homolog.N (ex: 0.3.0-homolog.1). Releases Stable, Nightly ou Beta oficiais são estritamente rejeitadas.`);
   process.exit(1);
 }
 
