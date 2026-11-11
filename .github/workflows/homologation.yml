@@ -71,7 +71,7 @@ jobs:
       - name: Setup Node.js Environment
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '24'
           cache: 'npm'
 
       - name: Setup Rust Stable Toolchain
@@ -91,6 +91,8 @@ jobs:
       - name: Execute Automated Unit & Channel Compatibility Tests
         shell: pwsh
         run: |
+          node --version
+          npm --version
           Write-Host "[1/6] Executando suíte completa de testes do frontend e canais..."
           npm test
           if ($LASTEXITCODE -ne 0) { exit 1 }
