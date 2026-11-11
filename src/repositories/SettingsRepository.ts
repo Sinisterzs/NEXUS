@@ -1,5 +1,6 @@
 import { PersistedPreferences, MainTab } from '../lib/types';
 import { initialAppSettings } from '../mocks';
+import { APP_VERSION, inferDefaultUpdateChannel } from '../version.ts';
 
 const STORE_FILENAME = 'nexus_settings.json';
 const MAX_AVATAR_STORAGE_CHARS = 262_144; // 256 KB cap for local preference storage
@@ -38,7 +39,7 @@ export const DEFAULT_PREFERENCES: PersistedPreferences = {
   showGameActivity: initialAppSettings.privacy.showGameActivity,
   streamerMode: initialAppSettings.privacy.streamerMode,
   avatarUrl: undefined,
-  updateChannel: 'stable',
+  updateChannel: inferDefaultUpdateChannel(APP_VERSION),
   voiceAutoSensitivity: true,
   voiceHangoverMs: 400,
   voiceSoftGate: false,
@@ -90,7 +91,9 @@ class SettingsRepository {
   }
 
   /**
-   * Retrieves the persisted global update channel ('stable' | 'beta') with installation-wide scope
+   * Retrieves the persisted global update channel ('stable' | 'beta') with installation-wide scope.
+   * If not explicitly persisted, infers the default channel based on the installed application version
+   * (e.g. 'beta' for prerelease/nightly builds, 'stable' for release builds).
    */
   async getUpdateChannel(): Promise<'stable' | 'beta'> {
     try {
@@ -113,7 +116,7 @@ class SettingsRepository {
         if (legacy?.updateChannel === 'beta' || legacy?.updateChannel === 'stable') {
           return legacy.updateChannel;
         }
-      } else if (typeof window !== 'undefined') {
+      } else if (typeof window !== 'undefined' && window.localStorage) {
         const topLevelLocal = window.localStorage.getItem(LOCAL_STORAGE_CHANNEL_KEY);
         if (topLevelLocal === 'beta' || topLevelLocal === 'stable') {
           return topLevelLocal;
@@ -131,10 +134,35 @@ class SettingsRepository {
         }
       }
     } catch (err) {
-      console.warn('[SettingsRepository] Error retrieving update channel, defaulting to stable:', err);
+      console.warn('[SettingsRepository] Error retrieving update channel, defaulting to inferred channel:', err);
     }
 
-    return 'stable';
+    return inferDefaultUpdateChannel(APP_VERSION);
+  }
+
+  /**
+   * Synchronously retrieves the update channel from localStorage or infers it from installed version.
+   * Usable immediately at application startup before asynchronous store initialization or auth.
+   */
+  getUpdateChannelSync(): 'stable' | 'beta' {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        const topLevelLocal = window.localStorage.getItem(LOCAL_STORAGE_CHANNEL_KEY);
+        if (topLevelLocal === 'beta' || topLevelLocal === 'stable') {
+          return topLevelLocal;
+        }
+
+        const accLocalKey = this.getLocalStorageKey();
+        const accRaw = window.localStorage.getItem(accLocalKey);
+        if (accRaw) {
+          const parsed = JSON.parse(accRaw);
+          if (parsed.updateChannel === 'beta' || parsed.updateChannel === 'stable') {
+            return parsed.updateChannel;
+          }
+        }
+      } catch {}
+    }
+    return inferDefaultUpdateChannel(APP_VERSION);
   }
 
   /**
@@ -142,6 +170,13 @@ class SettingsRepository {
    */
   async setUpdateChannel(channel: 'stable' | 'beta'): Promise<void> {
     const validChannel: 'stable' | 'beta' = channel === 'beta' ? 'beta' : 'stable';
+
+    // Synchronously mirror to localStorage immediately for instant startup access
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        window.localStorage.setItem(LOCAL_STORAGE_CHANNEL_KEY, validChannel);
+      } catch {}
+    }
 
     try {
       const store = await this.getStore();
@@ -156,7 +191,6 @@ class SettingsRepository {
         await store.set(this.getStoreKey(acc), merged);
         await store.save();
       } else if (typeof window !== 'undefined') {
-        window.localStorage.setItem(LOCAL_STORAGE_CHANNEL_KEY, validChannel);
         const acc = this.resolveAccount();
         const currentPrefs = await this.loadPreferences(acc);
         const merged = this.validateAndMerge({ ...currentPrefs, updateChannel: validChannel });

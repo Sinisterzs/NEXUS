@@ -1,6 +1,7 @@
 export const APP_VERSION = '0.3.0-nightly.2';
 
 export type VersionType = 'stable' | 'prerelease';
+export type UpdateChannel = 'stable' | 'beta';
 
 export interface InstalledVersionInfo {
   version: string;
@@ -56,4 +57,13 @@ export function getInstalledVersionInfo(version: string = APP_VERSION): Installe
     prereleaseTag,
     badgeLabel: isPrerelease ? 'VERSÃO NIGHTLY/BETA' : 'VERSÃO ESTÁVEL',
   };
+}
+
+/**
+ * Infere o canal de atualização padrão a partir da versão fornecida.
+ * Se a versão for pré-lançamento / experimental (ex: v0.3.0-nightly.2), o canal padrão é 'beta'.
+ * Se for uma versão estável oficial (ex: v0.2.1), o canal padrão é 'stable'.
+ */
+export function inferDefaultUpdateChannel(version: string = APP_VERSION): UpdateChannel {
+  return isPrereleaseVersion(version) ? 'beta' : 'stable';
 }

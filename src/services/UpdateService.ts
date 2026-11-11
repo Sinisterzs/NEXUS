@@ -51,11 +51,13 @@ export interface ChannelVersionResolution {
   downgradeNoticeMessage: string | null;
   noticeTitle: string | null;
   statusMessage: string | null;
+  requiresConfirmation?: boolean;
 }
 
 /**
  * Avalia de forma pura a relação entre a versão instalada, a versão remota do canal
- * e as regras de atualização do NEXUS, evitando avisos falsos de downgrade ou de versão experimental.
+ * e as regras de atualização do NEXUS, evitando avisos falsos de downgrade ou de versão experimental,
+ * e garantindo que o canal Stable nunca baixe Nightlies e que Nightlies nunca migrem silenciosamente.
  */
 export function resolveChannelVersionComparison(params: {
   currentVersion: string;
@@ -74,19 +76,23 @@ export function resolveChannelVersionComparison(params: {
     silent = false,
   } = params;
 
-  if (updateAvailable) {
+  const isCurrentPrerelease = isPrereleaseVersion(currentVersion);
+  const remoteVer = latestRemoteVersion || '';
+  const isRemotePrerelease = isPrereleaseVersion(remoteVer);
+
+  // Regra Estrita 1: Canal Stable NUNCA baixa versões Nightly/pré-lançamento
+  if (channel === 'stable' && isRemotePrerelease) {
     return {
-      status: 'available',
+      status: silent ? 'idle' : 'error',
       isDowngradeNotice: false,
       downgradeNoticeMessage: null,
-      noticeTitle: null,
-      statusMessage: null,
+      noticeTitle: 'Canal Estável Incompatível',
+      statusMessage: `O canal Estável rejeitou a compilação experimental v${remoteVer}. O canal Estável aceita apenas versões oficiais homologadas.`,
+      requiresConfirmation: false,
     };
   }
 
-  const isCurrentPrerelease = isPrereleaseVersion(currentVersion);
-  const remoteVer = latestRemoteVersion || '';
-
+  // Regra Estrita 2: Proteção SemVer contra downgrades acidentais
   if (isCurrentHigher) {
     // Cenário A: Versão instalada é experimental e o canal ativo é Stable -> Downgrade Notice legítimo
     if (isCurrentPrerelease && channel === 'stable') {
@@ -97,6 +103,7 @@ export function resolveChannelVersionComparison(params: {
         downgradeNoticeMessage: msg,
         noticeTitle: 'Versão Experimental com Canal Estável Ativo',
         statusMessage: null,
+        requiresConfirmation: false,
       };
     }
 
@@ -111,6 +118,7 @@ export function resolveChannelVersionComparison(params: {
         downgradeNoticeMessage: null,
         noticeTitle: null,
         statusMessage: msg,
+        requiresConfirmation: false,
       };
     }
 
@@ -123,6 +131,7 @@ export function resolveChannelVersionComparison(params: {
         downgradeNoticeMessage: null,
         noticeTitle: null,
         statusMessage: msg,
+        requiresConfirmation: false,
       };
     }
 
@@ -135,8 +144,23 @@ export function resolveChannelVersionComparison(params: {
         downgradeNoticeMessage: null,
         noticeTitle: null,
         statusMessage: msg,
+        requiresConfirmation: false,
       };
     }
+  }
+
+  // Regra Estrita 3: Nightly NUNCA migra silenciosamente para Stable
+  // Se houver atualização disponível, Nightly ou Beta exige confirmação explícita
+  if (updateAvailable) {
+    const requiresConfirmation = channel === 'beta' || isCurrentPrerelease;
+    return {
+      status: 'available',
+      isDowngradeNotice: false,
+      downgradeNoticeMessage: null,
+      noticeTitle: null,
+      statusMessage: null,
+      requiresConfirmation,
+    };
   }
 
   // Versão instalada é idêntica à remota ou não há atualização
@@ -147,6 +171,7 @@ export function resolveChannelVersionComparison(params: {
     downgradeNoticeMessage: null,
     noticeTitle: null,
     statusMessage: `O NEXUS já está atualizado na versão mais recente disponível no canal ${channelName}!`,
+    requiresConfirmation: false,
   };
 }
 

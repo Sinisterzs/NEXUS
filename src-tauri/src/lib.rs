@@ -269,6 +269,9 @@ pub fn run() {
             network::network_verify_server,
             commands::webrtc_get_ice_servers,
             updater::updater_check_channel,
+            updater::updater_check_prelogin,
+            updater::updater_download_and_install_prelogin,
+            updater::updater_restart,
         ])
         .run(context)
         .expect("error while running NEXUS desktop application");

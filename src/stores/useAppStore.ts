@@ -527,7 +527,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isGoogleLoading: false,
   backendAvailable: false,
   networkStatus: DEFAULT_NETWORK_STATUS,
-  updateChannel: 'stable',
+  updateChannel: settingsRepository.getUpdateChannelSync(),
 
   activeTab: getInitialTab(),
   isSidebarCollapsed: false,

@@ -13,6 +13,7 @@ import { SettingsView } from '../features/settings/SettingsView';
 import { AuthView } from '../features/auth/AuthView';
 import { ServerOfflineView } from '../features/auth/ServerOfflineView';
 import { ServerApprovalView } from '../features/auth/ServerApprovalView';
+import { PreloginStartupView } from '../features/startup/PreloginStartupView';
 import { useAppStore } from '../stores/useAppStore';
 import { callService } from '../services/CallService';
 import { gatewayClient } from '../services/GatewayClient';
@@ -31,14 +32,16 @@ export const App: React.FC = () => {
   const checkSession = useAppStore((state) => state.checkSession);
   const [rustBackendReady, setRustBackendReady] = useState(false);
   const [startupTimedOut, setStartupTimedOut] = useState(false);
+  const [preloginCompleted, setPreloginCompleted] = useState(false);
 
   useEffect(() => {
+    if (!preloginCompleted) return;
     // Safety timer for startup splash (7 seconds) to prevent infinite loading
     const timer = setTimeout(() => {
       setStartupTimedOut(true);
     }, 7000);
     return () => clearTimeout(timer);
-  }, []);
+  }, [preloginCompleted]);
 
   useEffect(() => {
     // Apply appearance attributes to document element in real-time
@@ -67,6 +70,8 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (!preloginCompleted) return;
+
     // Startup sequence: Tauri handshake, load preferences, SQLite ready
     async function startup() {
       let overrideTab: any = null;
@@ -88,7 +93,7 @@ export const App: React.FC = () => {
     }
 
     startup();
-  }, [initializeStore]);
+  }, [preloginCompleted, initializeStore]);
 
   useEffect(() => {
     // Global keyboard navigation shortcuts (Ctrl+1 through Ctrl+5)
@@ -105,6 +110,11 @@ export const App: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTab]);
+
+  // 0. Pre-login Auto Updater (executa ANTES de qualquer tentativa de restauração de sessão ou AuthView)
+  if (!preloginCompleted) {
+    return <PreloginStartupView onComplete={() => setPreloginCompleted(true)} />;
+  }
 
   // 1. Splash / Carregamento Inicial (com timeout de segurança recuperável para evitar loading infinito)
   if (!isInitialized || authStatus === 'initializing' || (networkStatus.server_reachability === 'connecting' && !onlineUser)) {
