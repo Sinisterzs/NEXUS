@@ -3,6 +3,7 @@ import { Lock, Mail, User, Shield, AlertCircle, Loader2, CheckCircle2, ShieldChe
 import { useAppStore } from '../../stores/useAppStore';
 import { APP_VERSION } from '../../version';
 import { WindowControls } from '../../components/WindowControls';
+import { mapGoogleAuthError } from '../../lib/authErrorMapping';
 
 const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
   <svg className={className} viewBox="0 0 24 24">
@@ -135,14 +136,7 @@ export const AuthView: React.FC = () => {
         setSuccessMessage('Autenticado com o Google com sucesso!');
       }
     } catch (err: any) {
-      const msg = err?.message || 'Falha ao autenticar com o Google.';
-      if (msg.includes('ACCOUNT_CONFLICT_EMAIL_EXISTS')) {
-        setLocalError(
-          'Já existe uma conta cadastrada com este e-mail no NEXUS. Faça login com sua senha abaixo para vincular.'
-        );
-      } else {
-        setLocalError(msg);
-      }
+      setLocalError(mapGoogleAuthError(err, 'view'));
     }
   };
 

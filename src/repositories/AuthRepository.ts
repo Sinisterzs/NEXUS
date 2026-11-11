@@ -1,4 +1,4 @@
-import { AuthUserProfile } from '../lib/types';
+import type { AuthUserProfile } from '../lib/types.ts';
 
 export function normalizeAuthUser(raw: any): AuthUserProfile {
   if (!raw) return raw;

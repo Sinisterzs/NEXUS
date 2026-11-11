@@ -227,6 +227,14 @@ struct ApiErrorResponse {
     pub error: ApiErrorDetail,
 }
 
+fn format_api_error(err: ApiErrorResponse) -> String {
+    if !err.error.code.trim().is_empty() {
+        format!("{}: {}", err.error.code.trim(), err.error.message.trim())
+    } else {
+        err.error.message
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSessionCredential {
     pub token: String,
@@ -672,7 +680,7 @@ pub async fn auth_login_google() -> Result<AuthUserProfile, String> {
             .json()
             .await
             .map_err(|_| "Falha na autenticação com o Google".to_string())?;
-        Err(err.error.message)
+        Err(format_api_error(err))
     }
 }
 
@@ -719,7 +727,7 @@ pub async fn auth_link_google() -> Result<String, String> {
             .json()
             .await
             .map_err(|_| "Falha ao vincular conta Google".to_string())?;
-        Err(err.error.message)
+        Err(format_api_error(err))
     }
 }
 
@@ -881,6 +889,61 @@ mod tests {
             "Must serialize as displayName: {}",
             client_json
         );
+    }
+
+    #[test]
+    fn test_format_api_error_preserves_code_and_message() {
+        let conflict_json = r#"{
+            "error": {
+                "code": "ACCOUNT_CONFLICT_EMAIL_EXISTS",
+                "message": "Já existe uma conta cadastrada com este e-mail. Para vincular, faça login com sua senha."
+            }
+        }"#;
+        let resp: ApiErrorResponse = serde_json::from_str(conflict_json).unwrap();
+        let formatted = format_api_error(resp);
+        assert_eq!(
+            formatted,
+            "ACCOUNT_CONFLICT_EMAIL_EXISTS: Já existe uma conta cadastrada com este e-mail. Para vincular, faça login com sua senha."
+        );
+
+        let unlinked_json = r#"{
+            "error": {
+                "code": "GOOGLE_IDENTITY_NOT_LINKED",
+                "message": "Este e-mail pertence a uma conta NEXUS sem senha..."
+            }
+        }"#;
+        let resp2: ApiErrorResponse = serde_json::from_str(unlinked_json).unwrap();
+        let formatted2 = format_api_error(resp2);
+        assert!(formatted2.starts_with("GOOGLE_IDENTITY_NOT_LINKED:"));
+    }
+
+    #[test]
+    fn test_existing_google_user_api_response_parsing() {
+        let raw_backend_response = r#"{
+            "user": {
+                "id": "e4b2d5a1-7788-4e12-98ab-123456789abc",
+                "username": "returning_google_user",
+                "email": "returning@fictitious-google.test",
+                "display_name": "Returning Google User",
+                "avatar_url": "https://lh3.googleusercontent.com/a/mock-pic",
+                "bio": null,
+                "status": "online",
+                "custom_status": null,
+                "activity": null,
+                "has_password": false,
+                "has_google": true,
+                "created_at": "2026-11-01T00:00:00Z"
+            },
+            "session_token": "fictitious_google_session_token_xyz_987",
+            "expires_at": "2026-11-15T00:00:00Z"
+        }"#;
+
+        let auth_api: AuthApiResponse = serde_json::from_str(raw_backend_response)
+            .expect("Should deserialize returning Google user response");
+        assert_eq!(auth_api.user.username, "returning_google_user");
+        assert!(!auth_api.user.has_password, "Google-only account has no password");
+        assert!(auth_api.user.has_google, "Google-only account has has_google true");
+        assert_eq!(auth_api.session_token, "fictitious_google_session_token_xyz_987");
     }
 
     #[tokio::test]

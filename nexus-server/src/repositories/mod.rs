@@ -50,6 +50,15 @@ impl UserRepository {
         Ok(count > 0)
     }
 
+    /// Returns the owner of an e-mail (read-only; never used to link identities).
+    pub async fn find_user_id_by_email(&self, email: &str) -> Result<Option<Uuid>, AppError> {
+        let id = sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM user_credentials WHERE email = $1")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(id)
+    }
+
     pub async fn create_user(
         &self,
         username: &str,

@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { networkManager } from '../../services/NetworkManager';
+import { mapGoogleAuthError } from '../../lib/authErrorMapping';
 import { updateService, UpdateState } from '../../services/UpdateService';
 import { audioDeviceService, AudioDeviceInfo } from '../../services/AudioDeviceService';
 import { callService } from '../../services/CallService';
@@ -436,7 +437,7 @@ export const SettingsView: React.FC = () => {
       const msg = await linkGoogle();
       setGoogleStatusMsg({ text: msg || 'Conta Google vinculada com sucesso!', isError: false });
     } catch (err: any) {
-      setGoogleStatusMsg({ text: err?.message || 'Falha ao vincular conta Google.', isError: true });
+      setGoogleStatusMsg({ text: mapGoogleAuthError(err), isError: true });
     } finally {
       setIsGoogleProcessing(false);
     }
@@ -461,7 +462,7 @@ export const SettingsView: React.FC = () => {
       await unlinkGoogle();
       setGoogleStatusMsg({ text: 'Conta Google desvinculada com sucesso.', isError: false });
     } catch (err: any) {
-      setGoogleStatusMsg({ text: err?.message || 'Falha ao desvincular conta Google.', isError: true });
+      setGoogleStatusMsg({ text: mapGoogleAuthError(err), isError: true });
     } finally {
       setIsGoogleProcessing(false);
     }

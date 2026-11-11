@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Lock, Mail, User, Shield, AlertCircle, Loader2, Sparkles, CheckCircle2 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
+import { mapGoogleAuthError } from '../../lib/authErrorMapping';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -148,14 +149,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
         }, 600);
       }
     } catch (err: any) {
-      const msg = err?.message || 'Falha ao autenticar com o Google.';
-      if (msg.includes('ACCOUNT_CONFLICT_EMAIL_EXISTS')) {
-        setLocalError(
-          'Já existe uma conta cadastrada com este e-mail no NEXUS. Por segurança, faça login com sua senha abaixo e vincule sua conta Google nas Configurações.'
-        );
-      } else {
-        setLocalError(msg);
-      }
+      setLocalError(mapGoogleAuthError(err, 'modal'));
     }
   };
 
