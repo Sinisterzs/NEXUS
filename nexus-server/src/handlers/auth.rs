@@ -149,6 +149,40 @@ pub async fn reset_password(
     }))
 }
 
+/// `GET /reset-password` (and `GET /v1/auth/password/bridge`) — static HTTPS bridge page
+/// that opens `nexus://reset-password?token=...` and offers a manual copy-code fallback.
+/// Tokens are processed exclusively client-side in the browser and never logged.
+pub async fn password_reset_bridge() -> impl axum::response::IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/html; charset=utf-8",
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "no-store, no-cache, must-revalidate, max-age=0",
+            ),
+            (axum::http::header::PRAGMA, "no-cache"),
+            (
+                axum::http::HeaderName::from_static("referrer-policy"),
+                "no-referrer",
+            ),
+            (
+                axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                "nosniff",
+            ),
+            (axum::http::header::X_FRAME_OPTIONS, "DENY"),
+            (
+                axum::http::header::CONTENT_SECURITY_POLICY,
+                crate::services::email::PASSWORD_RESET_BRIDGE_CSP,
+            ),
+        ],
+        crate::services::email::password_reset_bridge_html(),
+    )
+}
+
 pub async fn google_unlink(
     State(service): State<AuthService>,
     Extension(CurrentUser(user)): Extension<CurrentUser>,

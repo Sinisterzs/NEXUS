@@ -819,3 +819,81 @@ fn debug_representations_never_leak_tokens_emails_or_passwords() {
     assert!(!dbg_reset.contains(&raw_token));
     assert!(!dbg_reset.contains(secret_password));
 }
+
+#[test]
+fn gmail_compatible_https_bridge_link_and_static_page_security_tests() {
+    let raw_token = generate_reset_token();
+
+    // 1. Default reset URL is HTTPS so Gmail does not strip <a href>
+    assert!(DEFAULT_PASSWORD_RESET_URL.starts_with("https://"));
+
+    // 2. Legacy `nexus://reset-password` in env is automatically upgraded to HTTPS bridge URL
+    let upgraded_default = EmailConfig::from_lookup(|k| match k {
+        "NEXUS_PASSWORD_RESET_URL" => Some("nexus://reset-password".into()),
+        _ => None,
+    });
+    assert_eq!(upgraded_default.reset_url_base, DEFAULT_PASSWORD_RESET_URL);
+
+    let upgraded_fqdn = EmailConfig::from_lookup(|k| match k {
+        "NEXUS_PASSWORD_RESET_URL" => Some("nexus://reset-password".into()),
+        "PUBLIC_FQDN" => Some("nexus-api.dynv6.net".into()),
+        _ => None,
+    });
+    assert_eq!(
+        upgraded_fqdn.reset_url_base,
+        "https://nexus-api.dynv6.net/reset-password"
+    );
+
+    // Explicit HTTPS URL is preserved
+    let custom_https = EmailConfig::from_lookup(|k| match k {
+        "NEXUS_PASSWORD_RESET_URL" => Some("https://auth.nexus.example/reset-password".into()),
+        _ => None,
+    });
+    assert_eq!(
+        custom_https.reset_url_base,
+        "https://auth.nexus.example/reset-password"
+    );
+
+    // 3. HTTPS bridge URLs place the token in the URI fragment (#token=...) so browsers never
+    //    transmit the single-use token in HTTP GET request lines or proxy access logs.
+    let https_link = build_reset_link("https://nexus-api.dynv6.net/reset-password", &raw_token);
+    assert_eq!(
+        https_link,
+        format!(
+            "https://nexus-api.dynv6.net/reset-password#token={}",
+            raw_token
+        )
+    );
+
+    // Direct custom scheme still uses ?token=
+    let deep_link = build_reset_link("nexus://reset-password", &raw_token);
+    assert_eq!(
+        deep_link,
+        format!("nexus://reset-password?token={}", raw_token)
+    );
+    assert_eq!(email::build_deep_link(&raw_token), deep_link);
+
+    // 4. Rendered HTML e-mail uses an https:// href on "Redefinir minha senha"
+    let msg = render_password_reset_email(
+        "user@example.com",
+        &raw_token,
+        &upgraded_fqdn.reset_url_base,
+        RESET_TOKEN_TTL_MINUTES,
+    );
+    assert!(msg
+        .html
+        .contains(&format!("href=\"{}\"", https_link)));
+    assert!(msg.html.contains("Redefinir minha senha"));
+    assert!(msg.html.contains(&raw_token));
+
+    // 5. Static bridge HTML page enforces strict CSP, scrubs URL history, and provides both
+    //    the `nexus://reset-password?token=` launcher and manual code copy fallback.
+    let bridge_html = email::password_reset_bridge_html();
+    assert!(email::PASSWORD_RESET_BRIDGE_CSP.contains("connect-src 'none'"));
+    assert!(email::PASSWORD_RESET_BRIDGE_CSP.contains("frame-ancestors 'none'"));
+    assert!(bridge_html.contains("window.history.replaceState"));
+    assert!(bridge_html.contains("nexus://reset-password?token="));
+    assert!(bridge_html.contains("Abrir no aplicativo NEXUS"));
+    assert!(bridge_html.contains("Copiar código de recuperação"));
+    assert!(!bridge_html.contains("https://www.google-analytics.com"));
+}

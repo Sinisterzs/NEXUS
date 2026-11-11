@@ -1,4 +1,7 @@
 import type { AuthUserProfile } from '../lib/types.ts';
+import { extractResetToken } from '../lib/passwordRecovery.ts';
+
+export const DEEP_LINK_RESET_EVENT = 'nexus://password-reset-token';
 
 export function normalizeAuthUser(raw: any): AuthUserProfile {
   if (!raw) return raw;
@@ -182,6 +185,43 @@ class AuthRepository {
       throw new Error(typeof err === 'string' ? err : err?.message || 'Falha ao redefinir a senha');
     }
   }
+
+  /**
+   * Atomically consumes any pending password reset token captured from a `nexus://` deep link
+   * (either from process startup arguments or from single-instance IPC handoff).
+   */
+  async takePendingResetToken(): Promise<string | null> {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const raw = await invoke<string | null>('auth_take_pending_reset_token');
+      if (!raw) return null;
+      const clean = extractResetToken(raw);
+      return clean || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Subscribes to live `nexus://password-reset-token` deep-link events received while NEXUS is open.
+   */
+  async onDeepLinkResetToken(handler: (token: string) => void): Promise<() => void> {
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      const unlisten = await listen<string>(DEEP_LINK_RESET_EVENT, async (event) => {
+        const clean = extractResetToken(typeof event?.payload === 'string' ? event.payload : '');
+        // Clear the pending slot in Rust so a subsequent mount does not replay the same token.
+        await this.takePendingResetToken();
+        if (clean) {
+          handler(clean);
+        }
+      });
+      return unlisten;
+    } catch {
+      return () => {};
+    }
+  }
+
   async cancelGoogleLogin(): Promise<void> {
     try {
       const { invoke } = await import('@tauri-apps/api/core');

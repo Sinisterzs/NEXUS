@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Lock, Mail, User, Shield, AlertCircle, Loader2, Sparkles, CheckCircle2 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { mapGoogleAuthError, isAccountRecoveryCandidateError } from '../../lib/authErrorMapping';
+import { authRepository } from '../../repositories/AuthRepository';
 import { PasswordRecoveryView } from './PasswordRecoveryView';
 
 interface AuthModalProps {
@@ -46,6 +47,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [localError, setLocalError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [recoveryMode, setRecoveryMode] = useState(false);
+  const [recoveryInitialToken, setRecoveryInitialToken] = useState('');
   const [offerRecovery, setOfferRecovery] = useState(false);
 
   const loginOnline = useAppStore((state) => state.loginOnline);
@@ -56,6 +58,41 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const authError = useAppStore((state) => state.authError);
   const clearAuthError = useAppStore((state) => state.clearAuthError);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    const applyDeepLinkToken = (token: string) => {
+      if (!active || !token) return;
+      setLocalError(null);
+      setSuccessMessage(null);
+      setOfferRecovery(false);
+      clearAuthError();
+      setRecoveryInitialToken(token);
+      setRecoveryMode(true);
+    };
+
+    authRepository.takePendingResetToken().then((pending) => {
+      if (pending) applyDeepLinkToken(pending);
+    });
+
+    authRepository.onDeepLinkResetToken((incoming) => {
+      applyDeepLinkToken(incoming);
+    }).then((fn) => {
+      if (active) {
+        unlisten = fn;
+      } else {
+        fn();
+      }
+    });
+
+    return () => {
+      active = false;
+      if (unlisten) unlisten();
+    };
+  }, [isOpen, clearAuthError]);
+
   if (!isOpen) return null;
 
   const handleTabChange = (newTab: 'login' | 'register') => {
@@ -63,6 +100,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setLocalError(null);
     setSuccessMessage(null);
     setOfferRecovery(false);
+    setRecoveryInitialToken('');
     setRecoveryMode(false);
     clearAuthError();
   };
@@ -71,12 +109,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setLocalError(null);
     setSuccessMessage(null);
     setOfferRecovery(false);
+    setRecoveryInitialToken('');
     clearAuthError();
     setRecoveryMode(true);
   };
 
   const closeRecovery = () => {
     setRecoveryMode(false);
+    setRecoveryInitialToken('');
     setTab('login');
     setPassword('');
     setLocalError(null);
@@ -246,6 +286,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             <PasswordRecoveryView
               onBackToLogin={closeRecovery}
               initialEmail={loginInput}
+              initialStep={recoveryInitialToken ? 'reset_password' : 'forgot_request'}
+              initialToken={recoveryInitialToken}
             />
           ) : (
           <>

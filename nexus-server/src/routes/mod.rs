@@ -59,6 +59,7 @@ pub fn create_router_with_identity(
 
     let system_routes = Router::new()
         .route("/health", get(handlers::health::health_check))
+        .route("/reset-password", get(handlers::auth::password_reset_bridge))
         .route("/v1/system/challenge", post(handlers::health::challenge_check))
         .route("/system/challenge", post(handlers::health::challenge_check))
         .with_state(system_state);
@@ -99,6 +100,7 @@ pub fn create_router_with_identity(
         );
 
     let password_reset_routes = Router::new()
+        .route("/password/bridge", get(handlers::auth::password_reset_bridge))
         .route("/password/forgot", post(handlers::auth::forgot_password))
         .route(
             "/password/verify",
@@ -282,5 +284,15 @@ pub fn create_router_with_identity(
         .nest("/v1/ws", gateway_routes.clone())
         .nest("/ws", gateway_routes)
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<_>| {
+                // Log only the request path (never query parameters or fragments) so
+                // recovery tokens or ephemeral tickets can never enter HTTP trace logs.
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    path = %request.uri().path(),
+                )
+            }),
+        )
 }

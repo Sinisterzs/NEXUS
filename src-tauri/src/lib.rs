@@ -2,6 +2,7 @@ pub mod lab;
 pub mod auth;
 pub mod commands;
 pub mod db;
+pub mod deeplink;
 pub mod dm;
 pub mod friends;
 pub mod network;
@@ -137,6 +138,12 @@ pub fn run() {
         auth::delete_secure_token().expect("clear lab credentials");
         return;
     }
+    if let Some(token) = deeplink::capture_startup_args(std::env::args().skip(1)) {
+        if deeplink::try_forward_to_running_instance(&token) {
+            return;
+        }
+        deeplink::set_pending_reset_token(Some(token));
+    }
     let mut builder = tauri::Builder::default();
     if !lab::enabled() { builder = builder.plugin(tauri_plugin_updater::Builder::new().build()); }
     builder
@@ -203,6 +210,8 @@ pub fn run() {
             }
 
             lab::record_runtime(app.handle())?;
+            deeplink::ensure_windows_protocol_registered();
+            deeplink::start_ipc_listener(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -234,6 +243,7 @@ pub fn run() {
             auth::auth_request_password_reset,
             auth::auth_verify_reset_token,
             auth::auth_confirm_password_reset,
+            auth::auth_take_pending_reset_token,
             auth::get_oauth_config,
             friends::friends_get_list,
             friends::friends_get_requests,

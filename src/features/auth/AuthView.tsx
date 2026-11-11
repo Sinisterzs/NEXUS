@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Lock, Mail, User, Shield, AlertCircle, Loader2, CheckCircle2, ShieldCheck } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { APP_VERSION } from '../../version';
 import { WindowControls } from '../../components/WindowControls';
 import { mapGoogleAuthError, isAccountRecoveryCandidateError } from '../../lib/authErrorMapping';
+import { authRepository } from '../../repositories/AuthRepository';
 import { PasswordRecoveryView } from './PasswordRecoveryView';
 
 const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -43,6 +44,7 @@ export const AuthView: React.FC = () => {
   const [localError, setLocalError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [recoveryMode, setRecoveryMode] = useState(false);
+  const [recoveryInitialToken, setRecoveryInitialToken] = useState('');
   const [offerRecovery, setOfferRecovery] = useState(false);
 
   const loginOnline = useAppStore((state) => state.loginOnline);
@@ -54,11 +56,46 @@ export const AuthView: React.FC = () => {
   const clearAuthError = useAppStore((state) => state.clearAuthError);
   const networkStatus = useAppStore((state) => state.networkStatus);
 
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    const applyDeepLinkToken = (token: string) => {
+      if (!active || !token) return;
+      setLocalError(null);
+      setSuccessMessage(null);
+      setOfferRecovery(false);
+      clearAuthError();
+      setRecoveryInitialToken(token);
+      setRecoveryMode(true);
+    };
+
+    authRepository.takePendingResetToken().then((pending) => {
+      if (pending) applyDeepLinkToken(pending);
+    });
+
+    authRepository.onDeepLinkResetToken((incoming) => {
+      applyDeepLinkToken(incoming);
+    }).then((fn) => {
+      if (active) {
+        unlisten = fn;
+      } else {
+        fn();
+      }
+    });
+
+    return () => {
+      active = false;
+      if (unlisten) unlisten();
+    };
+  }, [clearAuthError]);
+
   const handleTabChange = (newTab: 'login' | 'register') => {
     setTab(newTab);
     setLocalError(null);
     setSuccessMessage(null);
     setOfferRecovery(false);
+    setRecoveryInitialToken('');
     setRecoveryMode(false);
     clearAuthError();
   };
@@ -67,12 +104,14 @@ export const AuthView: React.FC = () => {
     setLocalError(null);
     setSuccessMessage(null);
     setOfferRecovery(false);
+    setRecoveryInitialToken('');
     clearAuthError();
     setRecoveryMode(true);
   };
 
   const closeRecovery = () => {
     setRecoveryMode(false);
+    setRecoveryInitialToken('');
     setTab('login');
     setPassword('');
     setLocalError(null);
@@ -251,6 +290,8 @@ export const AuthView: React.FC = () => {
               <PasswordRecoveryView
                 onBackToLogin={closeRecovery}
                 initialEmail={loginInput}
+                initialStep={recoveryInitialToken ? 'reset_password' : 'forgot_request'}
+                initialToken={recoveryInitialToken}
               />
             ) : (
             <>

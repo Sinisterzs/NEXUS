@@ -189,12 +189,44 @@ impl AppConfig {
 // struct literals in several test suites, and this module must stay
 // dependency-free (std only) so offline security tests can include it directly.
 
-/// Default deep link used in password recovery e-mails (handled by the desktop client).
-pub const DEFAULT_PASSWORD_RESET_URL: &str = "nexus://reset-password";
+/// Default HTTPS bridge URL used in password recovery e-mails so webmail clients
+/// (such as Gmail, which strips custom `nexus://` links) render a clickable link.
+pub const DEFAULT_PASSWORD_RESET_URL: &str = "https://nexus-api.dynv6.net/reset-password";
+/// Custom desktop URI scheme opened by the HTTPS bridge page (`nexus://reset-password?token=...`).
+pub const DEFAULT_DEEP_LINK_RESET_URL: &str = "nexus://reset-password";
 /// Default Resend API endpoint used when `NEXUS_EMAIL_PROVIDER=resend` and no URL override is given.
 pub const DEFAULT_RESEND_API_URL: &str = "https://api.resend.com/emails";
 /// Default sender identity when `NEXUS_EMAIL_FROM` is not configured.
 pub const DEFAULT_EMAIL_FROM: &str = "NEXUS <no-reply@nexus.local>";
+
+/// Resolves the password recovery base URL to an `http(s)://` address suitable for e-mail clients.
+/// - If `configured` starts with `https://` or `http://`, it is preserved.
+/// - If `configured` is omitted or uses a custom scheme like `nexus://` (which Gmail strips from
+///   `<a href>`), it is automatically upgraded to `https://<public_fqdn>/reset-password` or
+///   [`DEFAULT_PASSWORD_RESET_URL`].
+pub fn resolve_https_reset_url(configured: Option<&str>, public_fqdn: Option<&str>) -> String {
+    if let Some(raw) = configured {
+        let trimmed = raw.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("https://") || lower.starts_with("http://") {
+            return trimmed.to_string();
+        }
+    }
+
+    if let Some(fqdn) = public_fqdn {
+        let clean = fqdn
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_ascii_lowercase();
+        if !clean.is_empty() {
+            return format!("https://{}/reset-password", clean);
+        }
+    }
+
+    DEFAULT_PASSWORD_RESET_URL.to_string()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmailProviderKind {
@@ -297,13 +329,18 @@ impl EmailConfig {
             api_url = Some(DEFAULT_RESEND_API_URL.to_string());
         }
 
+        let public_fqdn = get("PUBLIC_FQDN").or_else(|| get("PUBLIC_DOMAIN"));
+        let reset_url_base = resolve_https_reset_url(
+            get("NEXUS_PASSWORD_RESET_URL").as_deref(),
+            public_fqdn.as_deref(),
+        );
+
         Self {
             provider,
             api_url,
             api_key: get("NEXUS_EMAIL_API_KEY"),
             from: get("NEXUS_EMAIL_FROM").unwrap_or_else(|| DEFAULT_EMAIL_FROM.to_string()),
-            reset_url_base: get("NEXUS_PASSWORD_RESET_URL")
-                .unwrap_or_else(|| DEFAULT_PASSWORD_RESET_URL.to_string()),
+            reset_url_base,
         }
     }
 

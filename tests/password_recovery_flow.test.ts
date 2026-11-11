@@ -90,7 +90,7 @@ test('validateResetForm: order of blocking messages', () => {
 
 // ---- Error mapping ---------------------------------------------------------
 
-test('mapPasswordResetError: RESET_TOKEN_INVALID_OR_EXPIRED', () => {
+test('mapPasswordResetError: RESET_TOKEN_INVALID_OR_EXPIRED, RESET_TOKEN_INVALID, RESET_TOKEN_EXPIRED', () => {
   const raw = 'RESET_TOKEN_INVALID_OR_EXPIRED: Token inválido ou expirado.';
   const msg = mapPasswordResetError(raw);
   assert.match(msg, /inválido|expirou/);
@@ -99,6 +99,18 @@ test('mapPasswordResetError: RESET_TOKEN_INVALID_OR_EXPIRED', () => {
   assert.equal(isResetTokenInvalidError(raw), true);
   assert.equal(isResetTokenInvalidError(new Error(raw)), true);
   assert.equal(isResetTokenInvalidError('RESET_PASSWORD_WEAK: x'), false);
+
+  assert.equal(
+    mapPasswordResetError('RESET_TOKEN_INVALID: token inválido'),
+    'Código inválido ou já utilizado.'
+  );
+  assert.equal(isResetTokenInvalidError('RESET_TOKEN_INVALID: token inválido'), true);
+
+  assert.equal(
+    mapPasswordResetError('RESET_TOKEN_EXPIRED: token expirado'),
+    'Este código expirou (validade de 15 minutos). Solicite um novo.'
+  );
+  assert.equal(isResetTokenInvalidError('RESET_TOKEN_EXPIRED: token expirado'), true);
 });
 
 test('mapPasswordResetError: RESET_PASSWORD_WEAK, rate limit, network and generic', () => {
@@ -211,5 +223,143 @@ test('AuthView and AuthModal integrate recovery + "Esqueceu sua senha?" entry po
     assert.ok(src.includes('Esqueceu sua senha?'), `${f}: missing forgot link`);
     assert.ok(src.includes('isAccountRecoveryCandidateError'), `${f}: conflict shortcut missing`);
     assert.ok(src.includes('offerRecovery'), `${f}: error action missing`);
+    assert.ok(src.includes('takePendingResetToken'), `${f}: missing startup deep-link consumption`);
+    assert.ok(src.includes('onDeepLinkResetToken'), `${f}: missing live deep-link listener`);
   }
+});
+
+test('HTTPS bridge URL (#token= and ?token=) and desktop nexus:// deep-link integration', () => {
+  const token64 = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  assert.equal(
+    extractResetToken(`https://nexus-api.dynv6.net/reset-password#token=${token64}`),
+    token64
+  );
+  assert.equal(
+    extractResetToken(`https://nexus-api.dynv6.net/reset-password?token=${token64}`),
+    token64
+  );
+  assert.equal(
+    extractResetToken(`nexus://reset-password?token=${token64}`),
+    token64
+  );
+
+  // Desktop protocol registration (NSIS + runtime HKCU\Software\Classes\nexus)
+  const hooksNsh = read('src-tauri/nsis/hooks.nsh');
+  assert.ok(hooksNsh.includes('Software\\Classes\\nexus'));
+  assert.ok(hooksNsh.includes('URL Protocol'));
+  assert.ok(hooksNsh.includes('ReadRegStr $0 SHCTX "Software\\Classes\\nexus\\shell\\open\\command" ""'));
+  assert.ok(hooksNsh.includes('StrCmp $0 \'"$INSTDIR\\${MAINBINARYNAME}.exe" "%1"\''));
+
+  const tauriConf = read('src-tauri/tauri.conf.json');
+  assert.ok(tauriConf.includes('"installerHooks": "nsis/hooks.nsh"'));
+
+  const deeplinkRs = read('src-tauri/src/deeplink.rs');
+  assert.ok(deeplinkRs.includes('extract_deep_link_reset_token'));
+  assert.ok(deeplinkRs.includes('try_forward_to_running_instance'));
+  assert.ok(deeplinkRs.includes('start_ipc_listener'));
+  assert.ok(deeplinkRs.includes('ensure_windows_protocol_registered'));
+
+  // Backend HTTPS bridge page and Gmail-safe link generation
+  const emailRs = read('nexus-server/src/services/email.rs');
+  assert.ok(emailRs.includes('password_reset_bridge_html'));
+  assert.ok(emailRs.includes('Abrir no aplicativo NEXUS'));
+  assert.ok(emailRs.includes('Copiar código de recuperação'));
+  assert.ok(emailRs.includes('window.history.replaceState'));
+});
+
+test('Bridge page DOM script displays 64-char code, scrubs URL history, and copies exact token', async () => {
+  const vm = await import('node:vm');
+  const emailRs = read('nexus-server/src/services/email.rs');
+  const scriptMatch = emailRs.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(scriptMatch, 'Bridge script must exist in email.rs');
+  const bridgeScript = scriptMatch[1];
+
+  const runBridgeDom = (initialHash: string, initialSearch = '') => {
+    const elements: Record<string, any> = {
+      'valid-section': { style: { display: 'block' } },
+      'missing-section': { style: { display: 'none' } },
+      'open-nexus-app': {
+        href: 'nexus://reset-password',
+        setAttribute(k: string, v: string) {
+          this[k] = v;
+        },
+      },
+      'manual-token-value': { textContent: '' },
+      'copy-token-btn': {
+        textContent: 'Copiar código de recuperação',
+        listeners: {} as Record<string, () => void>,
+        addEventListener(ev: string, fn: () => void) {
+          this.listeners[ev] = fn;
+        },
+      },
+    };
+    let replacedUrl: string | null = null;
+    let clipboardText: string | null = null;
+    let scheduledRedirect: string | null = null;
+    const windowObj = {
+      location: {
+        pathname: '/reset-password',
+        hash: initialHash,
+        search: initialSearch,
+        href: 'https://nexus-api.dynv6.net/reset-password' + initialSearch + initialHash,
+      },
+      history: {
+        replaceState(_s: unknown, _t: string, url: string) {
+          replacedUrl = url;
+          windowObj.location.hash = '';
+          windowObj.location.search = '';
+        },
+      },
+    };
+    const ctx = {
+      window: windowObj,
+      document: {
+        title: 'NEXUS — Recuperação de Senha',
+        getElementById(id: string) {
+          return elements[id];
+        },
+      },
+      navigator: {
+        clipboard: {
+          writeText(t: string) {
+            clipboardText = t;
+            return {
+              then(cb: () => void) {
+                cb();
+              },
+            };
+          },
+        },
+      },
+      URLSearchParams,
+      encodeURIComponent,
+      setTimeout(fn: () => void, ms: number) {
+        if (ms === 150) {
+          fn();
+          scheduledRedirect = windowObj.location.href;
+        }
+      },
+    };
+    vm.runInNewContext(bridgeScript, ctx);
+    if (elements['copy-token-btn'].listeners.click) {
+      elements['copy-token-btn'].listeners.click();
+    }
+    return { elements, replacedUrl, clipboardText, scheduledRedirect, finalHash: windowObj.location.hash };
+  };
+
+  const token64 = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const validRun = runBridgeDom('#token=' + token64);
+  assert.equal(validRun.replacedUrl, '/reset-password');
+  assert.equal(validRun.finalHash, '');
+  assert.equal(validRun.elements['open-nexus-app'].href, `nexus://reset-password?token=${token64}`);
+  assert.equal(validRun.elements['manual-token-value'].textContent, token64);
+  assert.equal(validRun.elements['manual-token-value'].textContent.length, 64);
+  assert.equal(validRun.clipboardText, token64);
+  assert.equal(validRun.elements['copy-token-btn'].textContent, 'Código copiado!');
+  assert.equal(validRun.scheduledRedirect, `nexus://reset-password?token=${token64}`);
+
+  const invalidRun = runBridgeDom('#token=bad<script>alert(1)</script>');
+  assert.equal(invalidRun.elements['valid-section'].style.display, 'none');
+  assert.equal(invalidRun.elements['missing-section'].style.display, 'block');
+  assert.equal(invalidRun.scheduledRedirect, null);
 });

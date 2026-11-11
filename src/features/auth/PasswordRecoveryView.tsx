@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Mail,
   Lock,
@@ -31,6 +31,8 @@ interface PasswordRecoveryViewProps {
   initialEmail?: string;
   /** Start directly at the reset screen (user already owns a code). */
   initialStep?: RecoveryStep;
+  /** Optional reset token received via `nexus://reset-password?token=...` deep link. */
+  initialToken?: string;
 }
 
 const inputClass =
@@ -52,16 +54,30 @@ export const PasswordRecoveryView: React.FC<PasswordRecoveryViewProps> = ({
   onBackToLogin,
   initialEmail = '',
   initialStep = 'forgot_request',
+  initialToken = '',
 }) => {
-  const [step, setStep] = useState<RecoveryStep>(initialStep);
+  const cleanedInitialToken = extractResetToken(initialToken);
+  const [step, setStep] = useState<RecoveryStep>(
+    cleanedInitialToken ? 'reset_password' : initialStep
+  );
   const [email, setEmail] = useState(initialEmail.includes('@') ? initialEmail.trim() : '');
-  const [token, setToken] = useState('');
+  const [token, setToken] = useState(cleanedInitialToken);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tokenExpired, setTokenExpired] = useState(false);
   const [showNeutralNotice, setShowNeutralNotice] = useState(false);
+
+  useEffect(() => {
+    const incoming = extractResetToken(initialToken);
+    if (incoming) {
+      setToken(incoming);
+      setStep('reset_password');
+      setTokenExpired(false);
+      setError(null);
+    }
+  }, [initialToken]);
 
   const clearSecrets = () => {
     setToken('');

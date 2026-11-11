@@ -96,6 +96,12 @@ export function mapPasswordResetError(rawError: unknown): string {
   if (rawMsg.includes('RESET_TOKEN_INVALID_OR_EXPIRED')) {
     return 'O código ou link de recuperação é inválido, já foi usado ou expirou. Solicite um novo código.';
   }
+  if (rawMsg.includes('RESET_TOKEN_INVALID')) {
+    return 'Código inválido ou já utilizado.';
+  }
+  if (rawMsg.includes('RESET_TOKEN_EXPIRED')) {
+    return 'Este código expirou (validade de 15 minutos). Solicite um novo.';
+  }
   if (rawMsg.includes('RESET_PASSWORD_WEAK')) {
     return 'A nova senha é muito fraca. Use no mínimo 8 caracteres.';
   }
@@ -117,5 +123,9 @@ export function mapPasswordResetError(rawError: unknown): string {
 export function isResetTokenInvalidError(rawError: unknown): boolean {
   const rawMsg =
     typeof rawError === 'string' ? rawError : (rawError as any)?.message || '';
-  return rawMsg.includes('RESET_TOKEN_INVALID_OR_EXPIRED');
+  return (
+    rawMsg.includes('RESET_TOKEN_INVALID_OR_EXPIRED') ||
+    rawMsg.includes('RESET_TOKEN_INVALID') ||
+    rawMsg.includes('RESET_TOKEN_EXPIRED')
+  );
 }

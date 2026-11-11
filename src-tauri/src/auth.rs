@@ -965,6 +965,11 @@ pub async fn auth_confirm_password_reset(
 }
 
 #[tauri::command]
+pub fn auth_take_pending_reset_token() -> Option<String> {
+    crate::deeplink::take_pending_reset_token()
+}
+
+#[tauri::command]
 pub fn auth_cancel_google_login() {
     crate::oauth::cancel_google_flow();
 }
