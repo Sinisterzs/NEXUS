@@ -1,16 +1,21 @@
 use axum::{
-    extract::{Request, State},
+    extract::{rejection::JsonRejection, FromRequest, Request, State},
     http::StatusCode,
     Extension, Json,
 };
 
 use crate::errors::AppError;
+use crate::middleware::rate_limit::extract_client_ip;
 use crate::middleware::{extract_bearer_token, CurrentUser};
 use crate::models::{
-    AuthResponse, GoogleAuthRequest, GoogleLinkResponse, LoginRequest, MessageResponse,
-    RefreshResponse, RegisterRequest,
+    AuthResponse, ForgotPasswordRequest, GoogleAuthRequest, GoogleLinkResponse, LoginRequest,
+    MessageResponse, RefreshResponse, RegisterRequest, ResetPasswordRequest,
+    VerifyResetTokenRequest, VerifyResetTokenResponse,
 };
-use crate::services::AuthService;
+use crate::services::password_reset_policy::{
+    FORGOT_PASSWORD_GENERIC_MESSAGE, RESET_PASSWORD_SUCCESS_MESSAGE,
+};
+use crate::services::{AuthService, PasswordResetService};
 
 pub async fn register(
     State(service): State<AuthService>,
@@ -92,6 +97,56 @@ pub async fn google_link(
         .await?;
 
     Ok(Json(link_res))
+}
+
+// ==========================================
+// Password recovery (v0.2.5)
+// ==========================================
+
+fn invalid_body() -> AppError {
+    AppError::ValidationError("Corpo da requisição inválido.".to_string())
+}
+
+/// `POST /v1/auth/password/forgot` — always answers 200 with the uniform message
+/// (except HTTP 429 when the client IP exceeded its budget).
+pub async fn forgot_password(
+    State(service): State<PasswordResetService>,
+    request: Request,
+) -> Result<Json<MessageResponse>, AppError> {
+    let client_ip = extract_client_ip(&request, service.trust_proxy_headers());
+    let Json(payload) = Json::<ForgotPasswordRequest>::from_request(request, &())
+        .await
+        .map_err(|_| invalid_body())?;
+
+    service.forgot_password(&payload.email, client_ip).await?;
+
+    Ok(Json(MessageResponse {
+        message: FORGOT_PASSWORD_GENERIC_MESSAGE.to_string(),
+    }))
+}
+
+/// `POST /v1/auth/password/verify` — non-consuming validity check.
+pub async fn verify_reset_token(
+    State(service): State<PasswordResetService>,
+    payload: Result<Json<VerifyResetTokenRequest>, JsonRejection>,
+) -> Result<Json<VerifyResetTokenResponse>, AppError> {
+    let Json(payload) = payload.map_err(|_| invalid_body())?;
+    service.verify_token(&payload.token).await?;
+    Ok(Json(VerifyResetTokenResponse { valid: true }))
+}
+
+/// `POST /v1/auth/password/reset` — single-use token consumption + password update + session revocation.
+pub async fn reset_password(
+    State(service): State<PasswordResetService>,
+    payload: Result<Json<ResetPasswordRequest>, JsonRejection>,
+) -> Result<Json<MessageResponse>, AppError> {
+    let Json(payload) = payload.map_err(|_| invalid_body())?;
+    service
+        .reset_password(&payload.token, &payload.new_password)
+        .await?;
+    Ok(Json(MessageResponse {
+        message: RESET_PASSWORD_SUCCESS_MESSAGE.to_string(),
+    }))
 }
 
 pub async fn google_unlink(

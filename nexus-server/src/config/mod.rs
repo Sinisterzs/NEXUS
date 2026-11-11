@@ -181,6 +181,145 @@ impl AppConfig {
     }
 }
 
+// ==========================================
+// Transactional e-mail configuration (password recovery)
+// ==========================================
+//
+// Kept separate from `AppConfig` on purpose: `AppConfig` is constructed with
+// struct literals in several test suites, and this module must stay
+// dependency-free (std only) so offline security tests can include it directly.
+
+/// Default deep link used in password recovery e-mails (handled by the desktop client).
+pub const DEFAULT_PASSWORD_RESET_URL: &str = "nexus://reset-password";
+/// Default Resend API endpoint used when `NEXUS_EMAIL_PROVIDER=resend` and no URL override is given.
+pub const DEFAULT_RESEND_API_URL: &str = "https://api.resend.com/emails";
+/// Default sender identity when `NEXUS_EMAIL_FROM` is not configured.
+pub const DEFAULT_EMAIL_FROM: &str = "NEXUS <no-reply@nexus.local>";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailProviderKind {
+    /// Never sends anything (default). Requests still succeed with the uniform response.
+    Disabled,
+    /// Resend HTTP API (`POST /emails`, Bearer API key).
+    Resend,
+    /// Generic HTTPS webhook receiving a JSON payload (optional Bearer API key).
+    Webhook,
+    /// SMTP relay. Not compiled into this build (no SMTP client dependency);
+    /// treated as unavailable at runtime and reported at startup.
+    Smtp,
+}
+
+impl EmailProviderKind {
+    /// Parses `NEXUS_EMAIL_PROVIDER`. Unknown or empty values fail closed to `Disabled`.
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "resend" => EmailProviderKind::Resend,
+            "webhook" | "http" => EmailProviderKind::Webhook,
+            "smtp" => EmailProviderKind::Smtp,
+            _ => EmailProviderKind::Disabled,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EmailProviderKind::Disabled => "disabled",
+            EmailProviderKind::Resend => "resend",
+            EmailProviderKind::Webhook => "webhook",
+            EmailProviderKind::Smtp => "smtp",
+        }
+    }
+}
+
+/// E-mail provider configuration loaded from:
+/// `NEXUS_EMAIL_PROVIDER` (`resend` | `webhook` | `smtp` | `disabled`),
+/// `NEXUS_EMAIL_API_URL`, `NEXUS_EMAIL_API_KEY`, `NEXUS_EMAIL_FROM`,
+/// and optionally `NEXUS_PASSWORD_RESET_URL` (link base, default `nexus://reset-password`).
+#[derive(Clone, PartialEq, Eq)]
+pub struct EmailConfig {
+    pub provider: EmailProviderKind,
+    pub api_url: Option<String>,
+    pub api_key: Option<String>,
+    pub from: String,
+    pub reset_url_base: String,
+}
+
+impl std::fmt::Debug for EmailConfig {
+    // Never print the API key.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailConfig")
+            .field("provider", &self.provider)
+            .field("api_url", &self.api_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "***"))
+            .field("from", &self.from)
+            .field("reset_url_base", &self.reset_url_base)
+            .finish()
+    }
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+impl EmailConfig {
+    pub fn disabled() -> Self {
+        Self {
+            provider: EmailProviderKind::Disabled,
+            api_url: None,
+            api_key: None,
+            from: DEFAULT_EMAIL_FROM.to_string(),
+            reset_url_base: DEFAULT_PASSWORD_RESET_URL.to_string(),
+        }
+    }
+
+    pub fn from_env() -> Self {
+        Self::from_lookup(|key| env::var(key).ok())
+    }
+
+    /// Builds the configuration from an arbitrary key lookup (testable without touching process env).
+    pub fn from_lookup<F>(lookup: F) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let get = |key: &str| {
+            lookup(key)
+                .map(|v| v.trim().trim_matches('"').trim_matches('\'').trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+
+        let provider = get("NEXUS_EMAIL_PROVIDER")
+            .map(|p| EmailProviderKind::parse(&p))
+            .unwrap_or(EmailProviderKind::Disabled);
+
+        let mut api_url = get("NEXUS_EMAIL_API_URL");
+        if api_url.is_none() && provider == EmailProviderKind::Resend {
+            api_url = Some(DEFAULT_RESEND_API_URL.to_string());
+        }
+
+        Self {
+            provider,
+            api_url,
+            api_key: get("NEXUS_EMAIL_API_KEY"),
+            from: get("NEXUS_EMAIL_FROM").unwrap_or_else(|| DEFAULT_EMAIL_FROM.to_string()),
+            reset_url_base: get("NEXUS_PASSWORD_RESET_URL")
+                .unwrap_or_else(|| DEFAULT_PASSWORD_RESET_URL.to_string()),
+        }
+    }
+
+    /// Returns a human-readable reason when the selected provider cannot deliver mail.
+    /// Never includes secrets.
+    pub fn delivery_problem(&self) -> Option<&'static str> {
+        match self.provider {
+            EmailProviderKind::Disabled => Some("NEXUS_EMAIL_PROVIDER=disabled: password recovery e-mails will NOT be sent"),
+            EmailProviderKind::Smtp => Some("NEXUS_EMAIL_PROVIDER=smtp is not supported by this build; use 'resend' or 'webhook'. E-mails will NOT be sent"),
+            EmailProviderKind::Resend if self.api_key.is_none() => Some("NEXUS_EMAIL_PROVIDER=resend requires NEXUS_EMAIL_API_KEY. E-mails will NOT be sent"),
+            EmailProviderKind::Webhook if self.api_url.is_none() => Some("NEXUS_EMAIL_PROVIDER=webhook requires NEXUS_EMAIL_API_URL. E-mails will NOT be sent"),
+            _ => None,
+        }
+    }
+}
+
 /// Detects the IPv4 address assigned to the Tailscale interface on this host.
 pub fn detect_tailscale_ip() -> Option<String> {
     // 1. Runtime environment variable

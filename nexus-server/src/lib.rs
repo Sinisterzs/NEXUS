@@ -29,6 +29,10 @@ pub fn create_app_with_identity(pool: PgPool, config: AppConfig, identity: Serve
     let presence_mgr = PresenceManager::new(friend_repo.clone());
     let auth_service = AuthService::new(user_repo.clone(), session_repo, config.clone())
         .with_presence_manager(presence_mgr.clone());
+    auth_service
+        .password_reset_service()
+        .email_service()
+        .log_startup_status();
 
     let friend_service = FriendService::new(friend_repo.clone(), presence_mgr.clone());
 

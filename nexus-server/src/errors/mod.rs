@@ -47,6 +47,12 @@ pub enum AppError {
     #[error("Não é possível desvincular a única forma de autenticação da conta. Defina uma senha antes.")]
     CannotUnlinkLastAuthMethod,
 
+    #[error("Link ou código de recuperação inválido ou expirado. Solicite uma nova recuperação de senha.")]
+    ResetTokenInvalidOrExpired,
+
+    #[error("{0}")]
+    ResetPasswordWeak(String),
+
     #[error("Recurso não encontrado: {0}")]
     NotFound(String),
 
@@ -93,6 +99,8 @@ impl AppError {
             AppError::GoogleIdentityNotLinked => "GOOGLE_IDENTITY_NOT_LINKED",
             AppError::OAuthEmailNotVerified => "OAUTH_EMAIL_NOT_VERIFIED",
             AppError::CannotUnlinkLastAuthMethod => "CANNOT_UNLINK_LAST_AUTH_METHOD",
+            AppError::ResetTokenInvalidOrExpired => "RESET_TOKEN_INVALID_OR_EXPIRED",
+            AppError::ResetPasswordWeak(_) => "RESET_PASSWORD_WEAK",
             AppError::NotFound(_) => "NOT_FOUND",
             AppError::BadRequest(_) => "BAD_REQUEST",
             AppError::Forbidden(_) => "FORBIDDEN",
@@ -115,6 +123,8 @@ impl AppError {
             AppError::AccountConflictEmailExists | AppError::GoogleIdentityNotLinked => StatusCode::CONFLICT,
             AppError::OAuthEmailNotVerified => StatusCode::BAD_REQUEST,
             AppError::CannotUnlinkLastAuthMethod => StatusCode::BAD_REQUEST,
+            AppError::ResetTokenInvalidOrExpired => StatusCode::BAD_REQUEST,
+            AppError::ResetPasswordWeak(_) => StatusCode::BAD_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,

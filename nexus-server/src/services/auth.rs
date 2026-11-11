@@ -17,7 +17,9 @@ use crate::models::{
     UpdateProfileRequest, UserProfileResponse,
 };
 use crate::repositories::{SessionRepository, UserRepository};
+use crate::services::email::EmailService;
 use crate::services::google_oauth::GoogleOAuthVerifier;
+use crate::services::password_reset::PasswordResetService;
 use crate::services::presence::PresenceManager;
 
 // Dummy Argon2 hash used for constant-time mitigation when user is not found
@@ -30,6 +32,7 @@ pub struct AuthService {
     config: AppConfig,
     google_verifier: GoogleOAuthVerifier,
     presence_mgr: Option<PresenceManager>,
+    password_reset: PasswordResetService,
 }
 
 pub use crate::errors::email_conflict_error;
@@ -37,16 +40,23 @@ pub use crate::errors::email_conflict_error;
 impl AuthService {
     pub fn new(user_repo: UserRepository, session_repo: SessionRepository, config: AppConfig) -> Self {
         let google_verifier = GoogleOAuthVerifier::new(config.clone());
+        let email_service = EmailService::from_env();
+        let password_reset = PasswordResetService::new(user_repo.pool().clone(), email_service)
+            .with_trust_proxy_headers(config.trust_proxy_headers);
         Self {
             user_repo,
             session_repo,
             config,
             google_verifier,
             presence_mgr: None,
+            password_reset,
         }
     }
 
     pub fn with_presence_manager(mut self, presence_mgr: PresenceManager) -> Self {
+        self.password_reset = self
+            .password_reset
+            .with_presence_manager(presence_mgr.clone());
         self.presence_mgr = Some(presence_mgr);
         self
     }
@@ -54,6 +64,20 @@ impl AuthService {
     pub fn with_google_verifier(mut self, verifier: GoogleOAuthVerifier) -> Self {
         self.google_verifier = verifier;
         self
+    }
+
+    pub fn with_email_service(mut self, email_service: EmailService) -> Self {
+        let mut reset = PasswordResetService::new(self.user_repo.pool().clone(), email_service)
+            .with_trust_proxy_headers(self.config.trust_proxy_headers);
+        if let Some(ref pm) = self.presence_mgr {
+            reset = reset.with_presence_manager(pm.clone());
+        }
+        self.password_reset = reset;
+        self
+    }
+
+    pub fn password_reset_service(&self) -> PasswordResetService {
+        self.password_reset.clone()
     }
 
     pub fn pool(&self) -> &sqlx::PgPool {

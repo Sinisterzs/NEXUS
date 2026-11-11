@@ -98,10 +98,24 @@ pub fn create_router_with_identity(
             )),
         );
 
+    let password_reset_routes = Router::new()
+        .route("/password/forgot", post(handlers::auth::forgot_password))
+        .route(
+            "/password/verify",
+            post(handlers::auth::verify_reset_token),
+        )
+        .route("/password/reset", post(handlers::auth::reset_password))
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter.clone(),
+            rate_limit_layer,
+        ))
+        .with_state(auth_service.password_reset_service());
+
     let auth_routes = Router::new()
         .merge(auth_public_routes)
         .merge(auth_protected_routes)
-        .with_state(auth_service.clone());
+        .with_state(auth_service.clone())
+        .merge(password_reset_routes);
 
     let users_state = UsersState {
         auth_service: auth_service.clone(),

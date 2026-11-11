@@ -130,6 +130,53 @@ pub struct MessageResponse {
     pub message: String,
 }
 
+// ==========================================
+// Password recovery DTOs (v0.2.5)
+// Debug impls redact e-mails, tokens and passwords.
+// ==========================================
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+}
+
+impl std::fmt::Debug for ForgotPasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForgotPasswordRequest").field("email", &"<redacted>").finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct VerifyResetTokenRequest {
+    pub token: String,
+}
+
+impl std::fmt::Debug for VerifyResetTokenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifyResetTokenRequest").field("token", &"<redacted>").finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyResetTokenResponse {
+    pub valid: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub new_password: String,
+}
+
+impl std::fmt::Debug for ResetPasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResetPasswordRequest")
+            .field("token", &"<redacted>")
+            .field("new_password", &"<redacted>")
+            .finish()
+    }
+}
+
 fn default_service_name() -> String {
     "nexus-server".to_string()
 }
