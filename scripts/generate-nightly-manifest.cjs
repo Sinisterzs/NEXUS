@@ -17,6 +17,10 @@ if (!version) {
   console.error('[ERRO] Uso: node generate-nightly-manifest.cjs <version> [notes]');
   process.exit(1);
 }
+if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-nightly\.(0|[1-9]\d*)$/.test(version)) {
+  console.error('[ERRO] Este gerador aceita somente X.Y.Z-nightly.N.');
+  process.exit(1);
+}
 
 const rootDir = path.resolve(__dirname, '..');
 const nsisDir = path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle', 'nsis');
@@ -27,19 +31,24 @@ if (!fs.existsSync(nsisDir)) {
 }
 
 const files = fs.readdirSync(nsisDir);
-const exeFile = files.find((f) => f.endsWith('-setup.exe'));
-if (!exeFile) {
-  console.error('[ERRO] Nenhum instalador *-setup.exe encontrado em:', nsisDir);
+const installers = files.filter((f) => f.includes(`_${version}_`) && f.endsWith('-setup.exe'));
+if (installers.length !== 1) {
+  console.error('[ERRO] Esperado exatamente um instalador da versão solicitada em:', nsisDir);
   process.exit(1);
 }
+const exeFile = installers[0];
 
-const sigFile = files.find((f) => f === `${exeFile}.sig` || (f.endsWith('.sig') && f.includes('-setup.exe')));
+const sigFile = files.find((f) => f === `${exeFile}.sig`);
 if (!sigFile) {
   console.error(`[ERRO] Assinatura .sig não encontrada para o instalador: ${exeFile}`);
   process.exit(1);
 }
 
 const signature = fs.readFileSync(path.join(nsisDir, sigFile), 'utf8').trim();
+if (!signature) {
+  console.error('[ERRO] Assinatura vazia; manifesto não gerado.');
+  process.exit(1);
+}
 const tag = `v${version}`;
 const downloadUrl = `https://github.com/${owner}/${repo}/releases/download/${tag}/${exeFile}`;
 

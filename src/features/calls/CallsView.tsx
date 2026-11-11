@@ -25,6 +25,8 @@ import {
   GripHorizontal,
   Sparkles,
   X,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
 import { callService } from '../../services/CallService';
@@ -32,15 +34,54 @@ import { audioDeviceService, AudioDeviceInfo } from '../../services/AudioDeviceS
 import { WebRtcTransportDiagnostics } from '../../services/WebRtcService';
 import { callHistoryRepository, CallHistoryEntry } from '../../repositories/CallHistoryRepository';
 import { ScreenShareQualityPreset } from '../../lib/types';
+import { SCREEN_CAPTURE_SELECTION_NOTICE } from '../../lib/screenCapturePolicy';
 import { Avatar } from '../../components/Avatar';
 import { Tooltip } from '../../components/Tooltip';
 import { EmptyState } from '../../components/EmptyState';
+import {
+  CallLayoutMode,
+  CALL_LAYOUT_PRESETS,
+} from '../../lib/callsLayout';
 
 function formatDuration(totalSeconds: number): string {
   const mins = Math.floor(totalSeconds / 60);
   const secs = totalSeconds % 60;
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
+
+/**
+ * Subcomponente isolado e memoizado para o cronômetro da chamada.
+ * Evita que o CallsView inteiro (~1500 linhas) sofra re-render a cada 1 segundo (Problem 4).
+ */
+const CallDurationBadge: React.FC<{
+  voiceCallState: string;
+  reconnectAttempt: number;
+  maxReconnectAttempts: number;
+}> = React.memo(({ voiceCallState, reconnectAttempt, maxReconnectAttempts }) => {
+  const callDurationSecs = useAppStore((state) => state.callDurationSecs);
+  return (
+    <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-nexus-panel border border-nexus-border text-[11px] font-mono select-none">
+      <span
+        className={`w-2 h-2 rounded-full ${
+          voiceCallState === 'reconnecting'
+            ? 'bg-amber-400 animate-ping'
+            : 'bg-emerald-500 animate-pulse'
+        }`}
+      />
+      <span
+        className={
+          voiceCallState === 'reconnecting'
+            ? 'text-amber-400 font-bold'
+            : 'text-emerald-400 font-bold'
+        }
+      >
+        {voiceCallState === 'reconnecting'
+          ? `Reconectando (${Math.max(1, reconnectAttempt)}/${maxReconnectAttempts})...`
+          : formatDuration(callDurationSecs)}
+      </span>
+    </div>
+  );
+});
 
 function formatHistoryTimestamp(timestamp: number): string {
   const date = new Date(timestamp);
@@ -87,7 +128,6 @@ export const CallsView: React.FC = () => {
   const voiceCallState = useAppStore((state) => state.voiceCallState);
   const activeCallPeer = useAppStore((state) => state.activeCallPeer);
   const incomingCall = useAppStore((state) => state.incomingCall);
-  const callDurationSecs = useAppStore((state) => state.callDurationSecs);
   const isMicMuted = useAppStore((state) => state.isMicMuted);
   const isDeafened = useAppStore((state) => state.isDeafened);
   const isLocalSpeaking = useAppStore((state) => state.isLocalSpeaking);
@@ -103,6 +143,10 @@ export const CallsView: React.FC = () => {
   const onlineUser = useAppStore((state) => state.onlineUser);
   const authStatus = useAppStore((state) => state.authStatus);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
+  const isSidebarCollapsed = useAppStore((state) => state.isSidebarCollapsed);
+  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+  const callLayoutMode = useAppStore((state) => state.callLayoutMode);
+  const setCallLayoutMode = useAppStore((state) => state.setCallLayoutMode);
   const settings = useAppStore((state) => state.settings);
   const updateAudioVideo = useAppStore((state) => state.updateAudioVideo);
   const setParticipantVolume = useAppStore((state) => state.setParticipantVolume);
@@ -117,8 +161,8 @@ export const CallsView: React.FC = () => {
   const screenShareQuality = useAppStore((state) => state.screenShareQuality);
   const screenEffectiveWidth = useAppStore((state) => state.screenEffectiveWidth);
   const screenEffectiveHeight = useAppStore((state) => state.screenEffectiveHeight);
-  const screenEffectiveFps = useAppStore((state) => state.screenEffectiveFps);
   const screenQualityFallbackNotice = useAppStore((state) => state.screenQualityFallbackNotice);
+  const screenCaptureNotice = useAppStore((state) => state.screenCaptureNotice);
   const toggleScreenShare = useAppStore((state) => state.toggleScreenShare);
   const stopScreenShare = useAppStore((state) => state.stopScreenShare);
   const clearScreenShareError = useAppStore((state) => state.clearScreenShareError);
@@ -181,17 +225,26 @@ export const CallsView: React.FC = () => {
     };
   }, []);
 
-  // Polling leve de diagnósticos APENAS quando o painel está aberto e a chamada ativa
+  // Polling leve e adaptativo de telemetria WebRTC: a cada 2s quando transmissão está no palco ou diagnósticos abertos
   useEffect(() => {
-    if (!showDiagnostics || (voiceCallState !== 'connected' && voiceCallState !== 'reconnecting')) {
+    if (voiceCallState !== 'connected' && voiceCallState !== 'reconnecting') {
+      return;
+    }
+
+    const shouldPoll = showDiagnostics || hasAnyScreenStage;
+    if (!shouldPoll) {
       return;
     }
 
     let cancelled = false;
     const pollStats = async () => {
-      const stats = await callService.getTransportDiagnostics();
-      if (!cancelled) {
-        setDiagnostics(stats);
+      try {
+        const stats = await callService.getTransportDiagnostics();
+        if (!cancelled && stats) {
+          setDiagnostics(stats);
+        }
+      } catch {
+        // Ignora erros transitórios de coleta
       }
     };
 
@@ -201,7 +254,16 @@ export const CallsView: React.FC = () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [showDiagnostics, voiceCallState]);
+  }, [showDiagnostics, hasAnyScreenStage, voiceCallState]);
+
+  const handleModeSelect = useCallback((mode: CallLayoutMode) => {
+    setCallLayoutMode(mode);
+    const preset = CALL_LAYOUT_PRESETS[mode];
+    setCallStageSplitRatio(preset.ratio);
+    if (mode === 'cinema' && !isSidebarCollapsed) {
+      setSidebarCollapsed(true);
+    }
+  }, [setCallLayoutMode, setCallStageSplitRatio, isSidebarCollapsed, setSidebarCollapsed]);
 
   // Atualiza elemento HTML5 video com a faixa remota de vídeo
   useEffect(() => {
@@ -650,27 +712,12 @@ export const CallsView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Status Badge & Duration */}
-          <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-nexus-panel border border-nexus-border text-[11px] font-mono">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                voiceCallState === 'reconnecting'
-                  ? 'bg-amber-400 animate-ping'
-                  : 'bg-emerald-500 animate-pulse'
-              }`}
-            />
-            <span
-              className={
-                voiceCallState === 'reconnecting'
-                  ? 'text-amber-400 font-bold'
-                  : 'text-emerald-400 font-bold'
-              }
-            >
-              {voiceCallState === 'reconnecting'
-                ? `Reconectando (${Math.max(1, reconnectAttempt)}/${maxReconnectAttempts})...`
-                : formatDuration(callDurationSecs)}
-            </span>
-          </div>
+          {/* Status Badge & Duration (Isolado para performance) */}
+          <CallDurationBadge
+            voiceCallState={voiceCallState}
+            reconnectAttempt={reconnectAttempt}
+            maxReconnectAttempts={maxReconnectAttempts}
+          />
 
           {/* Toggle Diagnósticos de Mídia */}
           <Tooltip content="Diagnósticos de Rede e Mídia WebRTC" position="bottom">
@@ -721,7 +768,8 @@ export const CallsView: React.FC = () => {
               </button>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {/* Card 1: Estado / Rota ICE */}
               <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
                 <span className="text-[9px] text-nexus-muted uppercase font-mono block">
                   Estado / Rota ICE
@@ -733,28 +781,22 @@ export const CallsView: React.FC = () => {
                 </span>
               </div>
 
+              {/* Card 2: RTT & Jitter */}
               <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
                 <span className="text-[9px] text-nexus-muted uppercase font-mono block">
-                  RTT (Ida e Volta)
+                  RTT & Jitter
                 </span>
                 <span className="text-xs font-mono font-bold text-nexus-text block mt-0.5">
                   {diagnostics?.rttMs !== null && diagnostics?.rttMs !== undefined
                     ? `${diagnostics.rttMs} ms`
                     : '—'}
-                </span>
-              </div>
-
-              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
-                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
-                  Jitter de Áudio
-                </span>
-                <span className="text-xs font-mono font-bold text-nexus-text block mt-0.5">
                   {diagnostics?.jitterMs !== null && diagnostics?.jitterMs !== undefined
-                    ? `${diagnostics.jitterMs} ms`
-                    : '—'}
+                    ? ` • Jitter: ${diagnostics.jitterMs} ms`
+                    : ''}
                 </span>
               </div>
 
+              {/* Card 3: Perda de Pacotes & Quedas */}
               <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
                 <span className="text-[9px] text-nexus-muted uppercase font-mono block">
                   Perda de Pacotes
@@ -767,9 +809,13 @@ export const CallsView: React.FC = () => {
                   {diagnostics
                     ? `${diagnostics.packetLossPercent ?? 0}% (${diagnostics.packetsLostInbound} pkts)`
                     : '—'}
+                  {(diagnostics as any)?.framesDropped !== null && (diagnostics as any)?.framesDropped !== undefined
+                    ? ` • ${(diagnostics as any).framesDropped} qdrs`
+                    : ''}
                 </span>
               </div>
 
+              {/* Card 4: Bitrate (Áudio / Vídeo) */}
               <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
                 <span className="text-[9px] text-nexus-muted uppercase font-mono block">
                   Bitrate (Áudio / Vídeo)
@@ -778,19 +824,99 @@ export const CallsView: React.FC = () => {
                   {diagnostics
                     ? `${diagnostics.audioBitrateKbps ?? 0} / ${diagnostics.videoBitrateKbps ?? 0} kbps`
                     : '—'}
+                  {(diagnostics as any)?.bitrateRampStage && (diagnostics as any).bitrateRampStage !== 'idle'
+                    ? ` (${(diagnostics as any).bitrateRampStage})`
+                    : ''}
                 </span>
               </div>
 
+              {/* Card 5: Resoluções Multi-Estágio */}
               <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
                 <span className="text-[9px] text-nexus-muted uppercase font-mono block">
-                  Vídeo Efetivo
+                  Resoluções (Ped / Cap / Env / Rec)
                 </span>
                 <span className="text-xs font-mono font-bold text-nexus-text truncate block mt-0.5">
-                  {diagnostics?.videoWidth && diagnostics?.videoHeight
-                    ? `${diagnostics.videoWidth}x${diagnostics.videoHeight} @ ${diagnostics.videoFps ?? 0}fps`
-                    : screenEffectiveWidth && screenEffectiveHeight
-                    ? `${screenEffectiveWidth}x${screenEffectiveHeight} @ ${screenEffectiveFps ?? 30}fps`
-                    : 'Somente Voz'}
+                  {(() => {
+                    const d = diagnostics as any;
+                    const req = d?.requestedWidth ? `${d.requestedWidth}x${d.requestedHeight}` : null;
+                    const cap = d?.capturedWidth ? `${d.capturedWidth}x${d.capturedHeight}` : screenEffectiveWidth ? `${screenEffectiveWidth}x${screenEffectiveHeight}` : null;
+                    const enc = d?.encodedWidth ? `${d.encodedWidth}x${d.encodedHeight}` : null;
+                    const rec = d?.receivedWidth ? `${d.receivedWidth}x${d.receivedHeight}` : diagnostics?.videoWidth ? `${diagnostics.videoWidth}x${diagnostics.videoHeight}` : null;
+
+                    if (!cap && !rec) return 'Somente Voz';
+                    return [
+                      req && `Ped: ${req}`,
+                      cap && `Cap: ${cap}`,
+                      enc && `Env: ${enc}`,
+                      rec && `Rec: ${rec}`,
+                    ]
+                      .filter(Boolean)
+                      .join(' • ') || '—';
+                  })()}
+                </span>
+              </div>
+
+              {/* Card 6: FPS Separados (Captura / Envio / Recepção / Renderização) */}
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  FPS Separados (Cap / Env / Rec / Dec)
+                </span>
+                <span className="text-xs font-mono font-bold text-emerald-400 truncate block mt-0.5">
+                  {(() => {
+                    const d = diagnostics as any;
+                    const cap = d?.capturedFps ?? null;
+                    const sent = d?.sentFps ?? d?.encodedFps ?? null;
+                    const rec = d?.receivedFps ?? null;
+                    const dec = d?.decodedFps ?? null;
+                    const eff = d?.videoFps ?? null;
+
+                    if (cap === null && sent === null && rec === null && dec === null && eff === null) {
+                      return hasAnyScreenStage ? 'Medindo FPS...' : 'Somente Voz';
+                    }
+
+                    const items = [
+                      cap !== null && `Cap: ${Math.round(cap)}`,
+                      sent !== null && `Env: ${Math.round(sent)}`,
+                      rec !== null && `Rec: ${Math.round(rec)}`,
+                      dec !== null && `Dec: ${Math.round(dec)}`,
+                      eff !== null && `Efet: ${Math.round(eff)}`,
+                    ].filter(Boolean);
+
+                    return items.join(' | ') || 'Medindo...';
+                  })()}
+                </span>
+              </div>
+
+              {/* Card 7: Codec & Aceleração */}
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  Codec & Aceleração
+                </span>
+                <span className="text-xs font-mono font-bold text-nexus-text truncate block mt-0.5">
+                  {(() => {
+                    const d = diagnostics as any;
+                    const codec = d?.videoCodec || (hasAnyScreenStage ? 'H.264 / VP8' : 'Opus Áudio');
+                    const hw = d?.powerEfficientEncoder ? ' • GPU/HW' : '';
+                    const impl = d?.encoderImplementation ? ` (${d.encoderImplementation})` : '';
+                    return `${codec}${hw}${impl}`;
+                  })()}
+                </span>
+              </div>
+
+              {/* Card 8: Limitação de Qualidade */}
+              <div className="p-2 rounded-lg bg-nexus-surface border border-nexus-border">
+                <span className="text-[9px] text-nexus-muted uppercase font-mono block">
+                  Adaptação / Limitação
+                </span>
+                <span className="text-xs font-mono font-bold text-nexus-text truncate block mt-0.5">
+                  {(() => {
+                    const d = diagnostics as any;
+                    const reason = d?.qualityLimitationReason || 'none';
+                    if (reason === 'none') return 'Sem restrições (ideal)';
+                    if (reason === 'cpu') return 'Limitado por CPU';
+                    if (reason === 'bandwidth') return 'Limitado por banda';
+                    return `Restrição: ${reason}`;
+                  })()}
                 </span>
               </div>
             </div>
@@ -799,7 +925,7 @@ export const CallsView: React.FC = () => {
       )}
 
       {/* Avisos de Fallback de Dispositivo / Qualidade / Erro de Captura */}
-      {(callDeviceNotice || screenQualityFallbackNotice || screenShareError) && (
+      {(callDeviceNotice || screenQualityFallbackNotice || screenCaptureNotice || screenShareError) && (
         <div className="px-6 pt-3 space-y-2 shrink-0 z-10 max-w-5xl w-full mx-auto">
           {callDeviceNotice && (
             <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300 font-mono">
@@ -814,6 +940,12 @@ export const CallsView: React.FC = () => {
               >
                 <X className="w-3.5 h-3.5" />
               </button>
+            </div>
+          )}
+
+          {screenCaptureNotice && (
+            <div role="status" className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200">
+              {screenCaptureNotice}
             </div>
           )}
 
@@ -847,7 +979,11 @@ export const CallsView: React.FC = () => {
       {/* Main Call Stage — Redimensionável quando há transmissão ativa */}
       <div
         ref={stageAreaRef}
-        className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 pb-24 overflow-y-auto min-h-0"
+        className={`flex-1 flex flex-col items-center justify-center min-h-0 overflow-y-auto ${
+          callLayoutMode === 'cinema' && hasAnyScreenStage && !isFullscreen
+            ? 'p-1 sm:p-2 pb-2'
+            : 'p-4 sm:p-6 pb-24'
+        }`}
       >
         {hasAnyScreenStage && (
           <div
@@ -855,6 +991,12 @@ export const CallsView: React.FC = () => {
             style={
               isFullscreen
                 ? undefined
+                : callLayoutMode === 'cinema'
+                ? {
+                    height: '100%',
+                    width: '100%',
+                    maxHeight: '100%',
+                  }
                 : {
                     height: `${stageSplitRatio}%`,
                     minHeight: '240px',
@@ -864,6 +1006,10 @@ export const CallsView: React.FC = () => {
             className={
               isFullscreen
                 ? 'fixed inset-0 z-50 bg-black flex flex-col animate-fadeIn'
+                : callLayoutMode === 'cinema'
+                ? 'w-full h-full flex-1 min-h-0 bg-black/95 border border-white/10 rounded-xl overflow-hidden shadow-2xl flex flex-col relative transition-all duration-200'
+                : callLayoutMode === 'balanced'
+                ? 'w-full max-w-6xl bg-nexus-surface/95 border border-nexus-border rounded-2xl overflow-hidden shadow-2xl flex flex-col shrink-0 transition-colors'
                 : 'w-full max-w-5xl bg-nexus-surface/95 border border-nexus-border rounded-2xl overflow-hidden shadow-2xl flex flex-col shrink-0 transition-colors'
             }
           >
@@ -935,31 +1081,52 @@ export const CallsView: React.FC = () => {
                 )}
               </div>
 
-              {/* Controles de Proporção do Palco, Qualidade e Tela Cheia */}
+              {/* Controles de Modos (Compacto / Equilibrado / Cinema), Barra Lateral e Tela Cheia */}
               <div className="flex items-center gap-1.5">
                 {!isFullscreen && (
-                  <div className="hidden md:flex items-center gap-1 bg-nexus-bg px-1.5 py-0.5 rounded-lg border border-nexus-border mr-1">
-                    {(
-                      [
-                        { label: 'Compacto', ratio: 45 },
-                        { label: 'Equilibrado', ratio: 65 },
-                        { label: 'Cinema', ratio: 80 },
-                      ] as const
-                    ).map((preset) => (
-                      <button
-                        key={preset.label}
-                        onClick={() => setCallStageSplitRatio(preset.ratio)}
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
-                          Math.abs(stageSplitRatio - preset.ratio) <= 5
-                            ? 'bg-nexus-panel text-nexus-text font-bold'
-                            : 'text-nexus-muted hover:text-nexus-text'
-                        }`}
-                        title={`Ajustar proporção do palco para ${preset.ratio}%`}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
+                  <div className="flex items-center gap-1 bg-nexus-bg px-1.5 py-0.5 rounded-lg border border-nexus-border mr-1">
+                    {(['compact', 'balanced', 'cinema'] as const).map((modeKey) => {
+                      const preset = CALL_LAYOUT_PRESETS[modeKey];
+                      const isSelected = callLayoutMode === modeKey;
+                      return (
+                        <button
+                          key={modeKey}
+                          type="button"
+                          onClick={() => handleModeSelect(modeKey)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-nexus-panel text-nexus-text font-bold shadow-xs'
+                              : 'text-nexus-muted hover:text-nexus-text'
+                          }`}
+                          title={`${preset.label}: ${preset.description}`}
+                          aria-pressed={isSelected}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
                   </div>
+                )}
+
+                {/* Alternador rápido de barra lateral no modo cinema */}
+                {callLayoutMode === 'cinema' && !isFullscreen && (
+                  <Tooltip
+                    content={isSidebarCollapsed ? 'Expandir barra lateral' : 'Recolher barra lateral'}
+                    position="bottom"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setSidebarCollapsed(!isSidebarCollapsed)}
+                      className="p-1 rounded-lg bg-nexus-panel hover:bg-nexus-border text-nexus-muted hover:text-nexus-text border border-nexus-border transition-colors cursor-pointer"
+                      aria-label="Alternar barra lateral"
+                    >
+                      {isSidebarCollapsed ? (
+                        <PanelLeftOpen className="w-3.5 h-3.5 text-nexus-accent" />
+                      ) : (
+                        <PanelLeftClose className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </Tooltip>
                 )}
 
                 {isScreenSharing && (
@@ -1027,59 +1194,160 @@ export const CallsView: React.FC = () => {
                 />
               ) : null}
 
-              {/* Badge de Resolução e FPS Efetivos */}
-              <div className="absolute bottom-2.5 right-2.5 px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur text-[10px] text-zinc-200 font-mono border border-white/10 flex items-center gap-1.5">
+              {/* Strip de Participantes Compacta em Modo Cinema */}
+              {callLayoutMode === 'cinema' && !isFullscreen && (
+                <div className="absolute top-3 right-3 z-30 flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-black/65 backdrop-blur-md border border-white/10 shadow-lg select-none">
+                  <div className="flex items-center gap-1.5">
+                    <Avatar
+                      name={currentUser?.displayName || currentUser?.username || 'Você'}
+                      size="xs"
+                      className={isLocalSpeaking && !isMicMuted ? 'ring-2 ring-emerald-500' : ''}
+                    />
+                    <span className="text-[10px] font-bold text-zinc-300 max-w-[80px] truncate">
+                      {currentUser?.displayName || currentUser?.username || 'Você'}
+                    </span>
+                  </div>
+                  <span className="text-zinc-600">|</span>
+                  <div className="flex items-center gap-1.5">
+                    <Avatar
+                      name={activeCallPeer?.name || 'Amigo'}
+                      size="xs"
+                      className={isRemoteSpeaking && !isPeerMuted ? 'ring-2 ring-emerald-500' : ''}
+                    />
+                    <span className="text-[10px] font-bold text-zinc-300 max-w-[80px] truncate">
+                      {activeCallPeer?.name || 'Amigo'}
+                    </span>
+                    {isPeerMuted && <MicOff className="w-2.5 h-2.5 text-rose-400" />}
+                  </div>
+                </div>
+              )}
+
+              {/* Badge de Resolução e FPS Separados */}
+              <div className="absolute bottom-2.5 right-2.5 px-2.5 py-1 rounded-lg bg-black/80 backdrop-blur text-[10px] text-zinc-200 font-mono border border-white/10 flex items-center gap-1.5 shadow-lg select-none">
                 <span>
-                  {showingLocalVideo && screenEffectiveWidth && screenEffectiveHeight
-                    ? `${screenEffectiveWidth}×${screenEffectiveHeight} • ${screenEffectiveFps || 30} FPS`
-                    : diagnostics?.videoWidth && diagnostics?.videoHeight
-                    ? `${diagnostics.videoWidth}×${diagnostics.videoHeight} • ${diagnostics.videoFps || 30} FPS`
-                    : `Preset: ${screenShareQuality.toUpperCase()}`}
+                  {(() => {
+                    const d = diagnostics as any;
+                    if (showingLocalVideo) {
+                      const w = screenEffectiveWidth || d?.videoWidth;
+                      const h = screenEffectiveHeight || d?.videoHeight;
+                      const cap = d?.capturedFps;
+                      const sent = d?.sentFps ?? d?.encodedFps;
+                      if (!w || !h) return `Preset: ${screenShareQuality.toUpperCase()}`;
+                      if (sent !== null && sent !== undefined) {
+                        return `${w}×${h} • Cap: ${cap !== null && cap !== undefined ? Math.round(cap) : '—'} | Env: ${Math.round(sent)} FPS`;
+                      }
+                      if (cap !== null && cap !== undefined) {
+                        return `${w}×${h} • Cap: ${Math.round(cap)} FPS`;
+                      }
+                      return `${w}×${h} • Medindo FPS...`;
+                    }
+
+                    if (showingRemoteVideo) {
+                      const w = d?.videoWidth;
+                      const h = d?.videoHeight;
+                      const dec = d?.decodedFps;
+                      const rec = d?.receivedFps;
+                      const eff = d?.videoFps;
+                      if (!w || !h) return 'Aguardando vídeo...';
+                      if (dec !== null && dec !== undefined) {
+                        return `${w}×${h} • ${Math.round(dec)} FPS (Dec)`;
+                      }
+                      if (rec !== null && rec !== undefined) {
+                        return `${w}×${h} • ${Math.round(rec)} FPS (Rec)`;
+                      }
+                      if (eff !== null && eff !== undefined) {
+                        return `${w}×${h} • ${Math.round(eff)} FPS`;
+                      }
+                      return `${w}×${h} • Medindo FPS...`;
+                    }
+
+                    return `Preset: ${screenShareQuality.toUpperCase()}`;
+                  })()}
                 </span>
               </div>
 
-              {/* Controles Flutuantes em Tela Cheia */}
-              {isFullscreen && (
-                <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 px-4 py-2 rounded-2xl bg-[#0b0d13]/90 backdrop-blur-md border border-white/15 shadow-2xl">
-                  <button
-                    onClick={() => callService.toggleMute()}
-                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
-                      isMicMuted
-                        ? 'bg-rose-600 text-white border-rose-500'
-                        : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border'
-                    }`}
-                    title={isMicMuted ? 'Ativar microfone' : 'Silenciar microfone'}
-                  >
-                    {isMicMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                  </button>
+              {/* Controles Flutuantes Discretos em Cinema ou Tela Cheia */}
+              {(isFullscreen || callLayoutMode === 'cinema') && (
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-[#0b0d13]/85 hover:bg-[#0b0d13]/95 backdrop-blur-md border border-white/15 shadow-2xl transition-all duration-200 select-none">
+                  <Tooltip content={isMicMuted ? 'Ativar microfone' : 'Silenciar'} position="top">
+                    <button
+                      onClick={() => callService.toggleMute()}
+                      className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                        isMicMuted
+                          ? 'bg-rose-600 text-white border-rose-500'
+                          : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border'
+                      }`}
+                    >
+                      {isMicMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                    </button>
+                  </Tooltip>
 
-                  <button
-                    onClick={() => callService.toggleDeafen()}
-                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
-                      isDeafened
-                        ? 'bg-rose-600 text-white border-rose-500'
-                        : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border'
-                    }`}
-                    title={isDeafened ? 'Ativar áudio' : 'Desativar áudio'}
-                  >
-                    <Headphones className="w-4 h-4" />
-                  </button>
+                  <Tooltip content={isDeafened ? 'Ativar áudio' : 'Desativar áudio'} position="top">
+                    <button
+                      onClick={() => callService.toggleDeafen()}
+                      className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                        isDeafened
+                          ? 'bg-rose-600 text-white border-rose-500'
+                          : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border'
+                      }`}
+                    >
+                      <Headphones className="w-4 h-4" />
+                    </button>
+                  </Tooltip>
 
-                  <button
-                    onClick={exitFullscreenCleanly}
-                    className="px-3 py-2 rounded-xl bg-nexus-panel hover:bg-nexus-border text-nexus-text border border-nexus-border text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  <Tooltip
+                    content={isScreenSharing ? 'Parar compartilhamento' : SCREEN_CAPTURE_SELECTION_NOTICE}
+                    position="top"
                   >
-                    <Minimize2 className="w-3.5 h-3.5" />
-                    <span>Reduzir (Esc)</span>
-                  </button>
+                    <button
+                      onClick={toggleScreenShare}
+                      disabled={isStartingScreenShare}
+                      className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                        isScreenSharing
+                          ? 'bg-nexus-accent text-white border-nexus-accent'
+                          : 'bg-nexus-panel border-nexus-border text-nexus-text hover:bg-nexus-border'
+                      }`}
+                    >
+                      {isStartingScreenShare ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-nexus-accent" />
+                      ) : isScreenSharing ? (
+                        <ScreenShareOff className="w-4 h-4" />
+                      ) : (
+                        <ScreenShare className="w-4 h-4" />
+                      )}
+                    </button>
+                  </Tooltip>
 
-                  <button
-                    onClick={handleEndCall}
-                    className="p-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white cursor-pointer"
-                    title="Desligar chamada"
-                  >
-                    <PhoneOff className="w-4 h-4" />
-                  </button>
+                  {!isFullscreen && (
+                    <Tooltip content="Restaurar modo normal" position="top">
+                      <button
+                        onClick={() => handleModeSelect('balanced')}
+                        className="px-2.5 py-1.5 rounded-xl bg-nexus-panel hover:bg-nexus-border text-nexus-text border border-nexus-border text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Minimize2 className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Restaurar</span>
+                      </button>
+                    </Tooltip>
+                  )}
+
+                  <Tooltip content={isFullscreen ? 'Sair da tela cheia (Esc)' : 'Tela cheia'} position="top">
+                    <button
+                      onClick={toggleFullscreen}
+                      className="p-2 rounded-xl bg-nexus-panel hover:bg-nexus-border text-nexus-text border border-nexus-border transition-all cursor-pointer"
+                    >
+                      {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                    </button>
+                  </Tooltip>
+
+                  <Tooltip content="Desligar" position="top">
+                    <button
+                      onClick={handleEndCall}
+                      disabled={isEnding}
+                      className="p-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white cursor-pointer transition-all active:scale-95 shadow-md shadow-rose-950/40"
+                    >
+                      <PhoneOff className="w-4 h-4" />
+                    </button>
+                  </Tooltip>
                 </div>
               )}
             </div>
@@ -1087,10 +1355,10 @@ export const CallsView: React.FC = () => {
         )}
 
         {/* Divisor Redimensionável (Splitter) entre Palco de Tela e Cards de Participantes */}
-        {hasAnyScreenStage && !isFullscreen && (
+        {hasAnyScreenStage && !isFullscreen && callLayoutMode !== 'cinema' && (
           <div
             onMouseDown={() => setIsDraggingSplitter(true)}
-            className="w-full max-w-5xl py-2 flex items-center justify-center cursor-row-resize group shrink-0"
+            className="w-full max-w-6xl py-2 flex items-center justify-center cursor-row-resize group shrink-0"
             title="Arraste para redimensionar o palco de transmissão"
           >
             <div className="w-24 h-1.5 rounded-full bg-nexus-border group-hover:bg-nexus-accent/70 transition-colors flex items-center justify-center">
@@ -1099,156 +1367,276 @@ export const CallsView: React.FC = () => {
           </div>
         )}
 
-        {/* Grid de Participantes (Local + Remoto com Controle Individual de Volume) */}
-        <div
-          className={`grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 w-full ${
-            hasAnyScreenStage ? 'max-w-5xl mt-1' : 'max-w-3xl'
-          }`}
-        >
-          {/* Tile 1: Usuário Local (Você) */}
-          <div
-            className={`bg-nexus-surface rounded-2xl border ${
-              hasAnyScreenStage ? 'p-4' : 'p-6'
-            } flex flex-col items-center justify-center relative shadow-sm transition-nexus ${
-              isLocalSpeaking && !isMicMuted
-                ? 'border-emerald-500 ring-2 ring-emerald-500/30'
-                : isMicMuted
-                ? 'border-rose-500/30 bg-rose-950/10'
-                : 'border-nexus-border'
-            }`}
-          >
-            <div className="relative mb-2.5">
-              <Avatar
-                name={currentUser?.displayName || currentUser?.username || 'Você'}
-                size={hasAnyScreenStage ? 'lg' : 'xl'}
-                className={isLocalSpeaking && !isMicMuted ? 'ring-2 ring-emerald-500' : ''}
-              />
-              {isMicMuted && (
-                <span className="absolute -bottom-1 -right-1 p-1 rounded-full bg-rose-600 text-white shadow-md border-2 border-nexus-surface">
-                  <MicOff className="w-3.5 h-3.5" />
+        {/* Participantes no Modo Equilibrado: Faixa Compacta para economizar altura vertical */}
+        {hasAnyScreenStage && !isFullscreen && callLayoutMode === 'balanced' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-6xl mt-1">
+            {/* Tile Local Compacto */}
+            <div
+              className={`p-3 rounded-xl bg-nexus-surface border flex items-center gap-3 transition-nexus shadow-xs ${
+                isLocalSpeaking && !isMicMuted
+                  ? 'border-emerald-500 ring-1 ring-emerald-500/30'
+                  : isMicMuted
+                  ? 'border-rose-500/30 bg-rose-950/10'
+                  : 'border-nexus-border'
+              }`}
+            >
+              <div className="relative shrink-0">
+                <Avatar
+                  name={currentUser?.displayName || currentUser?.username || 'Você'}
+                  size="sm"
+                  className={isLocalSpeaking && !isMicMuted ? 'ring-2 ring-emerald-500' : ''}
+                />
+                {isMicMuted && (
+                  <span className="absolute -bottom-1 -right-1 p-0.5 rounded-full bg-rose-600 text-white border border-nexus-surface">
+                    <MicOff className="w-2.5 h-2.5" />
+                  </span>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <span className="text-xs font-bold text-nexus-text block truncate">
+                  {currentUser?.displayName || currentUser?.username || 'Você'} (Você)
                 </span>
-              )}
+                <span
+                  className={`text-[10px] font-mono ${
+                    isMicMuted
+                      ? 'text-rose-400'
+                      : isLocalSpeaking
+                      ? 'text-emerald-400 font-bold'
+                      : 'text-nexus-muted'
+                  }`}
+                >
+                  {isMicMuted ? 'Microfone silenciado' : isLocalSpeaking ? 'Falando...' : 'Conectado'}
+                </span>
+              </div>
             </div>
 
-            <span className="text-xs font-bold text-nexus-text">
-              {currentUser?.displayName || currentUser?.username || 'Você'} (Você)
-            </span>
+            {/* Tile Remoto Compacto com Volume Integrado */}
+            <div
+              className={`p-3 rounded-xl bg-nexus-surface border flex items-center justify-between gap-3 transition-nexus shadow-xs ${
+                isRemoteSpeaking && !isPeerMuted
+                  ? 'border-emerald-500 ring-1 ring-emerald-500/30'
+                  : isPeerMuted
+                  ? 'border-rose-500/30 bg-rose-950/10'
+                  : 'border-nexus-border'
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="relative shrink-0">
+                  <Avatar
+                    name={activeCallPeer?.name || 'Amigo'}
+                    size="sm"
+                    className={isRemoteSpeaking && !isPeerMuted ? 'ring-2 ring-emerald-500' : ''}
+                  />
+                  {isPeerMuted && (
+                    <span className="absolute -bottom-1 -right-1 p-0.5 rounded-full bg-rose-600 text-white border border-nexus-surface">
+                      <MicOff className="w-2.5 h-2.5" />
+                    </span>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <span className="text-xs font-bold text-nexus-text block truncate">
+                    {activeCallPeer?.name || 'Amigo'}
+                  </span>
+                  <span
+                    className={`text-[10px] font-mono ${
+                      isPeerMuted
+                        ? 'text-rose-400'
+                        : isRemoteSpeaking
+                        ? 'text-emerald-400 font-bold'
+                        : 'text-nexus-muted'
+                    }`}
+                  >
+                    {isPeerMuted ? 'Amigo silenciado' : isRemoteSpeaking ? 'Falando...' : 'Conectado'}
+                  </span>
+                </div>
+              </div>
 
-            {isMicMuted ? (
-              <span className="mt-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-mono font-semibold flex items-center gap-1.5">
-                <MicOff className="w-3 h-3" />
-                <span>Microfone silenciado</span>
-              </span>
-            ) : (
-              <span
-                className={`text-[10px] mt-1.5 font-mono font-medium ${
-                  isLocalSpeaking ? 'text-emerald-400 font-bold' : 'text-nexus-muted'
-                }`}
-              >
-                {isLocalSpeaking ? 'Falando...' : 'Conectado'}
-              </span>
-            )}
-          </div>
-
-          {/* Tile 2: Participante Remoto + Volume Individual (0% a 200%) */}
-          <div
-            className={`bg-nexus-surface rounded-2xl border ${
-              hasAnyScreenStage ? 'p-4' : 'p-6'
-            } flex flex-col items-center justify-center relative shadow-sm transition-nexus ${
-              isRemoteSpeaking && !isPeerMuted
-                ? 'border-emerald-500 ring-2 ring-emerald-500/30'
-                : isPeerMuted
-                ? 'border-rose-500/30 bg-rose-950/10'
-                : 'border-nexus-border'
-            }`}
-          >
-            <div className="relative mb-2.5">
-              <Avatar
-                name={activeCallPeer?.name || 'Amigo'}
-                size={hasAnyScreenStage ? 'lg' : 'xl'}
-                className={isRemoteSpeaking && !isPeerMuted ? 'ring-2 ring-emerald-500' : ''}
-              />
-              {isPeerMuted && (
-                <span className="absolute -bottom-1 -right-1 p-1 rounded-full bg-rose-600 text-white shadow-md border-2 border-nexus-surface">
-                  <MicOff className="w-3.5 h-3.5" />
-                </span>
-              )}
-            </div>
-
-            <span className="text-xs font-bold text-nexus-text">
-              {activeCallPeer?.name || 'Amigo'}
-            </span>
-
-            {isPeerMuted ? (
-              <span className="mt-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-mono font-semibold flex items-center gap-1.5">
-                <MicOff className="w-3 h-3" />
-                <span>Silenciado pelo amigo</span>
-              </span>
-            ) : (
-              <span
-                className={`text-[10px] mt-1.5 font-mono font-medium ${
-                  isRemoteSpeaking ? 'text-emerald-400 font-bold' : 'text-nexus-muted'
-                }`}
-              >
-                {isRemoteSpeaking ? 'Falando...' : 'Conectado'}
-              </span>
-            )}
-
-            {/* Controle Individual de Volume do Participante (0% a 200%) */}
-            {peerId && (
-              <div className="w-full max-w-[240px] mt-3 pt-2.5 border-t border-nexus-border/60 flex flex-col gap-1">
-                <div className="flex items-center justify-between text-[10px] font-mono">
+              {/* Volume individual compacto */}
+              {peerId && (
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={() => handlePeerVolumeChange(peerVolume === 0 ? 100 : 0)}
-                    className="flex items-center gap-1 text-nexus-muted hover:text-nexus-text cursor-pointer"
-                    title={peerVolume === 0 ? 'Restaurar volume para 100%' : 'Silenciar participante localmente'}
+                    className="text-nexus-muted hover:text-nexus-text cursor-pointer"
+                    title={peerVolume === 0 ? 'Restaurar volume (100%)' : 'Silenciar amigo'}
                   >
                     {peerVolume === 0 ? (
                       <VolumeX className="w-3.5 h-3.5 text-rose-400" />
                     ) : (
                       <Volume2 className="w-3.5 h-3.5 text-nexus-accent" />
                     )}
-                    <span>Volume Individual</span>
                   </button>
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={`font-bold ${
-                        peerVolume > 100
-                          ? 'text-amber-400'
-                          : peerVolume === 0
-                          ? 'text-rose-400'
-                          : 'text-nexus-text'
-                      }`}
-                    >
-                      {peerVolume}%
-                    </span>
-                    {peerVolume !== 100 && (
-                      <button
-                        type="button"
-                        onClick={() => handlePeerVolumeChange(100)}
-                        className="text-[9px] px-1 py-0.2 rounded bg-nexus-panel hover:bg-nexus-border text-nexus-muted hover:text-nexus-text cursor-pointer"
-                        title="Redefinir para 100%"
-                      >
-                        100%
-                      </button>
-                    )}
-                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    step="5"
+                    value={peerVolume}
+                    onChange={(e) => handlePeerVolumeChange(Number(e.target.value))}
+                    aria-label={`Volume de ${activeCallPeer?.name || 'participante'}`}
+                    className="w-16 sm:w-20 h-1.5 accent-nexus-accent cursor-pointer"
+                  />
+                  <span className="text-[10px] font-mono font-bold text-nexus-text w-8 text-right">
+                    {peerVolume}%
+                  </span>
                 </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="200"
-                  step="5"
-                  value={peerVolume}
-                  onChange={(e) => handlePeerVolumeChange(Number(e.target.value))}
-                  aria-label={`Volume de ${activeCallPeer?.name || 'participante'}`}
-                  className="w-full h-1.5 accent-nexus-accent cursor-pointer"
-                />
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* Grid de Participantes Completo: Usado em Modo Compacto ou quando NÃO há transmissão ativa */}
+        {(!hasAnyScreenStage || callLayoutMode === 'compact') && (
+          <div
+            className={`grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 w-full ${
+              hasAnyScreenStage ? 'max-w-5xl mt-1' : 'max-w-3xl'
+            }`}
+          >
+            {/* Tile 1: Usuário Local (Você) */}
+            <div
+              className={`bg-nexus-surface rounded-2xl border ${
+                hasAnyScreenStage ? 'p-4' : 'p-6'
+              } flex flex-col items-center justify-center relative shadow-sm transition-nexus ${
+                isLocalSpeaking && !isMicMuted
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/30'
+                  : isMicMuted
+                  ? 'border-rose-500/30 bg-rose-950/10'
+                  : 'border-nexus-border'
+              }`}
+            >
+              <div className="relative mb-2.5">
+                <Avatar
+                  name={currentUser?.displayName || currentUser?.username || 'Você'}
+                  size={hasAnyScreenStage ? 'lg' : 'xl'}
+                  className={isLocalSpeaking && !isMicMuted ? 'ring-2 ring-emerald-500' : ''}
+                />
+                {isMicMuted && (
+                  <span className="absolute -bottom-1 -right-1 p-1 rounded-full bg-rose-600 text-white shadow-md border-2 border-nexus-surface">
+                    <MicOff className="w-3.5 h-3.5" />
+                  </span>
+                )}
+              </div>
+
+              <span className="text-xs font-bold text-nexus-text">
+                {currentUser?.displayName || currentUser?.username || 'Você'} (Você)
+              </span>
+
+              {isMicMuted ? (
+                <span className="mt-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-mono font-semibold flex items-center gap-1.5">
+                  <MicOff className="w-3 h-3" />
+                  <span>Microfone silenciado</span>
+                </span>
+              ) : (
+                <span
+                  className={`text-[10px] mt-1.5 font-mono font-medium ${
+                    isLocalSpeaking ? 'text-emerald-400 font-bold' : 'text-nexus-muted'
+                  }`}
+                >
+                  {isLocalSpeaking ? 'Falando...' : 'Conectado'}
+                </span>
+              )}
+            </div>
+
+            {/* Tile 2: Participante Remoto + Volume Individual (0% a 200%) */}
+            <div
+              className={`bg-nexus-surface rounded-2xl border ${
+                hasAnyScreenStage ? 'p-4' : 'p-6'
+              } flex flex-col items-center justify-center relative shadow-sm transition-nexus ${
+                isRemoteSpeaking && !isPeerMuted
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/30'
+                  : isPeerMuted
+                  ? 'border-rose-500/30 bg-rose-950/10'
+                  : 'border-nexus-border'
+              }`}
+            >
+              <div className="relative mb-2.5">
+                <Avatar
+                  name={activeCallPeer?.name || 'Amigo'}
+                  size={hasAnyScreenStage ? 'lg' : 'xl'}
+                  className={isRemoteSpeaking && !isPeerMuted ? 'ring-2 ring-emerald-500' : ''}
+                />
+                {isPeerMuted && (
+                  <span className="absolute -bottom-1 -right-1 p-1 rounded-full bg-rose-600 text-white shadow-md border-2 border-nexus-surface">
+                    <MicOff className="w-3.5 h-3.5" />
+                  </span>
+                )}
+              </div>
+
+              <span className="text-xs font-bold text-nexus-text">
+                {activeCallPeer?.name || 'Amigo'}
+              </span>
+
+              {isPeerMuted ? (
+                <span className="mt-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-mono font-semibold flex items-center gap-1.5">
+                  <MicOff className="w-3 h-3" />
+                  <span>Silenciado pelo amigo</span>
+                </span>
+              ) : (
+                <span
+                  className={`text-[10px] mt-1.5 font-mono font-medium ${
+                    isRemoteSpeaking ? 'text-emerald-400 font-bold' : 'text-nexus-muted'
+                  }`}
+                >
+                  {isRemoteSpeaking ? 'Falando...' : 'Conectado'}
+                </span>
+              )}
+
+              {/* Controle Individual de Volume do Participante (0% a 200%) */}
+              {peerId && (
+                <div className="w-full max-w-[240px] mt-3 pt-2.5 border-t border-nexus-border/60 flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-[10px] font-mono">
+                    <button
+                      type="button"
+                      onClick={() => handlePeerVolumeChange(peerVolume === 0 ? 100 : 0)}
+                      className="flex items-center gap-1 text-nexus-muted hover:text-nexus-text cursor-pointer"
+                      title={peerVolume === 0 ? 'Restaurar volume para 100%' : 'Silenciar participante localmente'}
+                    >
+                      {peerVolume === 0 ? (
+                        <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                      ) : (
+                        <Volume2 className="w-3.5 h-3.5 text-nexus-accent" />
+                      )}
+                      <span>Volume Individual</span>
+                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`font-bold ${
+                          peerVolume > 100
+                            ? 'text-amber-400'
+                            : peerVolume === 0
+                            ? 'text-rose-400'
+                            : 'text-nexus-text'
+                        }`}
+                      >
+                        {peerVolume}%
+                      </span>
+                      {peerVolume !== 100 && (
+                        <button
+                          type="button"
+                          onClick={() => handlePeerVolumeChange(100)}
+                          className="text-[9px] px-1 py-0.2 rounded bg-nexus-panel hover:bg-nexus-border text-nexus-muted hover:text-nexus-text cursor-pointer"
+                          title="Redefinir para 100%"
+                        >
+                          100%
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    step="5"
+                    value={peerVolume}
+                    onChange={(e) => handlePeerVolumeChange(Number(e.target.value))}
+                    aria-label={`Volume de ${activeCallPeer?.name || 'participante'}`}
+                    className="w-full h-1.5 accent-nexus-accent cursor-pointer"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Popovers de Troca Rápida de Dispositivos de Áudio e Qualidade de Tela */}
@@ -1342,6 +1730,7 @@ export const CallsView: React.FC = () => {
 
           {activePopover === 'quality' && (
             <div className="space-y-2.5">
+              <p className="text-xs text-nexus-muted">{SCREEN_CAPTURE_SELECTION_NOTICE}</p>
               <div className="flex items-center justify-between border-b border-nexus-border pb-2">
                 <span className="text-xs font-bold text-nexus-text flex items-center gap-1.5">
                   <Monitor className="w-3.5 h-3.5 text-nexus-accent" />
@@ -1386,9 +1775,10 @@ export const CallsView: React.FC = () => {
         </div>
       )}
 
-      {/* Floating Centered Bottom Dock */}
-      <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-30">
-        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-nexus-surface/95 backdrop-blur-md border border-nexus-border shadow-2xl">
+      {/* Floating Centered Bottom Dock (Apenas em modos com dock normal e fora da tela cheia) */}
+      {!isFullscreen && callLayoutMode !== 'cinema' && (
+        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-30">
+          <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-nexus-surface/95 backdrop-blur-md border border-nexus-border shadow-2xl">
           {/* Microfone */}
           <Tooltip content={isMicMuted ? 'Ativar microfone' : 'Silenciar microfone'} position="top">
             <button
@@ -1445,7 +1835,7 @@ export const CallsView: React.FC = () => {
                 ? 'Iniciando captura...'
                 : isScreenSharing
                 ? 'Parar compartilhamento'
-                : 'Compartilhar tela'
+                : SCREEN_CAPTURE_SELECTION_NOTICE
             }
             position="top"
           >
@@ -1509,6 +1899,7 @@ export const CallsView: React.FC = () => {
           </Tooltip>
         </div>
       </div>
+      )}
     </div>
   );
 };

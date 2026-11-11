@@ -39,6 +39,9 @@ export const DEFAULT_PREFERENCES: PersistedPreferences = {
   streamerMode: initialAppSettings.privacy.streamerMode,
   avatarUrl: undefined,
   updateChannel: 'stable',
+  voiceAutoSensitivity: true,
+  voiceHangoverMs: 400,
+  voiceSoftGate: false,
 };
 
 class SettingsRepository {
@@ -481,6 +484,21 @@ class SettingsRepository {
         ? Math.max(30, Math.min(85, Math.round(saved.callStageSplitRatio)))
         : DEFAULT_PREFERENCES.callStageSplitRatio ?? 65;
 
+    const validAutoSensitivity =
+      typeof saved.voiceAutoSensitivity === 'boolean'
+        ? saved.voiceAutoSensitivity
+        : (DEFAULT_PREFERENCES.voiceAutoSensitivity ?? true);
+
+    const validHangoverMs =
+      typeof saved.voiceHangoverMs === 'number' && Number.isFinite(saved.voiceHangoverMs)
+        ? Math.max(100, Math.min(2000, Math.round(saved.voiceHangoverMs)))
+        : (DEFAULT_PREFERENCES.voiceHangoverMs ?? 400);
+
+    const validSoftGate =
+      typeof saved.voiceSoftGate === 'boolean'
+        ? saved.voiceSoftGate
+        : (DEFAULT_PREFERENCES.voiceSoftGate ?? false);
+
     return {
       theme: validThemes.includes(saved.theme as string) ? (saved.theme as any) : DEFAULT_PREFERENCES.theme,
       compactMode: typeof saved.compactMode === 'boolean' ? saved.compactMode : DEFAULT_PREFERENCES.compactMode,
@@ -509,6 +527,9 @@ class SettingsRepository {
       streamerMode: typeof saved.streamerMode === 'boolean' ? saved.streamerMode : DEFAULT_PREFERENCES.streamerMode,
       avatarUrl: validAvatarUrl,
       updateChannel: validUpdateChannel,
+      voiceAutoSensitivity: validAutoSensitivity,
+      voiceHangoverMs: validHangoverMs,
+      voiceSoftGate: validSoftGate,
     };
   }
 }

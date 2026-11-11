@@ -251,6 +251,7 @@ interface AppState {
   callDeviceNotice: string | null;
   reconnectAttempt: number;
   maxReconnectAttempts: number;
+  callLayoutMode: 'compact' | 'balanced' | 'cinema';
 
   // Phase 3.0: Local Screen Capture State
   isScreenSharing: boolean;
@@ -262,6 +263,8 @@ interface AppState {
   screenEffectiveHeight: number | null;
   screenEffectiveFps: number | null;
   screenQualityFallbackNotice: string | null;
+  screenCaptureNotice: string | null;
+  screenDisplaySurface: string | null;
   screenShareError: string | null;
   startScreenShare: (preset?: ScreenShareQualityPreset) => Promise<MediaStream | null>;
   stopScreenShare: () => void;
@@ -368,6 +371,7 @@ interface AppState {
   setReconnectStatus: (attempt: number, maxAttempts?: number) => void;
   setParticipantVolume: (peerId: string, volume: number) => void;
   setCallStageSplitRatio: (ratio: number) => void;
+  setCallLayoutMode: (mode: 'compact' | 'balanced' | 'cinema') => void;
 
   // User & Settings Actions
   setUserStatus: (status: UserStatus) => void;
@@ -433,6 +437,9 @@ function createAuthenticatedState(
           inputDevice: accountPrefs.inputDevice || state.settings.audioVideo.inputDevice,
           outputDevice: accountPrefs.outputDevice || state.settings.audioVideo.outputDevice,
           inputSensitivity: accountPrefs.inputSensitivity ?? state.settings.audioVideo.inputSensitivity,
+          voiceAutoSensitivity: accountPrefs.voiceAutoSensitivity ?? true,
+          voiceHangoverMs: accountPrefs.voiceHangoverMs ?? 400,
+          voiceSoftGate: accountPrefs.voiceSoftGate ?? false,
           outputVolume: accountPrefs.outputVolume ?? state.settings.audioVideo.outputVolume,
           noiseSuppression: accountPrefs.noiseSuppression ?? state.settings.audioVideo.noiseSuppression,
           echoCancellation: accountPrefs.echoCancellation ?? state.settings.audioVideo.echoCancellation,
@@ -568,6 +575,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   callDeviceNotice: null,
   reconnectAttempt: 0,
   maxReconnectAttempts: 3,
+  callLayoutMode: 'balanced',
 
   // Phase 3.0 Screen Sharing Initial State
   isScreenSharing: false,
@@ -579,6 +587,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   screenEffectiveHeight: null,
   screenEffectiveFps: null,
   screenQualityFallbackNotice: null,
+  screenCaptureNotice: null,
+  screenDisplaySurface: null,
   screenShareError: null,
 
   // Phase 3.1 Remote Screen Share Initial State
@@ -634,6 +644,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             inputDevice: prefs.inputDevice,
             outputDevice: prefs.outputDevice,
             inputSensitivity: prefs.inputSensitivity,
+            voiceAutoSensitivity: prefs.voiceAutoSensitivity ?? true,
+            voiceHangoverMs: prefs.voiceHangoverMs ?? 400,
+            voiceSoftGate: prefs.voiceSoftGate ?? false,
             outputVolume: prefs.outputVolume,
             noiseSuppression: prefs.noiseSuppression,
             echoCancellation: prefs.echoCancellation,
@@ -1872,6 +1885,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const clamped = Math.max(30, Math.min(85, Math.round(ratio)));
     get().updateAudioVideo({ callStageSplitRatio: clamped });
   },
+  setCallLayoutMode: (callLayoutMode) => set({ callLayoutMode }),
 
   setUserStatus: (status) => {
     set((state) => ({
@@ -1974,6 +1988,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       inputDevice: audioVideoUpdate.inputDevice ?? currentAv.inputDevice,
       outputDevice: audioVideoUpdate.outputDevice ?? currentAv.outputDevice,
       inputSensitivity: audioVideoUpdate.inputSensitivity ?? currentAv.inputSensitivity,
+      voiceAutoSensitivity: currentAv.voiceAutoSensitivity ?? true,
+      voiceHangoverMs: currentAv.voiceHangoverMs ?? 400,
+      voiceSoftGate: currentAv.voiceSoftGate ?? false,
       outputVolume: audioVideoUpdate.outputVolume ?? currentAv.outputVolume,
       noiseSuppression: audioVideoUpdate.noiseSuppression ?? currentAv.noiseSuppression,
       echoCancellation: audioVideoUpdate.echoCancellation ?? currentAv.echoCancellation,
@@ -2026,6 +2043,8 @@ screenCaptureService.addListener((state) => {
     screenEffectiveHeight: state.effectiveHeight,
     screenEffectiveFps: state.effectiveFrameRate,
     screenQualityFallbackNotice: state.qualityFallbackNotice,
+    screenCaptureNotice: state.captureNotice,
+    screenDisplaySurface: state.displaySurface,
     screenShareError: state.error,
   });
 });

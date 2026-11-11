@@ -9,6 +9,18 @@ const fs = require('fs');
 const path = require('path');
 
 const rootDir = path.resolve(__dirname, '..');
+const config = JSON.parse(fs.readFileSync(path.join(rootDir, 'src-tauri', 'tauri.conf.json'), 'utf8'));
+const installerName = `nexus_${config.version}_x64-setup.exe`;
+const requiredFiles = [
+  path.join(rootDir, 'src-tauri', 'target', 'release', 'nexus.exe'),
+  path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle', 'nsis', installerName),
+  path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle', 'nsis', `${installerName}.sig`),
+  path.join(rootDir, 'latest-nightly.json'),
+];
+if (requiredFiles.some(file => !fs.existsSync(file) || fs.statSync(file).size === 0)) {
+  console.error('[ERRO] Artefatos completos da versão atual são obrigatórios para a auditoria.');
+  process.exit(1);
+}
 const forbiddenPatterns = [
   /^\.env/i,
   /\.key$/i,
@@ -88,4 +100,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log('[OK] 100% dos artefatos em conformidade. Nenhuma chave ou credencial encontrada.');
+console.log('[OK] Verificações de nomes e marcadores concluídas. Não substituem inspeção do conteúdo dos pacotes ou verificação criptográfica.');

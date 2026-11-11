@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão SemVer Prerelease (ex: 0.1.9-nightly.1)'
         required: true
-        default: '0.1.9-nightly.1'
+        default: '0.3.0-nightly.2'
         type: string
       release_notes:
         description: 'Notas de atualização da versão Nightly'
@@ -52,7 +52,24 @@ jobs:
         run: npm ci
 
       - name: Apply Nightly Version
-        run: node scripts/set-nightly-version.cjs "${{ github.event.inputs.version }}"
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          node scripts/set-nightly-version.cjs "$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git show-ref --verify --quiet "refs/tags/v$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -eq 0) { throw "A tag já existe; releases anteriores não serão sobrescritas." }
+          if ($LASTEXITCODE -ne 1) { throw "Falha ao verificar a existência da tag." }
+          exit 0
+
+      - name: Run Unit Tests and Typecheck
+        shell: pwsh
+        run: |
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx tsc --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Frontend
         run: npm run build
@@ -75,8 +92,11 @@ jobs:
         run: npx tauri build --bundles nsis
 
       - name: Generate Nightly Updater Manifest (latest-nightly.json)
-        run: node scripts/generate-nightly-manifest.cjs "${{ github.event.inputs.version }}" "${{ github.event.inputs.release_notes }}"
+        shell: pwsh
+        run: node scripts/generate-nightly-manifest.cjs "$env:RELEASE_VERSION" "$env:RELEASE_NOTES"
         env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           GITHUB_REPOSITORY: ${{ github.repository }}
 
@@ -85,8 +105,11 @@ jobs:
 
       - name: Prepare Markdown Release Notes Body
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
-          $ver = "${{ github.event.inputs.version }}"
+          $ver = $env:RELEASE_VERSION
           $customNotesFile = "scripts/release-notes-v$ver.md"
           if (Test-Path $customNotesFile) {
             Write-Host "Encontradas notas ricas em Markdown: $customNotesFile"
@@ -96,7 +119,7 @@ jobs:
             $defaultBody = @"
           ## 🌙 NEXUS Nightly Release — v$ver
 
-          ${{ github.event.inputs.release_notes }}
+          $env:RELEASE_NOTES
 
           ---
 
@@ -123,8 +146,8 @@ jobs:
           make_latest: 'false'
           files: |
             src-tauri/target/release/nexus.exe
-            src-tauri/target/release/bundle/nsis/*-setup.exe
-            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+            src-tauri/target/release/bundle/nsis/nexus_${{ inputs.version }}_x64-setup.exe
+            src-tauri/target/release/bundle/nsis/nexus_${{ inputs.version }}_x64-setup.exe.sig
             latest-nightly.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -133,6 +156,8 @@ jobs:
         if: success()
         continue-on-error: true
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -140,11 +165,11 @@ jobs:
           git clean -fd
           git fetch origin main:main
           git checkout main
-          node scripts/sync-readme-release.cjs --channel beta --version "${{ github.event.inputs.version }}"
+          node scripts/sync-readme-release.cjs --channel beta --version "$env:RELEASE_VERSION"
           $diff = git status --porcelain README.md
           if ($diff) {
             git add README.md
-            git commit -m "docs: sync README with Beta v${{ github.event.inputs.version }} [skip ci]"
+            git commit -m "docs: sync README with Beta v$env:RELEASE_VERSION [skip ci]"
             git push origin main
           } else {
             Write-Host "[INFO] README.md já estava atualizado para a versão Beta."

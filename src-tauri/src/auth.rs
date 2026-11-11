@@ -69,7 +69,12 @@ pub fn resolve_and_validate_account_id(
     }
 }
 
-const SERVICE_NAME: &str = "nexus_desktop";
+fn service_name() -> &'static str {
+    if crate::lab::enabled() {
+        return if crate::lab::profile() == "A" { "nexus_testlab_A" } else { "nexus_testlab_B" };
+    }
+    "nexus_desktop"
+}
 
 static MOCK_KEYRING: std::sync::RwLock<Option<std::collections::HashMap<String, String>>> =
     std::sync::RwLock::new(None);
@@ -99,6 +104,7 @@ fn mock_keyring_delete(key: &str) {
 }
 
 pub fn get_session_user_key() -> &'static str {
+    if crate::lab::enabled() { return "session_token_lab"; }
     if crate::is_test_environment() {
         return "session_token_isolated_test";
     }
@@ -133,6 +139,7 @@ pub fn get_google_client_id() -> String {
 }
 
 pub fn get_default_api_base() -> String {
+    if crate::lab::enabled() { return crate::lab::API.into(); }
     if let Some(val) = option_env!("NEXUS_DEFAULT_API_URL") {
         if let Ok(valid) = crate::network::validate_server_url(val) {
             return valid;
@@ -142,6 +149,7 @@ pub fn get_default_api_base() -> String {
 }
 
 pub fn get_api_base() -> String {
+    if crate::lab::enabled() { return crate::lab::API.into(); }
     // 0. Dynamic runtime override (set by NetworkManager, already validated)
     if let Some(dyn_url) = crate::network::get_dynamic_api_base() {
         if let Ok(valid) = crate::network::validate_server_url(&dyn_url) {
@@ -308,7 +316,7 @@ pub fn save_secure_token_for_origin(token: &str, origin: &str) -> Result<(), Str
         return Ok(());
     }
 
-    let entry = Entry::new(SERVICE_NAME, get_session_user_key())
+    let entry = Entry::new(service_name(), get_session_user_key())
         .map_err(|e| format!("Falha ao acessar Windows Credential Manager: {}", e))?;
     entry
         .set_password(&payload)
@@ -337,7 +345,7 @@ pub fn get_secure_token() -> Option<String> {
     let raw_payload = if crate::is_test_environment() {
         mock_keyring_get(get_session_user_key())?
     } else {
-        let entry = Entry::new(SERVICE_NAME, get_session_user_key()).ok()?;
+        let entry = Entry::new(service_name(), get_session_user_key()).ok()?;
         entry.get_password().ok()?
     };
     let trimmed = raw_payload.trim();
@@ -426,7 +434,14 @@ pub fn delete_secure_token() -> Result<(), String> {
         mock_keyring_delete(get_session_user_key());
         return Ok(());
     }
-    if let Ok(entry) = Entry::new(SERVICE_NAME, get_session_user_key()) {
+    if crate::lab::enabled() {
+        let entry = Entry::new(service_name(), get_session_user_key()).map_err(|e| e.to_string())?;
+        return match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        };
+    }
+    if let Ok(entry) = Entry::new(service_name(), get_session_user_key()) {
         let _ = entry.delete_credential();
     }
     Ok(())
@@ -619,6 +634,7 @@ pub async fn auth_check_backend() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn auth_login_google() -> Result<AuthUserProfile, String> {
+    if crate::lab::enabled() { return Err("Use local lab accounts".into()); }
     let client_id = get_google_client_id();
 
     let auth_res = crate::oauth::execute_google_desktop_flow(&client_id).await?;
@@ -662,6 +678,7 @@ pub async fn auth_login_google() -> Result<AuthUserProfile, String> {
 
 #[tauri::command]
 pub async fn auth_link_google() -> Result<String, String> {
+    if crate::lab::enabled() { return Err("Use local lab accounts".into()); }
     let session_token = get_secure_token()
         .ok_or_else(|| "Nenhuma sessão ativa encontrada para vincular conta.".to_string())?;
 

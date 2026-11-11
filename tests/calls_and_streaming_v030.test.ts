@@ -6,6 +6,13 @@ import {
   buildDisplayVideoConstraints,
   SCREEN_QUALITY_CONFIGS,
 } from '../src/services/ScreenCaptureService.ts';
+import {
+  WebRtcService,
+  rankVideoCodecsForScreenShare,
+  computeProgressiveBitrateStage,
+  computeVideoStatsMetrics,
+  type VideoStatsSnapshot,
+} from '../src/services/WebRtcService.ts';
 
 // ============================================================================
 // 1. Testes de Dispositivos de Áudio (Enumeração, Hot-Swap e Fallback Seguro)
@@ -379,3 +386,427 @@ test('Diagnósticos WebRTC: cálculo de bitrate (kbps) por delta de bytes e perc
   assert.equal(lossPercent, 2.0);
 });
 
+// ============================================================================
+// 6. Nightly 2 — Problema 1: Nitidez no Início (Rampa Progressiva, Codecs e Sender Params)
+// ============================================================================
+
+test('Problema 1: rampa progressiva (warmup -> ramping -> steady) preserva resolução 1080p desde o frame 1 sem forçar bitrate máximo imediato', () => {
+  const warmup60 = computeProgressiveBitrateStage('1080p60', 'warmup');
+  assert.equal(warmup60.degradationPreference, 'maintain-resolution');
+  assert.equal(warmup60.scaleResolutionDownBy, 1);
+  assert.equal(warmup60.contentHint, 'detail');
+  assert.equal(warmup60.maxFramerate, 60);
+  assert.ok(
+    warmup60.targetBitrateBps >= SCREEN_QUALITY_CONFIGS['1080p60'].minBitrate &&
+      warmup60.targetBitrateBps < SCREEN_QUALITY_CONFIGS['1080p60'].maxBitrate,
+    'Warmup deve iniciar acima do minBitrate e abaixo do maxBitrate (sem saturar BWE no frame 1)'
+  );
+
+  const ramping60 = computeProgressiveBitrateStage('1080p60', 'ramping');
+  assert.equal(ramping60.degradationPreference, 'maintain-resolution');
+  assert.equal(ramping60.scaleResolutionDownBy, 1);
+  assert.ok(ramping60.targetBitrateBps > warmup60.targetBitrateBps);
+  assert.ok(ramping60.targetBitrateBps < SCREEN_QUALITY_CONFIGS['1080p60'].maxBitrate);
+
+  const steady60 = computeProgressiveBitrateStage('1080p60', 'steady');
+  assert.equal(steady60.targetBitrateBps, 5_000_000);
+  assert.equal(steady60.maxFramerate, 60);
+  assert.equal(steady60.scaleResolutionDownBy, 1);
+  assert.equal(steady60.degradationPreference, 'balanced');
+  assert.equal(steady60.contentHint, 'motion');
+
+  const steady30 = computeProgressiveBitrateStage('1080p30', 'steady');
+  assert.equal(steady30.targetBitrateBps, 3_500_000);
+  assert.equal(steady30.maxFramerate, 30);
+  assert.equal(steady30.degradationPreference, 'maintain-resolution');
+  assert.equal(steady30.contentHint, 'detail');
+});
+
+test('Problema 1 & 5: rankVideoCodecsForScreenShare prioriza H.264 (packetization-mode=1) e VP9 sobre VP8, preservando RTX/RED/ULPFEC', () => {
+  const inputCodecs = [
+    { mimeType: 'video/VP8', clockRate: 90000 },
+    { mimeType: 'video/rtx', clockRate: 90000 },
+    { mimeType: 'video/VP9', clockRate: 90000, sdpFmtpLine: 'profile-id=0' },
+    {
+      mimeType: 'video/H264',
+      clockRate: 90000,
+      sdpFmtpLine: 'level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f',
+    },
+    {
+      mimeType: 'video/H264',
+      clockRate: 90000,
+      sdpFmtpLine: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+    },
+    { mimeType: 'video/AV1', clockRate: 90000 },
+    { mimeType: 'video/ulpfec', clockRate: 90000 },
+  ];
+
+  const ranked = rankVideoCodecsForScreenShare(inputCodecs);
+  assert.equal(ranked.length, inputCodecs.length);
+  assert.equal(ranked[0].mimeType, 'video/H264');
+  assert.match(ranked[0].sdpFmtpLine || '', /packetization-mode=1/);
+  assert.equal(ranked[1].mimeType, 'video/H264');
+  assert.equal(ranked[2].mimeType, 'video/VP9');
+  assert.equal(ranked[3].mimeType, 'video/AV1');
+  assert.equal(ranked[4].mimeType, 'video/VP8');
+  assert.equal(ranked[5].mimeType, 'video/rtx');
+  assert.equal(ranked[6].mimeType, 'video/ulpfec');
+});
+
+test('Problema 1 & 5: ScreenCaptureService.setQualityPreset sincroniza contentHint ao alternar de auto para 1080p60', async () => {
+  const originalNavigator = globalThis.navigator;
+  let currentSettings = {
+    width: 1920,
+    height: 1080,
+    frameRate: 30,
+    displaySurface: 'monitor',
+  };
+
+  const mockVideoTrack: any = {
+    id: 'track-screen-1',
+    label: 'Monitor Principal',
+    readyState: 'live',
+    contentHint: '',
+    getSettings: () => currentSettings,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    applyConstraints: async (constraints: any) => {
+      if (constraints?.frameRate?.max) {
+        currentSettings = {
+          ...currentSettings,
+          frameRate: constraints.frameRate.max,
+        };
+      }
+    },
+    stop: () => {},
+  };
+
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      mediaDevices: {
+        getDisplayMedia: async () => ({
+          getVideoTracks: () => [mockVideoTrack],
+          getTracks: () => [mockVideoTrack],
+        }),
+      },
+    },
+  });
+
+  try {
+    await screenCaptureService.startCapture('auto');
+    assert.equal(mockVideoTrack.contentHint, 'detail');
+    assert.equal(screenCaptureService.getState().requestedFrameRate, 30);
+
+    const res = await screenCaptureService.setQualityPreset('1080p60');
+    assert.equal(res.applied, true);
+    assert.equal(res.activePreset, '1080p60');
+    assert.equal(
+      mockVideoTrack.contentHint,
+      'motion',
+      'Mudar para 1080p60 em captura ativa deve atualizar contentHint para motion'
+    );
+    const st = screenCaptureService.getState();
+    assert.equal(st.requestedFrameRate, 60);
+    assert.equal(st.capturedFrameRate, 60);
+  } finally {
+    screenCaptureService.stopCapture();
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: originalNavigator,
+    });
+  }
+});
+
+// ============================================================================
+// 7. Nightly 2 — Problema 5: Separação Estrita de FPS e Proibição de Exibir Preset como Efetivo
+// ============================================================================
+
+test('Problema 5: computeVideoStatsMetrics separa FPS solicitado, capturado, codificado/enviado, recebido e renderizado, e NUNCA usa preset como efetivo', () => {
+  // Caso 1: Início de compartilhamento em 1080p60 ANTES de codificar frames RTP.
+  // A faixa local tem frameRate=60 na constraint, mas outbound-rtp ainda não codificou nada.
+  const initialStats = [
+    {
+      id: 'ms-video',
+      type: 'media-source',
+      kind: 'video',
+      width: 1920,
+      height: 1080,
+      framesPerSecond: 60,
+      frames: 10,
+      timestamp: 1000,
+    },
+  ];
+
+  const m1 = computeVideoStatsMetrics({
+    statsReport: initialStats,
+    prevSnapshot: null,
+    nowMs: 1000,
+    isLocalScreenSharing: true,
+    activePreset: '1080p60',
+    localTrackSettings: { width: 1920, height: 1080, frameRate: 60 },
+  });
+
+  assert.equal(m1.requestedFps, 60);
+  assert.equal(m1.capturedFps, 60);
+  assert.equal(m1.encodedFps, null, 'Sem outbound-rtp, encodedFps deve ser null');
+  assert.equal(m1.sentFps, null, 'Sem outbound-rtp, sentFps deve ser null');
+  assert.equal(
+    m1.videoFps,
+    null,
+    'PROIBIDO exibir FPS do preset (60) ou da track local como videoFps efetivo antes de codificar RTP'
+  );
+
+  const settingsOnly = computeVideoStatsMetrics({ statsReport: [], prevSnapshot: null,
+    nowMs: 1000, isLocalScreenSharing: true, activePreset: '1080p60',
+    localTrackSettings: { frameRate: 60 } });
+  assert.equal(settingsOnly.capturedFps, null, 'configured cadence is not measured capture FPS');
+  assert.equal(settingsOnly.renderedFps, null);
+
+  // Caso 2: 1080p60 solicitado (60 FPS) e capturado a 60 FPS, mas encoder limitado por CPU a 32 FPS
+  // (calculado por delta de framesEncoded / framesSent quando framesPerSecond direto não está presente).
+  const prevSnap: VideoStatsSnapshot = {
+    timestampMs: 1000,
+    audioBytes: 0,
+    videoBytes: 100_000,
+    framesCaptured: 60,
+    captureTimestampMs: 1000,
+    framesEncoded: 100,
+    framesSent: 100,
+    outboundVideoTimestampMs: 1000,
+    framesReceived: null,
+    framesDecoded: null,
+    inboundVideoTimestampMs: null,
+  };
+
+  const bottleneckStats = [
+    {
+      id: 'codec-h264',
+      type: 'codec',
+      mimeType: 'video/H264',
+    },
+    {
+      id: 'ms-video',
+      type: 'media-source',
+      kind: 'video',
+      width: 1920,
+      height: 1080,
+      frames: 120, // +60 frames em 1.0s = 60 FPS capturados
+      timestamp: 2000,
+    },
+    {
+      id: 'out-video',
+      type: 'outbound-rtp',
+      kind: 'video',
+      codecId: 'codec-h264',
+      frameWidth: 1920,
+      frameHeight: 1080,
+      framesEncoded: 132, // +32 frames em 1.0s = 32 FPS codificados
+      framesSent: 132, // +32 frames em 1.0s = 32 FPS enviados
+      keyFramesEncoded: 2,
+      qualityLimitationReason: 'cpu',
+      encoderImplementation: 'MediaFoundationVideoEncodeAccelerator',
+      powerEfficientEncoder: true,
+      timestamp: 2000,
+    },
+  ];
+
+  const m2 = computeVideoStatsMetrics({
+    statsReport: bottleneckStats,
+    prevSnapshot: prevSnap,
+    nowMs: 2000,
+    isLocalScreenSharing: true,
+    activePreset: '1080p60',
+    localTrackSettings: { width: 1920, height: 1080, frameRate: 60 },
+  });
+
+  assert.equal(m2.requestedFps, 60);
+  assert.equal(m2.capturedFps, 60);
+  assert.equal(m2.encodedFps, 32);
+  assert.equal(m2.sentFps, 32);
+  assert.equal(m2.videoFps, 32, 'videoFps efetivo deve refletir os 32 FPS realmente enviados');
+  assert.equal(m2.qualityLimitationReason, 'cpu');
+  assert.equal(m2.videoCodec, 'H264');
+  assert.equal(m2.powerEfficientEncoder, true);
+
+  // Caso 3: Recebimento de vídeo remoto com diferença entre frames recebidos (58 FPS) e decodificados/renderizados (54 FPS)
+  const prevInboundSnap: VideoStatsSnapshot = {
+    timestampMs: 2000,
+    audioBytes: 0,
+    videoBytes: 200_000,
+    framesCaptured: null,
+    captureTimestampMs: null,
+    framesEncoded: null,
+    framesSent: null,
+    outboundVideoTimestampMs: null,
+    framesReceived: 200,
+    framesDecoded: 195,
+    inboundVideoTimestampMs: 2000,
+  };
+
+  const inboundStats = [
+    {
+      id: 'in-video',
+      type: 'inbound-rtp',
+      kind: 'video',
+      frameWidth: 1920,
+      frameHeight: 1080,
+      framesReceived: 258, // +58 em 1.0s = 58 FPS recebidos
+      framesDecoded: 249, // +54 em 1.0s = 54 FPS decodificados (apresentação não medida)
+      framesDropped: 4,
+      timestamp: 3000,
+    },
+  ];
+
+  const m3 = computeVideoStatsMetrics({
+    statsReport: inboundStats,
+    prevSnapshot: prevInboundSnap,
+    nowMs: 3000,
+    isLocalScreenSharing: false,
+    activePreset: 'auto',
+    localTrackSettings: null,
+  });
+
+  assert.equal(m3.requestedFps, null);
+  assert.equal(m3.receivedFps, 58);
+  assert.equal(m3.decodedFps, 54);
+  assert.equal(m3.renderedFps, null, 'decoding does not prove video presentation');
+  assert.equal(m3.videoFps, 54);
+  assert.equal(m3.framesDropped, 4);
+  assert.equal(m3.receivedWidth, 1920);
+  assert.equal(m3.receivedHeight, 1080);
+});
+
+test('Problema 1 & 5: WebRtcService.attachScreenTrack aplica rampa warmup (scaleResolutionDownBy=1, maintain-resolution) e reaplica parâmetros no handleAnswer', async () => {
+  const originalPeerConnection = (globalThis as any).RTCPeerConnection;
+  const originalSessionDescription = (globalThis as any).RTCSessionDescription;
+
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const stageTimers: { callback: () => void; delay: number }[] = [];
+  globalThis.setTimeout = ((callback: () => void, delay: number) => {
+    stageTimers.push({ callback, delay });
+    return stageTimers.length as any;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = (() => {}) as typeof clearTimeout;
+  const appliedSenderParams: any[] = [];
+  let currentSenderParams: any = { encodings: [{}] };
+
+  const mockSender: any = {
+    track: { kind: 'video' },
+    getParameters: () => JSON.parse(JSON.stringify(currentSenderParams)),
+    setParameters: async (params: any) => {
+      currentSenderParams = JSON.parse(JSON.stringify(params));
+      appliedSenderParams.push(currentSenderParams);
+    },
+    replaceTrack: async () => {},
+  };
+
+  class MockRTCPeerConnection {
+    signalingState = 'stable';
+    connectionState = 'connected';
+    iceConnectionState = 'connected';
+    localDescription: any = null;
+    remoteDescription: any = null;
+    getSenders() {
+      return [mockSender];
+    }
+    getTransceivers() {
+      return [];
+    }
+    addTrack() {
+      return mockSender;
+    }
+    async createOffer() {
+      return { type: 'offer', sdp: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n' };
+    }
+    async setLocalDescription(desc: any) {
+      this.localDescription = desc;
+      if (desc.type === 'offer') {
+        this.signalingState = 'have-local-offer';
+      }
+    }
+    async setRemoteDescription(desc: any) {
+      this.remoteDescription = desc;
+      if (desc.type === 'answer') {
+        this.signalingState = 'stable';
+      }
+    }
+    close() {}
+  }
+
+  (globalThis as any).RTCPeerConnection = MockRTCPeerConnection;
+  (globalThis as any).RTCSessionDescription = class {
+    type: string;
+    sdp: string;
+    constructor(init: { type: string; sdp: string }) {
+      this.type = init.type;
+      this.sdp = init.sdp;
+    }
+  };
+
+  const rtc = new WebRtcService({
+    onIceCandidate: () => {},
+    onConnectionStateChange: () => {},
+    onLocalSpeaking: () => {},
+    onRemoteSpeaking: () => {},
+    onError: () => {},
+  });
+
+  try {
+    const fakeTrack: any = {
+      id: 'screen-track-60',
+      kind: 'video',
+      contentHint: 'motion',
+      stop: () => {},
+    };
+    const fakeStream: any = {
+      getVideoTracks: () => [fakeTrack],
+      getTracks: () => [fakeTrack],
+    };
+
+    await rtc.attachScreenTrack(fakeTrack, fakeStream, '1080p60');
+
+    assert.ok(appliedSenderParams.length >= 1, 'Deve aplicar parâmetros no attachScreenTrack');
+    const warmupParams = appliedSenderParams[0];
+    assert.equal(warmupParams.degradationPreference, 'maintain-resolution');
+    assert.equal(warmupParams.encodings[0].scaleResolutionDownBy, 1);
+    assert.equal(warmupParams.encodings[0].maxFramerate, 60);
+    assert.equal(
+      warmupParams.encodings[0].maxBitrate,
+      SCREEN_QUALITY_CONFIGS['1080p60'].initialBitrate
+    );
+    assert.equal(fakeTrack.contentHint, 'detail');
+
+    assert.equal(stageTimers.length, 0, 'even an answer delayed beyond 1800ms must leave warmup pending');
+    assert.equal(rtc.getBitrateRampStage(), 'warmup');
+    const countBeforeAnswer = appliedSenderParams.length;
+    await rtc.handleAnswer('v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n');
+    assert.ok(
+      appliedSenderParams.length > countBeforeAnswer,
+      'Deve reaplicar parâmetros do sender após setRemoteDescription(answer)'
+    );
+
+    assert.deepEqual(stageTimers.map(timer => timer.delay), [900, 1800]);
+    stageTimers[0].callback();
+    await Promise.resolve();
+    assert.equal(rtc.getBitrateRampStage(), 'ramping');
+    stageTimers[1].callback();
+    await Promise.resolve();
+    assert.equal(rtc.getBitrateRampStage(), 'steady');
+    // Transição explícita para steady-state em 1080p60
+    await rtc.applySenderQualityParameters('1080p60', 'steady');
+    const steadyParams = appliedSenderParams[appliedSenderParams.length - 1];
+    assert.equal(steadyParams.encodings[0].maxBitrate, 5_000_000);
+    assert.equal(steadyParams.encodings[0].maxFramerate, 60);
+    assert.equal(steadyParams.encodings[0].scaleResolutionDownBy, 1);
+    assert.equal(steadyParams.degradationPreference, 'balanced');
+    assert.equal(fakeTrack.contentHint, 'motion');
+  } finally {
+    rtc.destroy(false);
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    (globalThis as any).RTCPeerConnection = originalPeerConnection;
+    (globalThis as any).RTCSessionDescription = originalSessionDescription;
+  }
+});

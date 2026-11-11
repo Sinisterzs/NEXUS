@@ -5,6 +5,16 @@
  * detecção de desconexão de periféricos e fallback seguro para dispositivo padrão.
  */
 
+import {
+  VoiceActivityDetector,
+  sensitivityToThreshold,
+  thresholdToSensitivity,
+  calculateByteFrequencyLevel,
+  calculateRmsLevel,
+  calibrateSensitivityFromNoise,
+} from '../lib/voiceActivity.ts';
+import type { VadOptions } from '../lib/voiceActivity.ts';
+
 export interface AudioDeviceInfo {
   deviceId: string;
   label: string;
@@ -302,6 +312,48 @@ export class AudioDeviceService {
     this.initEventListener();
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Cria instância do detector de atividade de voz com histerese e hangover
+   */
+  public createVoiceDetector(options?: VadOptions): VoiceActivityDetector {
+    return new VoiceActivityDetector(options);
+  }
+
+  /**
+   * Converte sensibilidade (0..100) em limiar de ativação (0..100)
+   */
+  public sensitivityToThreshold(sensitivity: number): number {
+    return sensitivityToThreshold(sensitivity);
+  }
+
+  /**
+   * Converte limiar de ativação (0..100) em sensibilidade (0..100)
+   */
+  public thresholdToSensitivity(threshold: number): number {
+    return thresholdToSensitivity(threshold);
+  }
+
+  /**
+   * Calcula energia sonora normalizada (0..100) a partir de bytes de frequência
+   */
+  public calculateFrequencyLevel(data: Uint8Array): number {
+    return calculateByteFrequencyLevel(data);
+  }
+
+  /**
+   * Calcula energia sonora normalizada (0..100) a partir de amostras PCM Float32
+   */
+  public calculateRmsLevel(samples: Float32Array): number {
+    return calculateRmsLevel(samples);
+  }
+
+  /**
+   * Recomenda limiar e sensibilidade ideais com base em amostras de ruído ambiente
+   */
+  public calibrateSensitivity(noiseLevels: number[]) {
+    return calibrateSensitivityFromNoise(noiseLevels);
   }
 }
 

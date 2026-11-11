@@ -19,9 +19,9 @@ if (!version) {
 }
 
 // Validação SemVer (ex: 0.1.7 ou 0.1.9-nightly.1)
-const semverRegex = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/;
+const semverRegex = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-nightly\.(0|[1-9]\d*)$/;
 if (!semverRegex.test(version)) {
-  console.error(`[ERRO] Versão '${version}' não é um SemVer válido.`);
+  console.error(`[ERRO] Versão '${version}' deve seguir X.Y.Z-nightly.N, sem zeros à esquerda.`);
   process.exit(1);
 }
 
@@ -60,6 +60,16 @@ let cargoContent = fs.readFileSync(cargoPath, 'utf8');
 cargoContent = cargoContent.replace(/^version = "[^"]+"/m, `version = "${version}"`);
 fs.writeFileSync(cargoPath, cargoContent, 'utf8');
 console.log(`[OK] src-tauri/Cargo.toml: version = "${version}"`);
+
+// Keep the application package in the Rust lockfile aligned, without changing dependencies.
+const cargoLockPath = path.join(rootDir, 'src-tauri', 'Cargo.lock');
+if (fs.existsSync(cargoLockPath)) {
+  const lock = fs.readFileSync(cargoLockPath, 'utf8');
+  const updated = lock.replace(/(\[\[package\]\]\r?\nname = "nexus"\r?\nversion = ")[^"]+("\r?\n)/,
+    (_, prefix, suffix) => `${prefix}${version}${suffix}`);
+  fs.writeFileSync(cargoLockPath, updated, 'utf8');
+  console.log(`[OK] src-tauri/Cargo.lock: nexus ${version}`);
+}
 
 // 4. src/version.ts
 const versionTsPath = path.join(rootDir, 'src', 'version.ts');

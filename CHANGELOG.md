@@ -10,6 +10,31 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 
 ---
 
+## [0.3.0-nightly.2] — 2026-11-11
+
+> Canal Nightly: **Calls & Streaming 2.1**. Homologação manual aprovada pelo responsável e publicação autorizada.
+
+### Corrigido
+- Rampa de qualidade de tela mantém resolução e warmup durante a negociação, avançando somente após a resposta SDP.
+- Controles de chamada movidos para a Sidebar, sem sobrepor a entrada de mensagens; dock recolhido sem conjuntos duplicados de microfone/fones.
+- Layouts Compacto, Equilibrado, Cinema e Tela Cheia com responsabilidades separadas e proporção de vídeo preservada.
+- Detecção de voz compartilhada entre configurações e chamada, sensibilidade atualizada ao vivo, calibração com limpeza de timers e preferências restauradas por conta.
+- Indicador local de fala sem hangover duplicado; transmissão de áudio contínua, sem gate automático.
+- Telemetria distingue solicitado, capturado, enviado, recebido e **decodificado**. FPS renderizado permanece indisponível sem medição do elemento de vídeo; cadência configurada não é apresentada como captura medida.
+
+### Ajustado
+- Preferência por janela no seletor de tela e avisos para monitor/fonte desconhecida, preservando indicadores de privacidade e controle de parada.
+- Diagnósticos de codec/encoder quando fornecidos por `getStats()`, sem promessa de aceleração GPU ou 60 FPS.
+- Test Lab Debug A/B com persistência isolada, backend/PostgreSQL próprios e guards contra ativação em Release.
+- Preparação Nightly sincroniza os locks, exige versão Nightly, associa o instalador à sua assinatura exata e impede reutilizar uma tag existente no workflow.
+
+### Limitações conhecidas
+- A barra nativa WebView2 não tem remoção seletiva suportada identificada; inclusão nos frames depende de homologação por superfície/runtime.
+- Desempenho, aceleração de hardware, áudio real, reconexão ICE e geometria/DPI exigem testes manuais. O monitor auxiliar de long tasks ainda não está integrado ao runtime; não há redução de CPU comprovada.
+- Nenhum artefato nativo assinado ou instalador foi gerado nesta preparação. Stable `0.2.1`, seu manifesto e suas releases permanecem preservados.
+
+---
+
 ## [0.3.0-nightly.1] — 2026-11-10
 
 > [!NOTE]

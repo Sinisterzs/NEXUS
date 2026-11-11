@@ -7,13 +7,22 @@
  * e ciclo de vida estrito contra tracks órfãs.
  */
 
-import type { ScreenShareQualityPreset } from '../lib/types';
+import type { ScreenShareQualityPreset } from '../lib/types.ts';
+import {
+  canRetryDisplayCapture,
+  getCaptureSourcePresentation,
+  normalizeDisplaySurface,
+} from '../lib/screenCapturePolicy.ts';
 
 export interface ScreenEncodingTargets {
   maxBitrate: number;
+  minBitrate: number;
+  initialBitrate: number;
   maxFramerate: number;
   targetWidth: number;
   targetHeight: number;
+  degradationPreference: 'maintain-resolution' | 'balanced' | 'maintain-framerate';
+  steadyContentHint: 'detail' | 'motion';
   label: string;
 }
 
@@ -24,10 +33,17 @@ export interface ScreenCaptureState {
   trackId: string | null;
   sourceLabel: string | null;
   qualityPreset: ScreenShareQualityPreset;
+  requestedWidth: number;
+  requestedHeight: number;
+  requestedFrameRate: number;
+  capturedWidth: number | null;
+  capturedHeight: number | null;
+  capturedFrameRate: number | null;
   effectiveWidth: number | null;
   effectiveHeight: number | null;
   effectiveFrameRate: number | null;
   displaySurface: string | null;
+  captureNotice: string | null;
   qualityFallbackNotice: string | null;
   error: string | null;
 }
@@ -37,33 +53,67 @@ export type ScreenCaptureListener = (state: ScreenCaptureState) => void;
 export const SCREEN_QUALITY_CONFIGS: Record<ScreenShareQualityPreset, ScreenEncodingTargets> = {
   auto: {
     maxBitrate: 3_000_000,
+    minBitrate: 1_200_000,
+    initialBitrate: 2_000_000,
     maxFramerate: 30,
     targetWidth: 1920,
     targetHeight: 1080,
+    degradationPreference: 'maintain-resolution',
+    steadyContentHint: 'detail',
     label: 'Automático (Adaptativo)',
   },
   '720p30': {
     maxBitrate: 2_200_000,
+    minBitrate: 900_000,
+    initialBitrate: 1_500_000,
     maxFramerate: 30,
     targetWidth: 1280,
     targetHeight: 720,
+    degradationPreference: 'maintain-resolution',
+    steadyContentHint: 'detail',
     label: '720p • 30 FPS',
   },
   '1080p30': {
     maxBitrate: 3_500_000,
+    minBitrate: 1_500_000,
+    initialBitrate: 2_400_000,
     maxFramerate: 30,
     targetWidth: 1920,
     targetHeight: 1080,
+    degradationPreference: 'maintain-resolution',
+    steadyContentHint: 'detail',
     label: '1080p • 30 FPS',
   },
   '1080p60': {
     maxBitrate: 5_000_000,
+    minBitrate: 2_200_000,
+    initialBitrate: 3_250_000,
     maxFramerate: 60,
     targetWidth: 1920,
     targetHeight: 1080,
+    degradationPreference: 'balanced',
+    steadyContentHint: 'motion',
     label: '1080p • 60 FPS',
   },
 };
+
+export function applyTrackContentHint(
+  track: MediaStreamTrack | null,
+  hint: 'detail' | 'motion'
+): void {
+  if (!track) return;
+  try {
+    if ('contentHint' in track) {
+      (track as any).contentHint = hint;
+    } else {
+      Object.defineProperty(track, 'contentHint', {
+        value: hint,
+        writable: true,
+        configurable: true,
+      });
+    }
+  } catch {}
+}
 
 export function buildDisplayVideoConstraints(preset: ScreenShareQualityPreset): MediaTrackConstraints {
   const cfg = SCREEN_QUALITY_CONFIGS[preset] || SCREEN_QUALITY_CONFIGS.auto;
@@ -81,6 +131,19 @@ export function buildDisplayVideoConstraints(preset: ScreenShareQualityPreset): 
     width: { ideal: cfg.targetWidth, max: cfg.targetWidth },
     height: { ideal: cfg.targetHeight, max: cfg.targetHeight },
     frameRate: { ideal: cfg.maxFramerate, max: cfg.maxFramerate },
+  } as MediaTrackConstraints;
+}
+
+/** A supported picker preference, never an exact constraint or a privacy-indicator override. */
+export function buildDisplayMediaVideoConstraints(
+  preset: ScreenShareQualityPreset,
+  fallback = false
+): MediaTrackConstraints {
+  return {
+    ...(fallback
+      ? { cursor: 'always', frameRate: { max: 30 } }
+      : buildDisplayVideoConstraints(preset)),
+    displaySurface: 'window',
   } as MediaTrackConstraints;
 }
 
@@ -141,7 +204,7 @@ export class ScreenCaptureService {
         typeof settings.frameRate === 'number' && settings.frameRate > 0
           ? Math.round(settings.frameRate)
           : null;
-      this.displaySurface = typeof settings.displaySurface === 'string' ? settings.displaySurface : null;
+      this.displaySurface = normalizeDisplaySurface(settings.displaySurface);
     } catch {
       this.effectiveWidth = null;
       this.effectiveHeight = null;
@@ -158,17 +221,26 @@ export class ScreenCaptureService {
     if (track && this.isCapturing) {
       this.extractTrackSettings(track);
     }
+    const targets = this.getEncodingTargets(this.qualityPreset);
+    const source = getCaptureSourcePresentation(normalizeDisplaySurface(this.displaySurface));
     return {
       isCapturing: this.isCapturing,
       isStarting: this.isStarting,
       stream: this.stream,
       trackId: track ? track.id : null,
-      sourceLabel: this.sourceLabel,
+      sourceLabel: this.isCapturing ? source.label : null,
       qualityPreset: this.qualityPreset,
+      requestedWidth: targets.targetWidth,
+      requestedHeight: targets.targetHeight,
+      requestedFrameRate: targets.maxFramerate,
+      capturedWidth: this.effectiveWidth,
+      capturedHeight: this.effectiveHeight,
+      capturedFrameRate: this.effectiveFrameRate,
       effectiveWidth: this.effectiveWidth,
       effectiveHeight: this.effectiveHeight,
       effectiveFrameRate: this.effectiveFrameRate,
       displaySurface: this.displaySurface,
+      captureNotice: this.isCapturing ? source.notice : null,
       qualityFallbackNotice: this.qualityFallbackNotice,
       error: this.error,
     };
@@ -230,11 +302,19 @@ export class ScreenCaptureService {
     }
 
     try {
+      const targets = SCREEN_QUALITY_CONFIGS[validPreset];
       const constraints = buildDisplayVideoConstraints(validPreset);
       await track.applyConstraints(constraints);
+      applyTrackContentHint(track, targets.steadyContentHint);
       this.extractTrackSettings(track);
+      if (
+        this.effectiveFrameRate !== null &&
+        this.effectiveFrameRate < targets.maxFramerate - 5
+      ) {
+        this.qualityFallbackNotice = `A fonte capturada está operando a ${this.effectiveFrameRate} FPS (solicitado: ${targets.maxFramerate} FPS).`;
+      }
       console.log(
-        `[ScreenCaptureService] Qualidade de transmissão ajustada para ${validPreset} (efetivo: ${this.effectiveWidth || '?'}x${this.effectiveHeight || '?'} @ ${this.effectiveFrameRate || '?'}fps)`
+        `[ScreenCaptureService] Qualidade de transmissão ajustada para ${validPreset} (efetivo: ${this.effectiveWidth || '?'}x${this.effectiveHeight || '?'} @ ${this.effectiveFrameRate || '?'}fps, contentHint=${targets.steadyContentHint})`
       );
       this.notify();
       return { applied: true, didFallback: false, activePreset: validPreset };
@@ -246,6 +326,7 @@ export class ScreenCaptureService {
       try {
         await track.applyConstraints(buildDisplayVideoConstraints('720p30'));
         this.qualityPreset = '720p30';
+        applyTrackContentHint(track, SCREEN_QUALITY_CONFIGS['720p30'].steadyContentHint);
         this.qualityFallbackNotice = `O perfil ${SCREEN_QUALITY_CONFIGS[validPreset].label} não foi suportado pela fonte; ajustado automaticamente para 720p • 30 FPS.`;
         this.extractTrackSettings(track);
         this.notify();
@@ -315,26 +396,22 @@ export class ScreenCaptureService {
 
     try {
       // 5. Invoca o seletor nativo do Windows / WebView2 com as preferências de qualidade
-      const videoConstraints = buildDisplayVideoConstraints(this.qualityPreset);
+      const videoConstraints = buildDisplayMediaVideoConstraints(this.qualityPreset);
       try {
         acquiredStream = await navigator.mediaDevices.getDisplayMedia({
           video: videoConstraints,
           audio: false,
         });
       } catch (firstErr: any) {
-        const errName = firstErr?.name || '';
-        // Se foi recusa/cancelamento do usuário, não tenta reabrir o seletor!
-        if (errName === 'NotAllowedError' || errName === 'AbortError' || errName === 'NotFoundError') {
+        // Não reabre após cancelamento, erro de acesso ou stop durante o seletor.
+        if (currentToken !== this.sessionToken || !canRetryDisplayCapture(firstErr)) {
           throw firstErr;
         }
         // Se falhou por OverconstrainedError ou limitação do driver, tenta fallback 720p30 conservador
         console.warn('[ScreenCaptureService] Fallback de restrições em getDisplayMedia:', firstErr);
         usedFallback = true;
         acquiredStream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            cursor: 'always',
-            frameRate: { max: 30 },
-          } as MediaTrackConstraints,
+          video: buildDisplayMediaVideoConstraints(this.qualityPreset, true),
           audio: false,
         });
       }
@@ -394,11 +471,10 @@ export class ScreenCaptureService {
     }
 
     const videoTrack = videoTracks[0];
-    try {
-      if ('contentHint' in videoTrack) {
-        (videoTrack as any).contentHint = this.qualityPreset === '1080p60' ? 'motion' : 'detail';
-      }
-    } catch {}
+    applyTrackContentHint(
+      videoTrack,
+      SCREEN_QUALITY_CONFIGS[this.qualityPreset]?.steadyContentHint || 'detail'
+    );
 
     // 8. Remove qualquer listener anterior e registra listener único para encerramento nativo
     this.detachTrackEndedListener();
@@ -413,7 +489,6 @@ export class ScreenCaptureService {
 
     // 9. Atualiza estado ativo e lê resolução/FPS efetivos
     this.stream = acquiredStream;
-    this.sourceLabel = videoTrack.label || 'Tela / Janela';
     this.isCapturing = true;
     this.isStarting = false;
     this.error = null;
@@ -422,6 +497,7 @@ export class ScreenCaptureService {
         'Restrições ajustadas automaticamente para compatibilidade com a fonte selecionada.';
     }
     this.extractTrackSettings(videoTrack);
+    this.sourceLabel = getCaptureSourcePresentation(normalizeDisplaySurface(this.displaySurface)).label;
 
     console.log(
       `[ScreenCaptureService] Captura ativa: "${this.sourceLabel}" (id: ${videoTrack.id}, preset: ${this.qualityPreset}, efetivo: ${this.effectiveWidth || '?'}x${this.effectiveHeight || '?'} @ ${this.effectiveFrameRate || '?'}fps)`

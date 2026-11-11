@@ -1,4 +1,13 @@
+#[cfg(all(feature = "test-lab", not(debug_assertions)))]
+compile_error!("test-lab is restricted to Debug builds");
 use std::env;
+
+/// Lab compilation occurs in a generated, secret-free source stage.
+pub fn lab_root() -> std::path::PathBuf {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    assert_eq!(root.file_name().and_then(|s| s.to_str()), Some(".nexus-lab"), "Use scripts/lab.ps1 Prepare");
+    root.to_path_buf()
+}
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -20,6 +29,20 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> Self {
+        if cfg!(feature = "test-lab") {
+            // No dotenv, production secrets, Tailscale discovery or inherited DB URL.
+            let password = std::fs::read_to_string(lab_root().join("pg-password")).expect("Prepare lab first");
+            assert!(password.trim().len() == 64 && password.trim().chars().all(|c| c.is_ascii_hexdigit()));
+            return Self {
+                database_url: format!("postgres://nexus_lab:{}@127.0.0.1:15432/nexus_lab", password.trim()),
+                test_database_url: None, server_host: "127.0.0.1".into(), server_port: 13001,
+                session_ttl_hours: 12, rate_limit_auth_per_minute: 30,
+                google_client_id: String::new(), google_client_secret: None,
+                google_jwks_url: "http://127.0.0.1:1/disabled".into(),
+                tailscale_ip: None, public_fqdn: None, trust_proxy_headers: false,
+                turn_secret: None, turn_server: None,
+            };
+        }
         // 1. Try standard dotenv in current directory and parent directories
         let _ = dotenvy::dotenv();
 

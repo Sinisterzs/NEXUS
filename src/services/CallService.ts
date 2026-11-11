@@ -34,6 +34,8 @@ export class CallService {
   private connectingTimer: any = null;
   private reconnectingTimer: any = null;
   private reconnectAttemptTimer: any = null;
+  private localSpeakingTimer: any = null;
+  private remoteSpeakingTimer: any = null;
 
   private callingTimeoutMs = DEFAULT_CALLING_TIMEOUT_MS;
   private connectingTimeoutMs = DEFAULT_CONNECTING_TIMEOUT_MS;
@@ -594,11 +596,11 @@ export class CallService {
         },
         onLocalSpeaking: (isSpeaking) => {
           if (instanceToken !== this.callSessionToken) return;
-          useAppStore.getState().setSpeakingState('local', isSpeaking);
+          this.handleSpeakingEvent('local', isSpeaking);
         },
         onRemoteSpeaking: (isSpeaking) => {
           if (instanceToken !== this.callSessionToken) return;
-          useAppStore.getState().setSpeakingState('remote', isSpeaking);
+          this.handleSpeakingEvent('remote', isSpeaking);
         },
         onError: (errMsg) => {
           if (instanceToken !== this.callSessionToken) return;
@@ -825,6 +827,11 @@ export class CallService {
     const effectiveMuted = Boolean(updatedStore.isMicMuted || updatedStore.isDeafened);
 
     if (effectiveMuted) {
+      if (this.localSpeakingTimer) {
+        clearTimeout(this.localSpeakingTimer);
+        this.localSpeakingTimer = null;
+      }
+      useAppStore.getState().setSpeakingState('local', false);
       soundEffects.playMute();
     } else {
       soundEffects.playUnmute();
@@ -849,6 +856,9 @@ export class CallService {
     const nextMuted = Boolean(updatedStore.isMicMuted || nextDeafened);
 
     if (nextDeafened) {
+      this.clearSpeakingTimers();
+      useAppStore.getState().setSpeakingState('local', false);
+      useAppStore.getState().setSpeakingState('remote', false);
       soundEffects.playMute();
     } else {
       soundEffects.playUnmute();
@@ -860,6 +870,58 @@ export class CallService {
     }
     if (updatedStore.activeCallId) {
       gatewayClient.sendCallMute(updatedStore.activeCallId, nextMuted);
+    }
+  }
+
+  private handleSpeakingEvent(target: 'local' | 'remote', rawSpeaking: boolean): void {
+    const store = useAppStore.getState();
+    const hangoverMs = store.settings.audioVideo.voiceHangoverMs ?? 400;
+
+    if (target === 'local') {
+      // WebRTC already applies attack, hysteresis and hangover. Reflect the same
+      // stabilized state as the mic test instead of adding a second delay.
+      if (this.localSpeakingTimer) {
+        clearTimeout(this.localSpeakingTimer);
+        this.localSpeakingTimer = null;
+      }
+      store.setSpeakingState('local', rawSpeaking && !store.isMicMuted && !store.isDeafened);
+    } else {
+      if (store.isDeafened) {
+        if (this.remoteSpeakingTimer) {
+          clearTimeout(this.remoteSpeakingTimer);
+          this.remoteSpeakingTimer = null;
+        }
+        store.setSpeakingState('remote', false);
+        return;
+      }
+
+      if (rawSpeaking) {
+        if (this.remoteSpeakingTimer) {
+          clearTimeout(this.remoteSpeakingTimer);
+          this.remoteSpeakingTimer = null;
+        }
+        if (!store.isRemoteSpeaking) {
+          store.setSpeakingState('remote', true);
+        }
+      } else {
+        if (store.isRemoteSpeaking && !this.remoteSpeakingTimer) {
+          this.remoteSpeakingTimer = setTimeout(() => {
+            this.remoteSpeakingTimer = null;
+            useAppStore.getState().setSpeakingState('remote', false);
+          }, hangoverMs);
+        }
+      }
+    }
+  }
+
+  private clearSpeakingTimers(): void {
+    if (this.localSpeakingTimer) {
+      clearTimeout(this.localSpeakingTimer);
+      this.localSpeakingTimer = null;
+    }
+    if (this.remoteSpeakingTimer) {
+      clearTimeout(this.remoteSpeakingTimer);
+      this.remoteSpeakingTimer = null;
     }
   }
 
@@ -1185,6 +1247,7 @@ export class CallService {
 
     try {
       this.clearStateTimers();
+      this.clearSpeakingTimers();
       this.stopDurationTimer();
 
       const store = useAppStore.getState();

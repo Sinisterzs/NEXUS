@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { TitleBar } from '../components/TitleBar';
 import { ConnectionBanner } from '../components/ConnectionBanner';
 import { IncomingCallToast } from '../components/IncomingCallToast';
-import { ActiveCallBar } from '../components/ActiveCallBar';
 import { UpdateNotificationToast } from '../components/UpdateNotificationToast';
 import { AuthModal } from '../features/auth/AuthModal';
 import { Sidebar } from './Sidebar';
@@ -207,9 +206,6 @@ export const App: React.FC = () => {
 
       {/* Notificação Flutuante de Chamada Recebida */}
       <IncomingCallToast />
-
-      {/* Barra Flutuante de Chamada Ativa (quando navegando em outras abas) */}
-      <ActiveCallBar />
 
       {/* Notificação Flutuante de Atualização Automática (GitHub Releases) */}
       <UpdateNotificationToast />

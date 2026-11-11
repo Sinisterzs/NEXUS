@@ -1,3 +1,4 @@
+pub mod lab;
 pub mod auth;
 pub mod commands;
 pub mod db;
@@ -130,8 +131,15 @@ fn get_initial_tab() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    let mut context = tauri::generate_context!();
+    lab::prepare(&mut context);
+    if lab::enabled() && std::env::args().any(|arg| arg == "--lab-clear-credentials") {
+        auth::delete_secure_token().expect("clear lab credentials");
+        return;
+    }
+    let mut builder = tauri::Builder::default();
+    if !lab::enabled() { builder = builder.plugin(tauri_plugin_updater::Builder::new().build()); }
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .on_permission_request(|_webview, kind| match kind {
@@ -162,12 +170,17 @@ pub fn run() {
 
             #[cfg(desktop)]
             {
-                let _win = tauri::WebviewWindowBuilder::new(
+                let mut window = tauri::WebviewWindowBuilder::new(
                     app,
                     "main",
                     tauri::WebviewUrl::default(),
                 )
-                .title("NEXUS")
+                ;
+                if lab::enabled() {
+                    window = window.data_directory(lab::root().join(lab::profile()).join("webview"));
+                }
+                let _win = window
+                .title(if lab::enabled() { format!("NEXUS LAB {}", lab::profile()) } else { "NEXUS".into() })
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(960.0, 600.0)
                 .resizable(true)
@@ -189,6 +202,7 @@ pub fn run() {
                 .build()?;
             }
 
+            lab::record_runtime(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -256,6 +270,6 @@ pub fn run() {
             commands::webrtc_get_ice_servers,
             updater::updater_check_channel,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running NEXUS desktop application");
 }

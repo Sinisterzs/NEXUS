@@ -101,6 +101,11 @@ pub fn is_authorized_server_host(host: &str) -> bool {
 }
 
 pub fn validate_server_url(raw_url: &str) -> Result<String, String> {
+    if crate::lab::enabled() {
+        return if raw_url.trim().trim_end_matches('/') == crate::lab::API {
+            Ok(crate::lab::API.into())
+        } else { Err("Laboratório aceita somente seu backend loopback".into()) };
+    }
     let trimmed = raw_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return Err("Endereço do servidor não pode ser vazio.".to_string());
@@ -666,7 +671,7 @@ pub async fn network_get_status(include_tailscale: Option<bool>) -> Result<Netwo
     let mut auth_url: Option<String> = None;
     let mut detected_peers: Vec<TailscalePeerSummary> = Vec::new();
 
-    if installed && should_query_tailscale {
+    if !crate::lab::enabled() && installed && should_query_tailscale {
         match query_tailscale_status_raw() {
             Ok(json) => {
                 service_running = true;
@@ -828,7 +833,7 @@ pub async fn network_get_status(include_tailscale: Option<bool>) -> Result<Netwo
 
     // 2. Fallback: Only scan private candidates if configured server is on a private network!
     // For users configured with public HTTPS, avoid unprompted scanning of private Tailscale peers.
-    if reachability != "connected" && reachability != "needs_approval" && !is_public_https {
+    if !crate::lab::enabled() && reachability != "connected" && reachability != "needs_approval" && !is_public_https {
         let mut candidates: Vec<String> = Vec::new();
 
         // Pass 0: Default public HTTPS server if not already active_url
@@ -1022,6 +1027,7 @@ pub fn safe_open_url(raw_url: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn network_open_tailscale() -> Result<(), String> {
+    if crate::lab::enabled() { return Err("Tailscale do host não é gerenciado pelo laboratório".into()); }
     // 1. Launch Tailscale GUI if present
     if let Some(gui) = find_tailscale_gui() {
         let mut cmd = std::process::Command::new(gui);

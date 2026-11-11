@@ -136,6 +136,9 @@ export interface AppSettings {
     participantVolumes?: Record<string, number>;
     callStageSplitRatio?: number;
     cameraDevice: string;
+    voiceAutoSensitivity?: boolean;
+    voiceHangoverMs?: number;
+    voiceSoftGate?: boolean;
   };
   notifications: {
     desktopAlerts: boolean;
@@ -200,6 +203,9 @@ export interface PersistedPreferences {
   streamerMode: boolean;
   avatarUrl?: string;
   updateChannel?: 'stable' | 'beta';
+  voiceAutoSensitivity?: boolean;
+  voiceHangoverMs?: number;
+  voiceSoftGate?: boolean;
 }
 
 export interface AuthUserProfile {
@@ -342,6 +348,85 @@ export interface NetworkStatus {
   approved_server_id?: string | null;
   verified_server_identity?: VerifiedServerIdentity | null;
   error_message?: string | null;
+}
+
+// Streaming & WebRTC Diagnostics (Nightly 2 - Problems 1 & 5)
+export type BitrateRampStage = 'warmup' | 'ramping' | 'steady' | 'idle';
+
+export interface WebRtcTransportDiagnostics {
+  connectionState: RTCPeerConnectionState | 'closed';
+  iceConnectionState: RTCIceConnectionState | 'closed';
+  selectedCandidatePairState: string | null;
+  localCandidateType: string | null;
+  remoteCandidateType: string | null;
+  transportProtocol: string | null;
+  networkClassification:
+    | 'tailscale-cg-nat'
+    | 'tailscale-ipv6-ula'
+    | 'loopback'
+    | 'lan-or-reflexive'
+    | 'unknown';
+  rttMs: number | null;
+  packetsLostInbound: number;
+  packetsReceived: number;
+  packetsSent: number;
+  packetLossPercent: number;
+  bytesReceived: number;
+  bytesSent: number;
+  jitterMs: number | null;
+  audioBitrateKbps: number;
+  videoBitrateKbps: number;
+  videoWidth: number | null;
+  videoHeight: number | null;
+  videoFps: number | null;
+  qualityLimitationReason: string | null;
+
+  // Separated FPS metrics (Problem 5: never confuse preset FPS with effective FPS)
+  requestedFps: number | null;
+  capturedFps: number | null;
+  encodedFps: number | null;
+  sentFps: number | null;
+  receivedFps: number | null;
+  decodedFps: number | null;
+  /** Unavailable until presentation is measured on the video element. */
+  renderedFps: number | null;
+
+  // Separated resolution metrics (Problem 1 & 5: requested vs captured vs encoded vs received)
+  requestedWidth: number | null;
+  requestedHeight: number | null;
+  capturedWidth: number | null;
+  capturedHeight: number | null;
+  encodedWidth: number | null;
+  encodedHeight: number | null;
+  receivedWidth: number | null;
+  receivedHeight: number | null;
+
+  // Codec, hardware/software implementation & adaptation counters
+  videoCodec: string | null;
+  encoderImplementation: string | null;
+  decoderImplementation: string | null;
+  powerEfficientEncoder: boolean | null;
+  powerEfficientDecoder: boolean | null;
+  qualityLimitationDurations: Record<string, number> | null;
+  qualityLimitationResolutionChanges: number | null;
+  framesEncoded: number | null;
+  framesSent: number | null;
+  framesReceived: number | null;
+  framesDecoded: number | null;
+  framesDropped: number | null;
+  keyFramesEncoded: number | null;
+  keyFramesDecoded: number | null;
+  pliCount: number | null;
+  nackCount: number | null;
+  targetVideoBitrateKbps: number | null;
+  bitrateRampStage: BitrateRampStage;
+}
+export interface VoiceActivityConfig {
+  sensitivity: number;
+  autoSensitivity: boolean;
+  hangoverMs: number;
+  hysteresisOffset: number;
+  softGateEnabled: boolean;
 }
 
 

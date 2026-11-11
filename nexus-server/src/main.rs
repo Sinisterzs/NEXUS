@@ -38,7 +38,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("Aviso ao inicializar presença dos usuários: {}", e);
     }
 
-    let identity = nexus_server::identity::ServerIdentity::load_or_generate(None)?;
+    let lab_identity = if cfg!(feature = "test-lab") {
+        Some(nexus_server::config::lab_root().join("server_identity.pk8"))
+    } else { None };
+    let identity = nexus_server::identity::ServerIdentity::load_or_generate(
+        lab_identity.as_ref().and_then(|p| p.to_str())
+    )?;
     tracing::info!("NEXUS Server Identity: {}", identity.server_id);
     let app = nexus_server::create_app_with_identity(pool, config.clone(), identity);
 
@@ -52,6 +57,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Google OAuth: Client Secret carregado no backend: {}", has_secret);
 
     let server_port = config.server_port;
+    if cfg!(feature = "test-lab") {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:13001").await?;
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+        return Ok(());
+    }
 
     // Direct explicit host configuration (e.g. custom or testing)
     if config.server_host != "127.0.0.1" && config.server_host != "localhost" {

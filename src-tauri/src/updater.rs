@@ -46,7 +46,7 @@ const GITHUB_REPO_NAME: &str = "NEXUS";
 const STABLE_ENDPOINT: &str =
     "https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json";
 const NIGHTLY_FALLBACK_ENDPOINT: &str =
-    "https://github.com/Sinisterzs/NEXUS/releases/download/v0.1.9-nightly.1/latest-nightly.json";
+    concat!("https://github.com/Sinisterzs/NEXUS/releases/download/v", env!("CARGO_PKG_VERSION"), "/latest-nightly.json");
 
 /// Resolve dynamic manifest endpoint for the chosen channel
 pub async fn resolve_channel_endpoint(channel: &str) -> (String, Option<String>) {
@@ -83,7 +83,7 @@ pub async fn resolve_channel_endpoint(channel: &str) -> (String, Option<String>)
         // Fallback if GitHub API is rate-limited or unavailable
         (
             NIGHTLY_FALLBACK_ENDPOINT.to_string(),
-            Some("v0.1.9-nightly.1".to_string()),
+            Some(format!("v{}", env!("CARGO_PKG_VERSION"))),
         )
     } else {
         (STABLE_ENDPOINT.to_string(), None)
@@ -95,6 +95,7 @@ pub async fn updater_check_channel<R: Runtime>(
     webview: Webview<R>,
     channel: String,
 ) -> Result<UpdateCheckResult, String> {
+    if crate::lab::enabled() { return Err("Updater desabilitado no laboratório".into()); }
     let app = webview.app_handle();
     let current_version = app.package_info().version.to_string();
     let norm_channel =
@@ -202,6 +203,11 @@ pub async fn updater_check_channel<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nightly_fallback_uses_build_version() {
+        assert!(super::NIGHTLY_FALLBACK_ENDPOINT.contains(&format!("/v{}/", env!("CARGO_PKG_VERSION"))));
+        assert!(super::STABLE_ENDPOINT.ends_with("/releases/latest/download/latest.json"));
+    }
     use super::*;
 
     #[tokio::test]
@@ -250,8 +256,9 @@ mod tests {
 
     #[test]
     fn test_semver_downgrade_logic() {
-        let current = semver::Version::parse("0.1.9-nightly.1").unwrap();
-        let remote_stable = semver::Version::parse("0.1.7").unwrap();
+        let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let remote_stable = semver::Version::parse("0.2.1").unwrap();
         assert!(current > remote_stable, "Nightly should be recognized as higher than old Stable");
+        assert!(current > semver::Version::parse("0.3.0-nightly.1").unwrap());
     }
 }

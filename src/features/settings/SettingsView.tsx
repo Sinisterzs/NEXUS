@@ -31,6 +31,12 @@ import { networkManager } from '../../services/NetworkManager';
 import { updateService, UpdateState } from '../../services/UpdateService';
 import { audioDeviceService, AudioDeviceInfo } from '../../services/AudioDeviceService';
 import { callService } from '../../services/CallService';
+import {
+  VoiceActivityDetector,
+  processAnalyserFrame,
+  sensitivityToThreshold,
+  calibrateSensitivityFromNoise,
+} from '../../lib/voiceActivity.ts';
 import { Avatar } from '../../components/Avatar';
 import { APP_VERSION, getInstalledVersionInfo } from '../../version';
 
@@ -101,6 +107,46 @@ export const SettingsView: React.FC = () => {
   const [outputDevices, setOutputDevices] = useState<AudioDeviceInfo[]>([]);
   const [isTestingMic, setIsTestingMic] = useState(false);
   const [micVolumeLevel, setMicVolumeLevel] = useState(0);
+  const [isMicSpeaking, setIsMicSpeaking] = useState(false);
+  const [isCalibrating, setIsCalibrating] = useState(false);
+  const [calibrationMsg, setCalibrationMsg] = useState<string | null>(null);
+  const calibrationSamplesRef = useRef<number[]>([]);
+  const isCalibratingRef = useRef(false);
+  const calibrationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const calibrationMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const micVadRef = useRef<VoiceActivityDetector | null>(null);
+  const sensitivityRef = useRef(settings.audioVideo.inputSensitivity);
+  const hangoverRef = useRef(settings.audioVideo.voiceHangoverMs);
+  sensitivityRef.current = settings.audioVideo.inputSensitivity;
+  hangoverRef.current = settings.audioVideo.voiceHangoverMs;
+  isCalibratingRef.current = isCalibrating;
+
+  const handleCalibrateNoise = () => {
+    if (!isTestingMic || isCalibrating) return;
+    setIsCalibrating(true);
+    setCalibrationMsg(null);
+    calibrationSamplesRef.current = [];
+
+    if (calibrationTimerRef.current) clearTimeout(calibrationTimerRef.current);
+    calibrationTimerRef.current = setTimeout(() => {
+      calibrationTimerRef.current = null;
+      setIsCalibrating(false);
+      const samples = calibrationSamplesRef.current;
+      if (samples.length > 0) {
+        const cal = calibrateSensitivityFromNoise(samples);
+        updateAudioVideo({ inputSensitivity: cal.recommendedSensitivity });
+        setCalibrationMsg(
+          `Ruído de pico: ${cal.peakNoise}% → Sensibilidade ajustada para ${cal.recommendedSensitivity}% (Limiar: ${cal.recommendedThreshold}%)`
+        );
+        showSaveSuccess();
+        if (calibrationMessageTimerRef.current) clearTimeout(calibrationMessageTimerRef.current);
+        calibrationMessageTimerRef.current = setTimeout(() => {
+          calibrationMessageTimerRef.current = null;
+          setCalibrationMsg(null);
+        }, 5000);
+      }
+    }, 1500);
+  };
 
   useEffect(() => {
     async function loadAudioDevices() {
@@ -198,6 +244,7 @@ export const SettingsView: React.FC = () => {
 
           if (!AudioCtx) return;
           audioCtx = new AudioCtx();
+          if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
           const src = audioCtx.createMediaStreamSource(s);
           const analyser = audioCtx.createAnalyser();
           analyser.fftSize = 256;
@@ -213,12 +260,24 @@ export const SettingsView: React.FC = () => {
             } catch {}
           }
 
+          const vad = audioDeviceService.createVoiceDetector({
+            sensitivity: sensitivityRef.current ?? 70,
+            hangoverMs: hangoverRef.current ?? 400,
+          });
+          micVadRef.current = vad;
+
           const dataArray = new Uint8Array(128);
           interval = setInterval(() => {
-            analyser.getByteFrequencyData(dataArray);
-            const sum = dataArray.reduce((acc, val) => acc + val, 0);
-            const avg = sum / dataArray.length;
-            setMicVolumeLevel(Math.min(100, Math.round((avg / 60) * 100)));
+            if (audioCtx?.state === 'suspended') audioCtx.resume().catch(() => {});
+            vad.setSensitivity(sensitivityRef.current ?? 70);
+            vad.setHangover(hangoverRef.current ?? 400);
+            const result = processAnalyserFrame(vad, analyser, dataArray, 50);
+            setMicVolumeLevel(result.meterLevel);
+            setIsMicSpeaking(result.isSpeaking);
+
+            if (isCalibratingRef.current) {
+              calibrationSamplesRef.current.push(result.rawLevel);
+            }
           }, 50);
         })
         .catch((err) => {
@@ -229,10 +288,23 @@ export const SettingsView: React.FC = () => {
         });
     } else {
       setMicVolumeLevel(0);
+      setIsMicSpeaking(false);
+      setIsCalibrating(false);
     }
 
     return () => {
       cancelled = true;
+      micVadRef.current = null;
+      if (calibrationTimerRef.current) {
+        clearTimeout(calibrationTimerRef.current);
+        calibrationTimerRef.current = null;
+      }
+      if (calibrationMessageTimerRef.current) {
+        clearTimeout(calibrationMessageTimerRef.current);
+        calibrationMessageTimerRef.current = null;
+      }
+      setIsCalibrating(false);
+      setIsMicSpeaking(false);
       if (interval) clearInterval(interval);
       if (monitorAudio) {
         try {
@@ -980,13 +1052,32 @@ export const SettingsView: React.FC = () => {
                 </select>
 
                 {/* Input Sensitivity Slider & Live meter */}
-                <div>
-                  <div className="flex justify-between text-[11px] text-nexus-muted mb-1">
-                    <span>Nível de Captação / Sensibilidade</span>
-                    <span className="font-mono text-nexus-text">
-                      {isTestingMic ? `${micVolumeLevel}% (Em Teste)` : `${settings.audioVideo.inputSensitivity}%`}
-                    </span>
+                <div className="space-y-3 pt-2">
+                  <div className="flex items-center justify-between text-[11px] text-nexus-muted">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium text-nexus-text">Sensibilidade de Entrada</span>
+                      <span className="text-[10px] text-nexus-muted">
+                        (Limiar: {sensitivityToThreshold(settings.audioVideo.inputSensitivity)}%)
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {isTestingMic && (
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold transition-all ${
+                            isMicSpeaking
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.2)]'
+                              : 'bg-nexus-bg text-nexus-muted border border-nexus-border'
+                          }`}
+                        >
+                          {isMicSpeaking ? 'Voz Detectada' : 'Aguardando Voz...'}
+                        </span>
+                      )}
+                      <span className="font-mono text-nexus-text font-bold">
+                        {settings.audioVideo.inputSensitivity}%
+                      </span>
+                    </div>
                   </div>
+
                   <input
                     type="range"
                     min="0"
@@ -998,28 +1089,121 @@ export const SettingsView: React.FC = () => {
                     }}
                     className="w-full accent-nexus-accent cursor-pointer"
                   />
-                  {/* Visual live sound level meter */}
-                  <div className="h-2 w-full bg-nexus-bg rounded-full overflow-hidden mt-2 flex">
-                    <div
-                      className={`h-full transition-all duration-75 ${
-                        micVolumeLevel > 75
-                          ? 'bg-rose-500'
-                          : micVolumeLevel > 40
-                          ? 'bg-emerald-400'
-                          : 'bg-emerald-600'
-                      }`}
-                      style={{
-                        width: isTestingMic
-                          ? `${micVolumeLevel}%`
-                          : `${settings.audioVideo.inputSensitivity * 0.7}%`,
-                      }}
-                    />
+
+                  {/* Visual live sound level meter with threshold line */}
+                  <div className="space-y-1">
+                    <div className="relative h-3 w-full bg-nexus-bg rounded-full overflow-hidden border border-nexus-border">
+                      {/* Active level bar */}
+                      <div
+                        className={`h-full transition-all duration-75 ${
+                          !isTestingMic
+                            ? 'bg-nexus-muted/20'
+                            : isMicSpeaking
+                            ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                            : micVolumeLevel > 60
+                            ? 'bg-amber-400'
+                            : 'bg-emerald-700/60'
+                        }`}
+                        style={{
+                          width: `${isTestingMic ? micVolumeLevel : 0}%`,
+                        }}
+                      />
+
+                      {/* Threshold marker line */}
+                      <div
+                        className="absolute top-0 bottom-0 w-0.5 bg-rose-400 z-10 pointer-events-none"
+                        style={{
+                          left: `${sensitivityToThreshold(settings.audioVideo.inputSensitivity)}%`,
+                        }}
+                        title={`Limiar de ativação (${sensitivityToThreshold(settings.audioVideo.inputSensitivity)}%)`}
+                      />
+                    </div>
+
+                    <div className="flex justify-between text-[10px] text-nexus-muted">
+                      <span>0% (Silêncio)</span>
+                      <span className="text-rose-400/90 font-mono">
+                        ▲ Limiar ({sensitivityToThreshold(settings.audioVideo.inputSensitivity)}%)
+                      </span>
+                      <span>100% (Alto)</span>
+                    </div>
                   </div>
+
+                  {/* Noise floor calibration & controls bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={!isTestingMic || isCalibrating}
+                      onClick={handleCalibrateNoise}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-nexus-panel hover:bg-nexus-border text-nexus-text disabled:opacity-40 disabled:cursor-not-allowed transition-nexus flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {isCalibrating ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin text-nexus-accent" />
+                          <span>Medindo ruído ambiente (1.5s)...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-3 h-3 text-nexus-accent" />
+                          <span>Calibrar Ruído Ambiente</span>
+                        </>
+                      )}
+                    </button>
+
+                    {calibrationMsg && (
+                      <span className="text-[11px] text-emerald-400 font-mono">
+                        {calibrationMsg}
+                      </span>
+                    )}
+                  </div>
+
                   {isTestingMic && (
-                    <p className="text-[10px] text-emerald-400 mt-1.5 font-mono animate-pulse">
-                      Retorno de áudio ativo: fale ao microfone para ouvir sua voz e testar o cancelamento de ruído em tempo real.
+                    <p className="text-[10px] text-emerald-400 mt-1 font-mono">
+                      Retorno de áudio ativo: fale ao microfone para ouvir sua voz e verificar o indicador em tempo real.
                     </p>
                   )}
+
+                  {/* Smoothing & Hangover Control */}
+                  <div className="pt-2 border-t border-nexus-border/60 space-y-2">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <div>
+                        <span className="font-semibold text-nexus-text">Tempo de Retenção (Hangover)</span>
+                        <p className="text-[10px] text-nexus-muted">
+                          Evita oscilação do indicador de fala durante pausas naturais entre palavras e sílabas.
+                        </p>
+                      </div>
+                      <span className="font-mono text-nexus-text text-xs">
+                        {settings.audioVideo.voiceHangoverMs ?? 400}ms
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      {[200, 400, 600, 800].map((ms) => {
+                        const isSelected = (settings.audioVideo.voiceHangoverMs ?? 400) === ms;
+                        return (
+                          <button
+                            key={ms}
+                            type="button"
+                            onClick={() => {
+                              updateAudioVideo({ voiceHangoverMs: ms });
+                              showSaveSuccess();
+                            }}
+                            className={`px-2.5 py-1 text-xs rounded-lg border transition-nexus cursor-pointer ${
+                              isSelected
+                                ? 'bg-nexus-accent/20 border-nexus-accent text-nexus-accent font-semibold'
+                                : 'bg-nexus-bg border-nexus-border text-nexus-muted hover:text-nexus-text'
+                            }`}
+                          >
+                            {ms}ms {ms === 400 ? '(Padrão)' : ''}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-nexus-border/60">
+                    <p className="text-[11px] text-nexus-muted">
+                      Silenciamento automático por voz indisponível nesta versão. A transmissão do microfone permanece contínua.
+                    </p>
+                  </div>
                 </div>
               </div>
 

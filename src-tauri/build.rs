@@ -36,6 +36,12 @@ fn extract_env_value(content: &str, key: &str) -> Option<String> {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_TEST_LAB");
+    if std::env::var_os("CARGO_FEATURE_TEST_LAB").is_some() {
+        println!("cargo:rustc-env=NEXUS_DEFAULT_API_URL=http://127.0.0.1:13001");
+        tauri_build::build();
+        return;
+    }
     println!("cargo:rerun-if-changed=../nexus.config.json");
     println!("cargo:rerun-if-changed=../nexus-server/.env");
     println!("cargo:rerun-if-env-changed=GOOGLE_CLIENT_ID");

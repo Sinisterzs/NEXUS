@@ -87,3 +87,8 @@ desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# Dedicated local test lab (never copy Stable state here)
+.nexus-lab/
+# Local runtime metadata from development agent audits is not release source.
+docs/nightly2/*-agent-models.json

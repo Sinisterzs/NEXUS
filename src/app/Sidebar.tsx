@@ -17,10 +17,12 @@ import { mockCommunities, mockDirectMessages } from '../mocks';
 import { callService } from '../services/CallService';
 import { Badge } from '../components/Badge';
 import { Tooltip } from '../components/Tooltip';
+import { ActiveCallBar } from '../components/ActiveCallBar';
 
 export const Sidebar: React.FC = () => {
   const activeTab = useAppStore((state) => state.activeTab);
   const isSidebarCollapsed = useAppStore((state) => state.isSidebarCollapsed);
+  const voiceCallState = useAppStore((state) => state.voiceCallState);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const toggleSidebar = useAppStore((state) => state.toggleSidebar);
   const authStatus = useAppStore((state) => state.authStatus);
@@ -29,6 +31,10 @@ export const Sidebar: React.FC = () => {
   const activeCommunityId = useAppStore((state) => state.activeCommunityId);
   const setActiveCommunity = useAppStore((state) => state.setActiveCommunity);
   const conversations = useAppStore((state) => state.conversations);
+
+  // ActiveCallBar owns the compact controls only outside the main call screen.
+  const hasCompactCallControls =
+    isSidebarCollapsed && voiceCallState !== 'idle' && activeTab !== 'calls';
 
   const isOnline = authStatus === 'authenticated';
   const totalDmUnreads = isOnline
@@ -187,7 +193,11 @@ export const Sidebar: React.FC = () => {
         )}
       </div>
 
+      {/* Dock de Chamada Ativa na Barra Lateral (exibido quando fora da tela de chamadas) */}
+      <ActiveCallBar />
+
       {/* Bottom Audio & Quick Controls Dock */}
+      {!hasCompactCallControls && (
       <div className="p-2.5 border-t border-zinc-800/80 bg-[#0a0c10]/90 shrink-0">
         <div
           className={`flex items-center ${
@@ -195,7 +205,7 @@ export const Sidebar: React.FC = () => {
           }`}
         >
           {/* Quick Mic / Headphone controls */}
-          <div className="flex items-center gap-1.5">
+          <div className={`flex items-center gap-1.5 ${isSidebarCollapsed ? 'flex-col' : ''}`}>
             <Tooltip
               content={isMicMuted ? 'Ativar Microfone' : 'Mutar Microfone'}
               position="top"
@@ -203,7 +213,9 @@ export const Sidebar: React.FC = () => {
               <button
                 type="button"
                 onClick={() => callService.toggleMute()}
-                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                aria-label={isMicMuted ? 'Ativar microfone' : 'Silenciar microfone'}
+                aria-pressed={isMicMuted}
+                className={`w-9 h-9 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent ${
                   isMicMuted
                     ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
                     : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
@@ -220,7 +232,9 @@ export const Sidebar: React.FC = () => {
               <button
                 type="button"
                 onClick={() => callService.toggleDeafen()}
-                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                aria-label={isDeafened ? 'Ativar áudio' : 'Desativar áudio'}
+                aria-pressed={isDeafened}
+                className={`w-9 h-9 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent ${
                   isDeafened
                     ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
                     : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
@@ -249,6 +263,7 @@ export const Sidebar: React.FC = () => {
           )}
         </div>
       </div>
+      )}
     </aside>
   );
 };
