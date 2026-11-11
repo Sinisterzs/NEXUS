@@ -1,7 +1,8 @@
 /**
  * NEXUS - Validador de Sandbox do Instalador NSIS e Auditoria Criptográfica
  * Executado estritamente em ambiente descartável do GitHub Actions.
- * - Valida a presença e integridade técnica do instalador NSIS gerado (cabeçalho PE/MZ e x86_64/AMD64).
+ * - Valida a integridade do instalador NSIS (cabeçalho PE/MZ e bootstrap i386 0x014c ou AMD64 0x8664).
+ * - Valida estritamente a arquitetura do executável interno compilado (nexus.exe AMD64 0x8664).
  * - Confirma que a versão e nome do arquivo correspondem exatamente à versão de homologação.
  * - Valida a ausência de executáveis extras, assinaturas órfãs ou arquivos inesperados no bundle.
  * - Valida criptograficamente o algoritmo Minisign Ed25519 + BLAKE2b-512 e a assinatura global.
@@ -57,10 +58,16 @@ function recordTest(name, passed, details = '') {
 }
 
 /**
- * Validação técnica rigorosa de cabeçalho Portable Executable (PE/MZ e AMD64)
+ * Validação técnica rigorosa de cabeçalho Portable Executable (PE/MZ e Arquitetura)
+ * @param {string} filePath - Caminho do arquivo binário
+ * @param {'nsis_installer' | 'application_binary'} targetType - Tipo do executável a ser validado
  */
-function validatePEHeader(filePath) {
+function validatePEHeader(filePath, targetType = 'application_binary') {
   try {
+    if (!fs.existsSync(filePath)) {
+      return { valid: false, details: `Arquivo não encontrado: ${filePath}` };
+    }
+
     const fd = fs.openSync(filePath, 'r');
     const buffer = Buffer.alloc(1024);
     const bytesRead = fs.readSync(fd, buffer, 0, 1024, 0);
@@ -92,16 +99,47 @@ function validatePEHeader(filePath) {
       return { valid: false, details: 'Assinatura PE\\0\\0 ausente no offset indicado' };
     }
 
-    // 4. Arquitetura da máquina: DEVE ser estritamente x86_64 / AMD64 (0x8664)
+    // 4. Arquitetura da máquina
     const machine = buffer.readUInt16LE(peOffset + 4);
-    if (machine !== 0x8664) {
-      return {
-        valid: false,
-        details: `Arquitetura incompatível: 0x${machine.toString(16)} (esperado exclusivamente: 0x8664 AMD64/x86_64)`,
-      };
-    }
+    const hexMachine = `0x${machine.toString(16).padStart(4, '0')}`;
 
-    return { valid: true, details: 'Cabeçalho PE válido (MZ + PE\\0\\0), Arquitetura confirmada: x86_64 (AMD64 0x8664)' };
+    if (targetType === 'nsis_installer') {
+      // Para o instalador NSIS bootstrap: aceita explicitamente 0x014c (i386 standard stub) e 0x8664 (AMD64)
+      if (machine === 0x014c) {
+        return {
+          valid: true,
+          machine,
+          details: `Cabeçalho PE válido (MZ + PE\\0\\0), Arquitetura confirmada: i386 (${hexMachine}) - Bootstrap stub padrão NSIS`,
+        };
+      } else if (machine === 0x8664) {
+        return {
+          valid: true,
+          machine,
+          details: `Cabeçalho PE válido (MZ + PE\\0\\0), Arquitetura confirmada: x86_64 / AMD64 (${hexMachine}) - Instalador nativo 64-bit`,
+        };
+      } else {
+        return {
+          valid: false,
+          machine,
+          details: `Arquitetura incompatível para instalador NSIS: ${hexMachine} (esperado: 0x014c i386 ou 0x8664 AMD64)`,
+        };
+      }
+    } else {
+      // Para o executável interno compilado (nexus.exe): DEVE ser estritamente AMD64 (0x8664)
+      if (machine === 0x8664) {
+        return {
+          valid: true,
+          machine,
+          details: `Cabeçalho PE válido (MZ + PE\\0\\0), Arquitetura confirmada: x86_64 / AMD64 (${hexMachine}) - Binário nativo de produção`,
+        };
+      } else {
+        return {
+          valid: false,
+          machine,
+          details: `Arquitetura incompatível para o executável do aplicativo: ${hexMachine} (esperado exclusivamente: 0x8664 AMD64/x86_64)`,
+        };
+      }
+    }
   } catch (err) {
     return { valid: false, details: `Erro ao analisar cabeçalho PE: ${err.message}` };
   }
@@ -182,9 +220,14 @@ try {
       `Arquivo presente com ${exeStat.size} bytes (${sizeMB} MB)`
     );
 
-    // Validação rigorosa de cabeçalho binário Windows PE (MZ + PE\0\0 + 0x8664 AMD64)
-    const peValidation = validatePEHeader(exePath);
-    recordTest('Validação do Cabeçalho Executável Windows (PE/MZ e Arquitetura AMD64)', peValidation.valid, peValidation.details);
+    // Validação do cabeçalho binário do instalador NSIS (aceita i386 stub 0x014c ou AMD64 0x8664)
+    const nsisPeValidation = validatePEHeader(exePath, 'nsis_installer');
+    recordTest('Validação do Cabeçalho do Instalador NSIS (PE/MZ e Arquitetura Bootstrap)', nsisPeValidation.valid, nsisPeValidation.details);
+
+    // Validação estrita do executável interno compilado pelo Tauri/Rust (DEVE ser estritamente AMD64 0x8664)
+    const appBinaryPath = path.join(rootDir, 'src-tauri', 'target', 'release', 'nexus.exe');
+    const appPeValidation = validatePEHeader(appBinaryPath, 'application_binary');
+    recordTest('Validação da Arquitetura do Executável Interno (nexus.exe x86_64 / AMD64 0x8664)', appPeValidation.valid, appPeValidation.details);
 
     // 2. Validação Estrutural e Criptográfica da Assinatura Minisign
     if (hasExpectedSig) {
