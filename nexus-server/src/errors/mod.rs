@@ -38,6 +38,9 @@ pub enum AppError {
     #[error("Já existe uma conta cadastrada com este e-mail. Para vincular, faça login com sua senha.")]
     AccountConflictEmailExists,
 
+    #[error("Este e-mail já está associado a uma conta que não pode ser acessada com este login Google. Contate o suporte.")]
+    GoogleIdentityNotLinked,
+
     #[error("O e-mail da conta externa não foi verificado pelo provedor.")]
     OAuthEmailNotVerified,
 
@@ -87,6 +90,7 @@ impl AppError {
             AppError::InvalidOAuthToken(_) => "INVALID_OAUTH_TOKEN",
             AppError::OAuthAccountAlreadyLinked => "OAUTH_ACCOUNT_ALREADY_LINKED",
             AppError::AccountConflictEmailExists => "ACCOUNT_CONFLICT_EMAIL_EXISTS",
+            AppError::GoogleIdentityNotLinked => "GOOGLE_IDENTITY_NOT_LINKED",
             AppError::OAuthEmailNotVerified => "OAUTH_EMAIL_NOT_VERIFIED",
             AppError::CannotUnlinkLastAuthMethod => "CANNOT_UNLINK_LAST_AUTH_METHOD",
             AppError::NotFound(_) => "NOT_FOUND",
@@ -108,7 +112,7 @@ impl AppError {
             AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             AppError::InvalidOAuthToken(_) => StatusCode::UNAUTHORIZED,
             AppError::OAuthAccountAlreadyLinked => StatusCode::CONFLICT,
-            AppError::AccountConflictEmailExists => StatusCode::CONFLICT,
+            AppError::AccountConflictEmailExists | AppError::GoogleIdentityNotLinked => StatusCode::CONFLICT,
             AppError::OAuthEmailNotVerified => StatusCode::BAD_REQUEST,
             AppError::CannotUnlinkLastAuthMethod => StatusCode::BAD_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
@@ -144,5 +148,19 @@ impl IntoResponse for AppError {
         });
 
         (status, body).into_response()
+    }
+}
+
+/// Error for a Google sign-in whose validated (google, sub) has no link, while the
+/// e-mail already belongs to another account. Never links automatically.
+/// - owner has a password: the user can prove ownership by logging in with it.
+/// - owner has no password: telling the user to "use your password" would be wrong
+///   (Google-only account with a missing/different identity link); recovery needs
+///   a proof-of-ownership procedure, not a password.
+pub fn email_conflict_error(owner_has_password: bool) -> AppError {
+    if owner_has_password {
+        AppError::AccountConflictEmailExists
+    } else {
+        AppError::GoogleIdentityNotLinked
     }
 }

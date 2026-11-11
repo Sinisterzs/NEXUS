@@ -103,7 +103,9 @@ async fn setup_test_server() -> TestContext {
 
     let user_repo = UserRepository::new(pool.clone());
     let session_repo = SessionRepository::new(pool.clone());
-    let google_verifier = GoogleOAuthVerifier::new(config.clone()).with_test_jwks(jwks);
+    let google_verifier = GoogleOAuthVerifier::new(config.clone())
+        .with_nonce_policy(nexus_server::services::NoncePolicy::LogOnly)
+        .with_test_jwks(jwks);
     let auth_service = AuthService::new(user_repo, session_repo, config.clone())
         .with_google_verifier(google_verifier);
 

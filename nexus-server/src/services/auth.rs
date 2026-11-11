@@ -32,6 +32,8 @@ pub struct AuthService {
     presence_mgr: Option<PresenceManager>,
 }
 
+pub use crate::errors::email_conflict_error;
+
 impl AuthService {
     pub fn new(user_repo: UserRepository, session_repo: SessionRepository, config: AppConfig) -> Self {
         let google_verifier = GoogleOAuthVerifier::new(config.clone());
@@ -291,13 +293,15 @@ impl AuthService {
 
         // 2. Not linked: Check if an account already exists with this email
         // IMPORTANT SECURITY CONSTRAINT: Never auto-merge accounts by email coincidence!
-        if self.user_repo.exists_email(&email).await? {
+        if let Some(owner_id) = self.user_repo.find_user_id_by_email(&email).await? {
+            let has_pw = self.user_repo.has_password(owner_id).await?;
+            // No PII (e-mail) in logs.
             tracing::warn!(
                 target: "nexus_server::auth",
-                email = %email,
-                "Google Sign-In rejected: email already registered under another account"
+                owner_has_password = has_pw,
+                "Google Sign-In rejected: e-mail belongs to an account without a link to this Google identity"
             );
-            return Err(AppError::AccountConflictEmailExists);
+            return Err(email_conflict_error(has_pw));
         }
 
         // 3. Brand new user registration via Google

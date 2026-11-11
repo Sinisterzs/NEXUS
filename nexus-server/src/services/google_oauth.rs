@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -8,6 +9,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::AppConfig;
 use crate::errors::AppError;
+
+/// Policy when the caller does not supply the expected nonce.
+/// A wrong nonce is ALWAYS rejected regardless of policy.
+/// `GOOGLE_REQUIRE_NONCE`: unset/"enforce"/"true"/"1" => Enforce (default);
+/// "log-only"/"false"/"0" => LogOnly (compat/phased rollout: count + warn, no PII).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoncePolicy {
+    Enforce,
+    LogOnly,
+}
+
+impl NoncePolicy {
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Some("log-only") | Some("logonly") | Some("false") | Some("0") => NoncePolicy::LogOnly,
+            _ => NoncePolicy::Enforce,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleIdTokenClaims {
@@ -44,6 +64,8 @@ pub struct GoogleOAuthVerifier {
     jwks_cache: Arc<RwLock<Option<(Instant, GoogleJwkSet)>>>,
     // Optional static test JWKS used during automated tests
     test_jwks: Option<GoogleJwkSet>,
+    nonce_policy: NoncePolicy,
+    missing_nonce_count: Arc<AtomicU64>,
 }
 
 impl GoogleOAuthVerifier {
@@ -58,7 +80,19 @@ impl GoogleOAuthVerifier {
             http_client,
             jwks_cache: Arc::new(RwLock::new(None)),
             test_jwks: None,
+            nonce_policy: NoncePolicy::parse(std::env::var("GOOGLE_REQUIRE_NONCE").ok().as_deref()),
+            missing_nonce_count: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    pub fn with_nonce_policy(mut self, policy: NoncePolicy) -> Self {
+        self.nonce_policy = policy;
+        self
+    }
+
+    /// Number of Google logins that arrived without a client nonce (no PII).
+    pub fn missing_nonce_count(&self) -> u64 {
+        self.missing_nonce_count.load(Ordering::Relaxed)
     }
 
     pub fn with_test_jwks(mut self, jwks: GoogleJwkSet) -> Self {
@@ -166,11 +200,27 @@ impl GoogleOAuthVerifier {
         }
 
         // Verify nonce binding
-        if let Some(expected) = expected_nonce {
-            if claims.nonce.as_deref() != Some(expected) {
-                return Err(AppError::InvalidOAuthToken(
-                    "Nonce do token Google não coincide com a solicitação".to_string(),
-                ));
+        match expected_nonce.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(expected) => {
+                if claims.nonce.as_deref() != Some(expected) {
+                    return Err(AppError::InvalidOAuthToken(
+                        "Nonce do token Google não coincide com a solicitação".to_string(),
+                    ));
+                }
+            }
+            None => {
+                self.missing_nonce_count.fetch_add(1, Ordering::Relaxed);
+                match self.nonce_policy {
+                    NoncePolicy::Enforce => {
+                        tracing::warn!(target: "nexus_server::auth", "Google login rejected: nonce ausente");
+                        return Err(AppError::InvalidOAuthToken(
+                            "Nonce ausente na requisição de login Google".to_string(),
+                        ));
+                    }
+                    NoncePolicy::LogOnly => {
+                        tracing::warn!(target: "nexus_server::auth", "Google login without nonce accepted (GOOGLE_REQUIRE_NONCE=log-only)");
+                    }
+                }
             }
         }
 

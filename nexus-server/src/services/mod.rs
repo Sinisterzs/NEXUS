@@ -9,5 +9,5 @@ pub use auth::AuthService;
 pub use calls::CallService;
 pub use dm::DmService;
 pub use friends::FriendService;
-pub use google_oauth::{GoogleIdTokenClaims, GoogleJwkKey, GoogleJwkSet, GoogleOAuthVerifier};
+pub use google_oauth::{GoogleIdTokenClaims, GoogleJwkKey, GoogleJwkSet, GoogleOAuthVerifier, NoncePolicy};
 pub use presence::PresenceManager;
