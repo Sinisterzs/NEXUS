@@ -684,9 +684,42 @@ mod tests {
 
     #[test]
     fn test_semver_downgrade_logic() {
-        let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
-        let remote_stable = semver::Version::parse("0.2.1").unwrap();
-        assert!(current > remote_stable, "Nightly should be recognized as higher than old Stable");
-        assert!(current > semver::Version::parse("0.3.0-nightly.1").unwrap());
+        // 1. Versão experimental / nightly com núcleo SemVer maior é superior à Stable antiga
+        let v021_stable = semver::Version::parse("0.2.1").unwrap();
+        let v030_homolog1 = semver::Version::parse("0.3.0-homolog.1").unwrap();
+        let v030_nightly1 = semver::Version::parse("0.3.0-nightly.1").unwrap();
+        let v030_nightly2 = semver::Version::parse("0.3.0-nightly.2").unwrap();
+        let v030_stable = semver::Version::parse("0.3.0").unwrap();
+
+        assert!(v030_homolog1 > v021_stable, "Experimental 0.3.0-homolog.1 deve ser superior à Stable 0.2.1 antiga");
+        assert!(v030_nightly1 > v021_stable, "Nightly 0.3.0-nightly.1 deve ser superior à Stable 0.2.1 antiga");
+        assert!(is_downgrade("0.3.0-homolog.1", "0.2.1").unwrap(), "Instalação homolog não deve aceitar downgrade para Stable 0.2.1");
+        assert!(is_downgrade("0.3.0-nightly.2", "0.2.1").unwrap(), "Instalação nightly não deve aceitar downgrade para Stable 0.2.1");
+
+        // 2. Nightly mais recente é superior à Nightly anterior
+        assert!(v030_nightly2 > v030_nightly1, "0.3.0-nightly.2 deve ser superior a 0.3.0-nightly.1");
+        assert!(!is_downgrade("0.3.0-nightly.1", "0.3.0-nightly.2").unwrap(), "0.3.0-nightly.2 é upgrade válido a partir de nightly.1");
+        assert!(is_downgrade("0.3.0-nightly.2", "0.3.0-nightly.1").unwrap(), "0.3.0-nightly.1 é downgrade a partir de nightly.2");
+
+        // 3. Ordenação SemVer de identificadores pré-lançamento (ordem ASCII: 'homolog' < 'nightly')
+        assert!(v030_nightly1 > v030_homolog1, "Pela especificação SemVer, pre-release 'nightly' tem precedência lexicográfica sobre 'homolog'");
+        let v030_homolog2 = semver::Version::parse("0.3.0-homolog.2").unwrap();
+        assert!(v030_homolog2 > v030_homolog1, "0.3.0-homolog.2 deve ser superior a 0.3.0-homolog.1");
+
+        // 4. Versões inferiores são classificadas como downgrade
+        assert!(is_downgrade("0.3.0", "0.2.1").unwrap());
+        assert!(is_downgrade("0.2.1", "0.2.0").unwrap());
+
+        // 5. Versões equivalentes não são classificadas como upgrade (curr >= rem -> true)
+        assert!(is_downgrade("0.3.0-homolog.1", "0.3.0-homolog.1").unwrap(), "Versões idênticas são tratadas como sem nova atualização");
+        assert!(is_downgrade("0.3.0-nightly.2", "0.3.0-nightly.2").unwrap());
+        assert!(is_downgrade("0.3.0", "0.3.0").unwrap());
+
+        // 6. Stable final (sem pre-release) é superior às pré-releases da mesma versão
+        assert!(v030_stable > v030_nightly2, "Stable 0.3.0 final deve ser superior a 0.3.0-nightly.2");
+        assert!(v030_stable > v030_homolog1, "Stable 0.3.0 final deve ser superior a 0.3.0-homolog.1");
+        assert!(!is_downgrade("0.3.0-nightly.2", "0.3.0").unwrap(), "Stable final 0.3.0 é upgrade válido sobre 0.3.0-nightly.2");
+        assert!(!is_downgrade("0.3.0-homolog.1", "0.3.0").unwrap(), "Stable final 0.3.0 é upgrade válido sobre 0.3.0-homolog.1");
+        assert!(is_downgrade("0.3.0", "0.3.0-nightly.2").unwrap(), "0.3.0-nightly.2 é downgrade em relação a 0.3.0 final");
     }
 }
