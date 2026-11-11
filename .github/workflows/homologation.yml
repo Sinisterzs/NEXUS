@@ -1,0 +1,176 @@
+name: NEXUS Homologation (Pre-Login Auto Updater)
+
+# ==============================================================================
+# WORKFLOW DE HOMOLOGAÇÃO ISOLADO — ZERO PUBLICAÇÃO / ZERO PRODUÇÃO
+# Executado exclusivamente em runner Windows descartável do GitHub Actions.
+# - Nunca publica releases ou modifica tags existentes.
+# - Utiliza versionamento temporário isolado (0.3.0-homolog.1).
+# - Utiliza chaves Minisign efêmeras com máscara de log (add-mask).
+# - Disparável sob demanda via workflow_dispatch.
+# ==============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      homologation_version:
+        description: 'Identificador SemVer temporário isolado de teste'
+        required: true
+        default: '0.3.0-homolog.1'
+        type: string
+      test_channel:
+        description: 'Canal de teste para verificação SemVer'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - stable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homologation-prelogin-updater
+  cancel-in-progress: true
+
+jobs:
+  homologate-prelogin-updater:
+    name: Homologate Pre-Login Updater (Isolated Windows Runner)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Strict Non-Production Guard
+        shell: pwsh
+        run: |
+          Write-Host "=========================================================="
+          Write-Host "   NEXUS - HOMOLOGAÇÃO DO PRE-LOGIN AUTO UPDATER 0.1     "
+          Write-Host "=========================================================="
+          Write-Host "[SEGURANÇA] Este workflow é estritamente de homologação."
+          Write-Host "[SEGURANÇA] Nenhuma chave privada real de produção será utilizada."
+          Write-Host "[SEGURANÇA] Nenhuma release ou tag será criada ou modificada."
+          
+          $targetVer = "${{ github.event.inputs.homologation_version }}".Trim()
+          if ($targetVer -eq "0.3.0-nightly.2" -or $targetVer -eq "0.2.1") {
+            Write-Error "[FALHA DE SEGURANÇA] A versão $targetVer já foi oficialmente publicada! Use uma versão isolada de laboratório (ex: 0.3.0-homolog.1)."
+            exit 1
+          }
+
+      - name: Apply Homologation Test Versioning
+        shell: pwsh
+        run: |
+          $targetVer = "${{ github.event.inputs.homologation_version }}".Trim()
+          Write-Host "[LAB] Configurando versão temporária de teste: $targetVer"
+          node scripts/homologation-set-version.cjs "$targetVer"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Rust Stable Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> ./src-tauri/target'
+
+      - name: Install Frontend Dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Execute Automated Unit & Channel Compatibility Tests
+        shell: pwsh
+        run: |
+          Write-Host "[1/6] Executando suíte completa de testes do frontend e canais..."
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          Write-Host "[2/6] Executando verificação de tipos estáticos TypeScript..."
+          npx tsc --noEmit
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Execute Backend Updater & Concurrency Tests
+        shell: pwsh
+        run: |
+          Write-Host "[3/6] Executando testes unitários do backend Tauri Updater..."
+          cargo test --manifest-path src-tauri/Cargo.toml --lib updater::tests
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Generate Ephemeral Minisign Keypair for Lab Sandbox
+        id: ephemeral_keys
+        shell: pwsh
+        run: |
+          Write-Host "[4/6] Gerando par de chaves Minisign efêmero com máscara de log..."
+          node scripts/homologation-generate-keys.cjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build Test Bundle (NSIS Target)
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.ephemeral_keys.outputs.test_private_key }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          Write-Host "[5/6] Compilando pacote de teste do NEXUS (Tauri 2 NSIS)..."
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          npx tauri build --bundles nsis
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Audit Generated Bundles & Artifact Security
+        shell: pwsh
+        run: |
+          Write-Host "[6/6] Auditando artefatos gerados na compilação..."
+          $targetVer = "${{ github.event.inputs.homologation_version }}".Trim()
+          $nsisDir = "src-tauri/target/release/bundle/nsis"
+          
+          if (-not (Test-Path $nsisDir)) {
+            Write-Error "Diretório de bundle NSIS não foi gerado em $nsisDir!"
+            exit 1
+          }
+
+          $expectedInstaller = "nexus_${targetVer}_x64-setup.exe"
+          $installerPath = Join-Path $nsisDir $expectedInstaller
+          if (-not (Test-Path $installerPath)) {
+            Write-Error "Instalador esperado $expectedInstaller não foi encontrado em $nsisDir!"
+            exit 1
+          }
+
+          $installerSize = (Get-Item $installerPath).Length
+          Write-Host "[OK] Instalador correspondente encontrado: $expectedInstaller ($installerSize bytes)"
+
+          $sigPath = "$installerPath.sig"
+          if (-not (Test-Path $sigPath)) {
+            Write-Error "Arquivo de assinatura criptográfica $sigPath não foi gerado!"
+            exit 1
+          }
+          Write-Host "[OK] Arquivo de assinatura Minisign confirmado: $sigPath"
+
+      - name: Test NSIS Installer Sandbox & Cryptographic Verification
+        shell: pwsh
+        run: |
+          Write-Host "=========================================================="
+          Write-Host "   SANDBOX DE HOMOLOGAÇÃO NSIS E VALIDAÇÃO DE CHAVES      "
+          Write-Host "=========================================================="
+          node scripts/homologation-sandbox-test.cjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Sanitize and Upload Test Homologation Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: homologation-sanitized-report
+          path: |
+            homologation-report.json
+            homologation-summary.txt
+          retention-days: 7
