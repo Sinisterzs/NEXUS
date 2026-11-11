@@ -92,3 +92,13 @@ desktop.ini
 .nexus-lab/
 # Local runtime metadata from development agent audits is not release source.
 docs/nightly2/*-agent-models.json
+
+# 8. Laboratório descartável & homologação física local (Sandbox)
+.lab_keys/
+lab_dist/
+nexus-lab.wsb
+run_logs/
+.git_backup_safety/
+scripts/build-lab-artifacts.cjs
+scripts/dispatch-homologation.mjs
+scripts/lab-prepare-artifacts.cjs
