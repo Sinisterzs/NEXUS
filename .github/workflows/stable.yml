@@ -6,17 +6,17 @@ on:
       target_ref:
         description: 'Branch ou Commit SHA oficial homologado para compilação'
         required: true
-        default: 'release/v0.2.1'
+        default: 'release/v0.2.5-stable'
         type: string
       version:
-        description: 'Versão SemVer Oficial (ex: 0.2.1)'
+        description: 'Versão SemVer Oficial (ex: 0.2.5)'
         required: true
-        default: '0.2.1'
+        default: '0.2.5'
         type: string
       release_notes:
         description: 'Resumo das notas de lançamento para o manifesto do updater'
         required: false
-        default: 'NEXUS v0.2.1 — Atualização Estável de manutenção para correção de classificação de versões e canais de atualização.'
+        default: 'NEXUS v0.2.5 — Login com Google, recuperação de senha por e-mail, chamadas e transmissão de tela 2.1 e atualizações automáticas.'
         type: string
 
 permissions:
@@ -66,11 +66,12 @@ jobs:
           $pkgJson = Get-Content package.json | ConvertFrom-Json
           $tauriJson = Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json
           $versionTs = Get-Content src/version.ts -Raw
+          $cargoToml = Get-Content src-tauri/Cargo.toml -Raw
 
           Write-Host "[INFO] package.json version: $($pkgJson.version)"
           Write-Host "[INFO] tauri.conf.json version: $($tauriJson.version)"
 
-          if ($pkgJson.version -ne $expectedVersion -or $tauriJson.version -ne $expectedVersion -or -not ($versionTs -match "APP_VERSION = '$expectedVersion'")) {
+          if ($pkgJson.version -ne $expectedVersion -or $tauriJson.version -ne $expectedVersion -or -not ($versionTs -match "APP_VERSION = '$expectedVersion'") -or -not ($cargoToml -match "(?m)^version = `"$expectedVersion`"")) {
             Write-Error "[FALHA CRÍTICA] Inconsistência nos metadados de versão do commit! Todos os arquivos devem estar sincronizados em $expectedVersion antes do build."
             exit 1
           }
@@ -188,15 +189,11 @@ jobs:
           } else {
             Write-Host "Utilizando notas padrão informadas no input do workflow."
             $defaultBody = @"
-          ## 🚀 NEXUS Stable Release — v$ver
+          # NEXUS v$ver
 
-          ${{ github.event.inputs.release_notes }}
+          ### 🚀 Melhorias
 
-          ---
-
-          ### Artefatos de Instalação:
-          - **Instalador NSIS:** Instalador oficial assinado com Minisign.
-          - **Manifesto de Atualização:** ``latest.json``
+          - ${{ github.event.inputs.release_notes }}
           "@
             Set-Content -Path "release-notes-body.md" -Value $defaultBody -Encoding utf8
           }

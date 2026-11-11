@@ -117,19 +117,11 @@ jobs:
           } else {
             Write-Host "Utilizando notas padrão informadas no input do workflow."
             $defaultBody = @"
-          ## 🌙 NEXUS Nightly Release — v$ver
+          # NEXUS v$ver
 
-          $env:RELEASE_NOTES
+          ### 🚀 Melhorias
 
-          ---
-
-          > [!NOTE]
-          > Este é um build pré-lançamento do canal **Nightly**. Não altera o canal estável (``latest.json``).
-
-          ### Artefatos de Instalação:
-          - **Instalador NSIS:** Instalador com suporte a auto-update assinado.
-          - **Assinatura Minisign:** Arquivo ``.sig`` validado pela chave pública oficial.
-          - **Canal de Atualização:** ``latest-nightly.json``
+          - $env:RELEASE_NOTES
           "@
             Set-Content -Path "release-notes-body.md" -Value $defaultBody -Encoding utf8
           }

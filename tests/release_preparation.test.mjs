@@ -6,18 +6,41 @@ import { spawnSync } from 'node:child_process';
 import * as yaml from 'js-yaml';
 
 const version = JSON.parse(await readFile('package.json', 'utf8')).version;
+const nightlyFixtureVersion = /^\d+\.\d+\.\d+-nightly\.\d+$/.test(version)
+  ? version
+  : '0.3.0-nightly.5';
 
-test('Nightly metadata is consistent across frontend, npm, Tauri and Rust locks', async () => {
+test('Release metadata (Stable or Nightly) is consistent across frontend, npm, Tauri, Rust locks, and user-facing release notes', async () => {
   const json = async file => JSON.parse(await readFile(file, 'utf8'));
   const pkg = await json('package.json');
   const lock = await json('package-lock.json');
-  assert.match(pkg.version, /^\d+\.\d+\.\d+-nightly\.\d+$/);
+  assert.match(pkg.version, /^\d+\.\d+\.\d+(-nightly\.\d+)?$/);
   assert.equal(lock.version, version);
   assert.equal(lock.packages[''].version, version);
   assert.equal((await json('src-tauri/tauri.conf.json')).version, version);
   assert.equal((await readFile('src/version.ts', 'utf8')).match(/APP_VERSION = '([^']+)'/)[1], version);
   assert.equal((await readFile('src-tauri/Cargo.toml', 'utf8')).match(/^version = "([^"]+)"/m)[1], version);
   assert.equal((await readFile('src-tauri/Cargo.lock', 'utf8')).match(/name = "nexus"\r?\nversion = "([^"]+)"/)[1], version);
+
+  const notesPath = `scripts/release-notes-v${version}.md`;
+  const notes = await readFile(notesPath, 'utf8');
+  assert.ok(notes.trim().length > 100, `${notesPath} must exist and be non-empty`);
+  if (/^\d+\.\d+\.\d+$/.test(version)) {
+    assert.ok(
+      notes.includes('### ✨ Novidades') || notes.includes('### 🚀 Melhorias') || notes.includes('### 🛠️ Correções'),
+      `${notesPath} must follow the NEXUS Release Notes standard sections`
+    );
+    assert.doesNotMatch(
+      notes,
+      /\b(causa raiz|refatoração|pipeline|hotfix técnico)\b/i,
+      `${notesPath} must not contain internal technical jargon`
+    );
+    assert.doesNotMatch(
+      notes,
+      /\b(src-tauri|\.rs\b|\.ts\b|\.cjs\b|hooks\.nsh|history\.replaceState|Argon2id|PKCE)\b/,
+      `${notesPath} must not expose code files, functions or implementation details`
+    );
+  }
 });
 
 test('version and manifest scripts reject Stable, align locks and select only the exact signed installer', async () => {
@@ -39,30 +62,30 @@ test('version and manifest scripts reject Stable, align locks and select only th
     await writeFile(path.join(root, 'src-tauri/Cargo.toml'), '[package]\nname = "nexus"\nversion = "0.0.0"\n');
     await writeFile(path.join(root, 'src-tauri/Cargo.lock'), '[[package]]\nname = "nexus"\nversion = "0.0.0"\n');
     await writeFile(path.join(root, 'src/version.ts'), "export const APP_VERSION = '0.0.0';\n");
-    for (const invalid of ['0.2.1', '0.3.0-beta.1', '0.3.0-nightly.02']) {
+    for (const invalid of ['0.2.1', '0.2.5', '0.3.0-beta.1', '0.3.0-nightly.02']) {
       assert.notEqual(run('set-nightly-version.cjs', invalid).status, 0);
       assert.notEqual(run('generate-nightly-manifest.cjs', invalid).status, 0);
     }
-    assert.equal(run('set-nightly-version.cjs', version).status, 0);
+    assert.equal(run('set-nightly-version.cjs', nightlyFixtureVersion).status, 0);
     assert.notEqual(run('audit-nightly-artifacts.cjs').status, 0, 'absent artifacts must never pass an audit');
-    assert.ok((await readFile(path.join(root, 'src-tauri/Cargo.lock'), 'utf8')).includes(`version = "${version}"`));
+    assert.ok((await readFile(path.join(root, 'src-tauri/Cargo.lock'), 'utf8')).includes(`version = "${nightlyFixtureVersion}"`));
     const directory = path.join(root, 'src-tauri/target/release/bundle/nsis');
     // These are inert text fixtures with installer-like names; never executed.
     await writeFile(path.join(directory, 'nexus_0.3.0-nightly.1_x64-setup.exe'), 'fixture');
     await writeFile(path.join(directory, 'nexus_0.3.0-nightly.1_x64-setup.exe.sig'), 'old-fixture-signature');
-    assert.notEqual(run('generate-nightly-manifest.cjs', version).status, 0);
-    const installer = `nexus_${version}_x64-setup.exe`;
+    assert.notEqual(run('generate-nightly-manifest.cjs', nightlyFixtureVersion).status, 0);
+    const installer = `nexus_${nightlyFixtureVersion}_x64-setup.exe`;
     await writeFile(path.join(directory, installer), 'fixture');
-    assert.notEqual(run('generate-nightly-manifest.cjs', version).status, 0, 'a different installer signature must not be reused');
+    assert.notEqual(run('generate-nightly-manifest.cjs', nightlyFixtureVersion).status, 0, 'a different installer signature must not be reused');
     await writeFile(path.join(directory, `${installer}.sig`), '');
-    assert.notEqual(run('generate-nightly-manifest.cjs', version).status, 0);
+    assert.notEqual(run('generate-nightly-manifest.cjs', nightlyFixtureVersion).status, 0);
     await writeFile(path.join(directory, `${installer}.sig`), 'matching-fixture-signature');
     await writeFile(path.join(root, 'latest.json'), '{"version":"0.2.1","fixture":"keep-stable"}');
-    assert.equal(run('generate-nightly-manifest.cjs', version, 'Fixture notes').status, 0);
+    assert.equal(run('generate-nightly-manifest.cjs', nightlyFixtureVersion, 'Fixture notes').status, 0);
     const manifest = JSON.parse(await readFile(path.join(root, 'latest-nightly.json'), 'utf8'));
-    assert.equal(manifest.version, version);
+    assert.equal(manifest.version, nightlyFixtureVersion);
     assert.equal(manifest.platforms['windows-x86_64'].signature, 'matching-fixture-signature');
-    assert.ok(manifest.platforms['windows-x86_64'].url.endsWith(`/v${version}/${installer}`));
+    assert.ok(manifest.platforms['windows-x86_64'].url.endsWith(`/v${nightlyFixtureVersion}/${installer}`));
     assert.equal(await readFile(path.join(root, 'latest.json'), 'utf8'), '{"version":"0.2.1","fixture":"keep-stable"}');
     await writeFile(path.join(root, 'src-tauri/target/release/nexus.exe'), 'inert-native-fixture');
     assert.equal(run('audit-nightly-artifacts.cjs').status, 0);

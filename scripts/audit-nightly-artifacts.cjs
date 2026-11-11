@@ -11,11 +11,12 @@ const path = require('path');
 const rootDir = path.resolve(__dirname, '..');
 const config = JSON.parse(fs.readFileSync(path.join(rootDir, 'src-tauri', 'tauri.conf.json'), 'utf8'));
 const installerName = `nexus_${config.version}_x64-setup.exe`;
+const manifestFile = config.version.includes('-') ? 'latest-nightly.json' : 'latest.json';
 const requiredFiles = [
   path.join(rootDir, 'src-tauri', 'target', 'release', 'nexus.exe'),
   path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle', 'nsis', installerName),
   path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle', 'nsis', `${installerName}.sig`),
-  path.join(rootDir, 'latest-nightly.json'),
+  path.join(rootDir, manifestFile),
 ];
 if (requiredFiles.some(file => !fs.existsSync(file) || fs.statSync(file).size === 0)) {
   console.error('[ERRO] Artefatos completos da versão atual são obrigatórios para a auditoria.');

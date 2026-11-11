@@ -52,11 +52,11 @@ async function sleep(ms) {
 }
 
 async function main() {
-  const version = process.argv[2] || '0.2.1-nightly.1';
-  const targetRef = process.argv[3] || 'feature/hotfix-v0.2.1-channel-versioning';
+  const version = process.argv[2] || '0.3.0-nightly.5';
+  const targetRef = process.argv[3] || 'integration/nexus-v0.3.0-nightly.5';
   const releaseNotes =
     process.argv[4] ||
-    `NEXUS v${version} — Hotfix de classificação de versão e canais de atualização para homologação.`;
+    `NEXUS v${version} — Melhorias de estabilidade, chamadas e experiência de uso.`;
 
   console.log(`[Dispatch] Disparando workflow nightly.yml para versão ${version} na branch ${targetRef}...`);
   await githubRequest('/repos/Sinisterzs/NEXUS/actions/workflows/nightly.yml/dispatches', 'POST', {

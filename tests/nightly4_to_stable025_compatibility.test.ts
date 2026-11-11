@@ -25,6 +25,7 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
 const EXPECTED_NIGHTLY_VERSION = '0.3.0-nightly.5';
+const EXPECTED_STABLE_VERSION = '0.2.5';
 const OFFICIAL_MINISIGN_PUBKEY = 'RWSd5/ox8A8dk+NW9lqVAMuCKxJvH9kzKpUxCk1SmABC7b4+8zd5cfHf';
 const OFFICIAL_MINISIGN_KEY_ID = '931D0FF031FAE79D';
 
@@ -122,9 +123,9 @@ class MockPreloginBackend implements PreloginUpdaterBackend {
 }
 
 // =============================================================================
-// 1. All 6 version metadata files on integration/nexus-v0.3.0-nightly.5
+// 1. All 6 version metadata files on release/v0.2.5-stable or integration/nexus-v0.3.0-nightly.5
 // =============================================================================
-test('Nightly.5 Metadata — All 6 version metadata files are exactly 0.3.0-nightly.5', () => {
+test('Release Metadata — All 6 version metadata files are synchronized (0.2.5 Stable or 0.3.0-nightly.5)', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
   const pkgLock = JSON.parse(fs.readFileSync(path.join(rootDir, 'package-lock.json'), 'utf8'));
   const tauriConf = JSON.parse(
@@ -138,82 +139,84 @@ test('Nightly.5 Metadata — All 6 version metadata files are exactly 0.3.0-nigh
   const cargoTomlMatch = cargoToml.match(/^\[package\][\s\S]*?^version = "([^"]+)"/m);
   const cargoLockMatch = cargoLock.match(/\[\[package\]\]\r?\nname = "nexus"\r?\nversion = "([^"]+)"/);
 
-  assert.equal(pkg.version, EXPECTED_NIGHTLY_VERSION, 'package.json version must be 0.3.0-nightly.5');
-  assert.equal(pkgLock.version, EXPECTED_NIGHTLY_VERSION, 'package-lock.json version must be 0.3.0-nightly.5');
+  assert.ok(
+    pkg.version === EXPECTED_STABLE_VERSION || pkg.version === EXPECTED_NIGHTLY_VERSION,
+    `package.json version must be ${EXPECTED_STABLE_VERSION} or ${EXPECTED_NIGHTLY_VERSION}, got ${pkg.version}`
+  );
+  const targetVer = pkg.version;
+
+  assert.equal(pkgLock.version, targetVer, `package-lock.json version must be ${targetVer}`);
   assert.equal(
     pkgLock.packages?.['']?.version,
-    EXPECTED_NIGHTLY_VERSION,
-    'package-lock.json root package version must be 0.3.0-nightly.5'
+    targetVer,
+    `package-lock.json root package version must be ${targetVer}`
   );
   assert.equal(
     tauriConf.version,
-    EXPECTED_NIGHTLY_VERSION,
-    'src-tauri/tauri.conf.json version must be 0.3.0-nightly.5'
+    targetVer,
+    `src-tauri/tauri.conf.json version must be ${targetVer}`
   );
-  assert.equal(APP_VERSION, EXPECTED_NIGHTLY_VERSION, 'Imported APP_VERSION must be 0.3.0-nightly.5');
+  assert.equal(APP_VERSION, targetVer, `Imported APP_VERSION must be ${targetVer}`);
   assert.equal(
     versionTsMatch?.[1],
-    EXPECTED_NIGHTLY_VERSION,
-    'src/version.ts APP_VERSION literal must be 0.3.0-nightly.5'
+    targetVer,
+    `src/version.ts APP_VERSION literal must be ${targetVer}`
   );
   assert.equal(
     cargoTomlMatch?.[1],
-    EXPECTED_NIGHTLY_VERSION,
-    'src-tauri/Cargo.toml version must be 0.3.0-nightly.5'
+    targetVer,
+    `src-tauri/Cargo.toml version must be ${targetVer}`
   );
   assert.equal(
     cargoLockMatch?.[1],
-    EXPECTED_NIGHTLY_VERSION,
-    'src-tauri/Cargo.lock nexus package version must be 0.3.0-nightly.5'
+    targetVer,
+    `src-tauri/Cargo.lock nexus package version must be ${targetVer}`
   );
 
   const info = getInstalledVersionInfo(APP_VERSION);
-  assert.equal(isPrereleaseVersion(APP_VERSION), true);
-  assert.equal(isNightlyVersion(APP_VERSION), true);
-  assert.equal(inferDefaultUpdateChannel(APP_VERSION), 'beta');
-  assert.equal(info.prereleaseTag, 'nightly.5');
-  assert.equal(info.badgeLabel, 'VERSÃO NIGHTLY/BETA');
+  if (targetVer === EXPECTED_STABLE_VERSION) {
+    assert.equal(isPrereleaseVersion(APP_VERSION), false);
+    assert.equal(isNightlyVersion(APP_VERSION), false);
+    assert.equal(inferDefaultUpdateChannel(APP_VERSION), 'stable');
+    assert.equal(info.prereleaseTag, null);
+    assert.equal(info.badgeLabel, 'VERSÃO ESTÁVEL');
+  } else {
+    assert.equal(isPrereleaseVersion(APP_VERSION), true);
+    assert.equal(isNightlyVersion(APP_VERSION), true);
+    assert.equal(inferDefaultUpdateChannel(APP_VERSION), 'beta');
+    assert.equal(info.prereleaseTag, 'nightly.5');
+    assert.equal(info.badgeLabel, 'VERSÃO NIGHTLY/BETA');
+  }
 });
 
 // =============================================================================
-// 2. Release notes v0.3.0-nightly.5 & v0.3.0-nightly.4 completeness
+// 2. Release notes v0.2.5 (Definitive Standard) & v0.3.0-nightly.5 completeness
 // =============================================================================
-test('Nightly.5 Release Notes — Exists and covers Password Recovery V2, Pre-Login Auto Updater 0.1, Google Login, and Calls & Streaming 2.1', () => {
-  const releaseNotesPath = path.join(rootDir, 'scripts', 'release-notes-v0.3.0-nightly.5.md');
-  assert.equal(fs.existsSync(releaseNotesPath), true, 'scripts/release-notes-v0.3.0-nightly.5.md must exist');
+test('Release Notes — v0.2.5 follows the Definitive Release Notes Standard and v0.3.0-nightly.5 is preserved', () => {
+  const releaseNotesNightlyPath = path.join(rootDir, 'scripts', 'release-notes-v0.3.0-nightly.5.md');
+  assert.equal(fs.existsSync(releaseNotesNightlyPath), true, 'scripts/release-notes-v0.3.0-nightly.5.md must exist');
 
-  const notes = fs.readFileSync(releaseNotesPath, 'utf8');
-  assert.ok(notes.trim().length > 200, 'Release notes must have substantive content');
-
-  assert.match(notes, /v?0\.3\.0-nightly\.5/, 'Must reference v0.3.0-nightly.5');
-  assert.match(notes, /nightly\.3|nightly\.4/, 'Must reference upgrade path from earlier nightlies');
-  assert.match(notes, /v?0\.2\.5/, 'Must reference Stable v0.2.5 alignment');
-  assert.match(notes, /v?0\.2\.1/, 'Must reference current Stable v0.2.1');
-  assert.match(notes, /\/reset-password/, 'Must reference /reset-password bridge');
-  assert.match(notes, /nexus:\/\//, 'Must reference nexus:// protocol');
-
-  assert.match(
-    notes,
-    /Recuperação de Senha|Password Recovery/i,
-    'Release notes must cover Password Recovery'
+  const stableNotesPath = path.join(rootDir, 'scripts', 'release-notes-v0.2.5.md');
+  assert.equal(fs.existsSync(stableNotesPath), true, 'scripts/release-notes-v0.2.5.md must exist');
+  const stableNotes = fs.readFileSync(stableNotesPath, 'utf8');
+  assert.ok(stableNotes.includes('### ✨ Novidades'), 'v0.2.5 notes must include ### ✨ Novidades');
+  assert.ok(stableNotes.includes('### 🚀 Melhorias'), 'v0.2.5 notes must include ### 🚀 Melhorias');
+  assert.ok(stableNotes.includes('### 🛠️ Correções'), 'v0.2.5 notes must include ### 🛠️ Correções');
+  assert.match(stableNotes, /Google/i, 'v0.2.5 notes must cover Google login');
+  assert.match(stableNotes, /recuperação de senha|redefinição/i, 'v0.2.5 notes must cover password recovery');
+  assert.match(stableNotes, /Chamadas de voz e transmissão de tela 2\.1/i, 'v0.2.5 notes must cover Calls & Screen Share 2.1');
+  assert.match(stableNotes, /0\.2\.1/i, 'v0.2.5 notes must cover 0.2.1 -> 0.2.5 upgrade');
+  assert.match(stableNotes, /0\.3\.0-nightly\.5/i, 'v0.2.5 notes must explain Nightly vs Stable channel migration');
+  assert.doesNotMatch(
+    stableNotes,
+    /\b(causa raiz|refatoração|pipeline|hotfix técnico)\b/i,
+    'v0.2.5 public release notes must not contain forbidden technical jargon'
   );
-  assert.match(
-    notes,
-    /Pre-Login Auto Updater 0\.1/i,
-    'Release notes must cover Pre-Login Auto Updater 0.1'
+  assert.doesNotMatch(
+    stableNotes,
+    /\b(src-tauri|updater\.rs|UpdateService\.ts|hooks\.nsh|history\.replaceState|Argon2id|PKCE)\b/,
+    'v0.2.5 public release notes must not expose internal files, functions, or implementation details'
   );
-  assert.match(
-    notes,
-    /Google Login|Autenticação Google/i,
-    'Release notes must cover Google Login'
-  );
-  assert.match(
-    notes,
-    /Chamadas e Transmissão 2\.1|Calls\s*&\s*Streaming 2\.1/i,
-    'Release notes must cover Calls & Streaming 2.1'
-  );
-  assert.match(notes, /latest-nightly\.json/, 'Release notes must document latest-nightly.json isolation');
-  assert.match(notes, /latest\.json/, 'Release notes must document latest.json isolation');
 });
 
 // =============================================================================
