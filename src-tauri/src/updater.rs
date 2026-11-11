@@ -389,6 +389,10 @@ pub async fn updater_download_and_install_prelogin<R: Runtime>(
 ) -> Result<(), String> {
     let _download_guard = DownloadingGuard::try_acquire()?;
 
+    if crate::lab::enabled() {
+        return Err("Updater desabilitado no laboratório".into());
+    }
+
     // Recupera atualização em cache ou executa checagem se ainda não houver
     let update_opt = {
         let mut cached = CACHED_UPDATE.lock().unwrap();
@@ -537,7 +541,7 @@ pub async fn updater_download_and_install_prelogin<R: Runtime>(
 /// Comando IPC para reinício seguro da aplicação após atualização
 #[tauri::command]
 pub async fn updater_restart<R: Runtime>(webview: Webview<R>) -> Result<(), String> {
-    if crate::is_test_environment() {
+    if crate::lab::enabled() || crate::is_test_environment() {
         return Ok(());
     }
     webview.app_handle().restart();

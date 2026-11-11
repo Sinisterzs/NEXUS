@@ -358,7 +358,11 @@ export class PreloginUpdaterService {
 
       this.activeCheckResult = checkResult;
 
-      if (!checkResult.updateAvailable || !checkResult.version) {
+      if (
+        !checkResult.updateAvailable ||
+        !checkResult.version ||
+        (channel === 'stable' && isPrereleaseVersion(checkResult.version))
+      ) {
         this.setState({
           status: 'up_to_date',
           errorMessage: null,
