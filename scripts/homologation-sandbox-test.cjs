@@ -1,16 +1,18 @@
 /**
  * NEXUS - Validador de Sandbox do Instalador NSIS e Auditoria Criptográfica
  * Executado estritamente em ambiente descartável do GitHub Actions.
- * - Valida a presença e o tamanho do instalador NSIS gerado.
- * - Confirma que a versão do arquivo corresponde exatamente à versão de homologação.
- * - Valida criptograficamente a assinatura gerada utilizando o verificador nativo do Tauri/Minisign.
+ * - Valida a presença e integridade técnica do instalador NSIS gerado (cabeçalho PE/MZ e x86_64/AMD64).
+ * - Confirma que a versão e nome do arquivo correspondem exatamente à versão de homologação.
+ * - Valida a ausência de executáveis extras, assinaturas órfãs ou arquivos inesperados no bundle.
+ * - Valida criptograficamente o algoritmo Minisign Ed25519 + BLAKE2b-512 e a assinatura global.
+ * - Executa testes negativos obrigatórios (dados alterados, assinatura corrompida, chave incorreta, comentário adulterado).
  * - Simula a preservação de dados e configurações de usuário em pasta temporária descartável.
- * - Registra limitações técnicas claras e gera relatórios sanitizados.
+ * - Garante que qualquer falha resulte em exit code 1 e relatórios sanitizados preservados.
  */
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const crypto = require('crypto');
 
 console.log('===============================================================');
 console.log('   NEXUS - Sandbox de Homologação NSIS e Validação Minisign    ');
@@ -54,50 +56,302 @@ function recordTest(name, passed, details = '') {
   }
 }
 
+/**
+ * Validação técnica rigorosa de cabeçalho Portable Executable (PE/MZ e AMD64)
+ */
+function validatePEHeader(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(1024);
+    const bytesRead = fs.readSync(fd, buffer, 0, 1024, 0);
+    fs.closeSync(fd);
+
+    if (bytesRead < 64) {
+      return { valid: false, details: 'Arquivo menor que 64 bytes (cabeçalho DOS truncado)' };
+    }
+
+    // 1. DOS Header MZ (0x4D, 0x5A)
+    if (buffer[0] !== 0x4d || buffer[1] !== 0x5a) {
+      return { valid: false, details: 'Magic bytes MZ (0x4D5A) ausentes no início do executável' };
+    }
+
+    // 2. Offset do cabeçalho PE em 0x3C
+    const peOffset = buffer.readUInt32LE(0x3c);
+    // Boundary check: PE signature (4 bytes) + COFF header (20 bytes) = peOffset + 24
+    if (peOffset <= 0 || peOffset + 24 > bytesRead) {
+      return { valid: false, details: `Offset PE fora dos limites válidos do cabeçalho (${peOffset})` };
+    }
+
+    // 3. Assinatura PE\0\0 (0x50, 0x45, 0x00, 0x00)
+    if (
+      buffer[peOffset] !== 0x50 ||
+      buffer[peOffset + 1] !== 0x45 ||
+      buffer[peOffset + 2] !== 0x00 ||
+      buffer[peOffset + 3] !== 0x00
+    ) {
+      return { valid: false, details: 'Assinatura PE\\0\\0 ausente no offset indicado' };
+    }
+
+    // 4. Arquitetura da máquina: DEVE ser estritamente x86_64 / AMD64 (0x8664)
+    const machine = buffer.readUInt16LE(peOffset + 4);
+    if (machine !== 0x8664) {
+      return {
+        valid: false,
+        details: `Arquitetura incompatível: 0x${machine.toString(16)} (esperado exclusivamente: 0x8664 AMD64/x86_64)`,
+      };
+    }
+
+    return { valid: true, details: 'Cabeçalho PE válido (MZ + PE\\0\\0), Arquitetura confirmada: x86_64 (AMD64 0x8664)' };
+  } catch (err) {
+    return { valid: false, details: `Erro ao analisar cabeçalho PE: ${err.message}` };
+  }
+}
+
+/**
+ * Extrai a chave pública limpa Minisign em formato Base64 (segunda linha)
+ */
+function extractCleanMinisignPubKey(raw) {
+  let text = raw.trim();
+  // Se for Base64 contendo arquivo completo, decodifica primeiro
+  if (!text.includes('untrusted comment:') && /^[A-Za-z0-9+/=\r\n]+$/.test(text) && text.length > 60) {
+    try {
+      const decoded = Buffer.from(text, 'base64').toString('utf8');
+      if (decoded.includes('untrusted comment:')) {
+        text = decoded.trim();
+      }
+    } catch {}
+  }
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  return lines[lines.length - 1];
+}
+
 try {
-  // 1. Localização e conferência exata do instalador NSIS
+  // 1. Auditoria Estrita de Artefatos no Diretório do Bundle NSIS
   const files = fs.existsSync(nsisDir) ? fs.readdirSync(nsisDir) : [];
   const expectedInstallerName = `nexus_${targetVersion}_x64-setup.exe`;
-  const exeFile = files.find((f) => f === expectedInstallerName || (f.includes(targetVersion) && f.endsWith('-setup.exe')));
-  const sigFile = exeFile ? files.find((f) => f === `${exeFile}.sig` || f === `${expectedInstallerName}.sig`) : null;
+  const expectedSigName = `${expectedInstallerName}.sig`;
 
-  recordTest('Geração do Instalador com Nome e Versão Corretos', !!exeFile, exeFile || `Esperado: ${expectedInstallerName}`);
-  recordTest('Presença do Arquivo de Assinatura (.sig)', !!sigFile, sigFile || 'Nenhum .sig');
+  const exeFiles = files.filter((f) => f.toLowerCase().endsWith('.exe'));
+  const sigFiles = files.filter((f) => f.toLowerCase().endsWith('.sig'));
 
-  if (exeFile) {
-    const exePath = path.join(nsisDir, exeFile);
+  // 1a. Existência do instalador exato
+  const hasExpectedExe = exeFiles.includes(expectedInstallerName);
+  recordTest('Geração do Instalador com Nome e Versão Corretos', hasExpectedExe, expectedInstallerName);
+
+  // 1b. Existência da assinatura correspondente
+  const hasExpectedSig = sigFiles.includes(expectedSigName);
+  recordTest('Presença do Arquivo de Assinatura (.sig)', hasExpectedSig, expectedSigName);
+
+  // 1c. Rejeição de executáveis extras ou secundários
+  const extraExes = exeFiles.filter((f) => f !== expectedInstallerName);
+  recordTest(
+    'Ausência de Executáveis Inesperados no Bundle',
+    extraExes.length === 0,
+    extraExes.length === 0 ? 'Nenhum executável estranho detectado' : `Executáveis não autorizados: ${extraExes.join(', ')}`
+  );
+
+  // 1d. Rejeição de assinaturas órfãs
+  const orphanSigs = sigFiles.filter((f) => f !== expectedSigName);
+  recordTest(
+    'Ausência de Assinaturas Órfãs no Bundle',
+    orphanSigs.length === 0,
+    orphanSigs.length === 0 ? 'Nenhuma assinatura órfã detectada' : `Assinaturas órfãs: ${orphanSigs.join(', ')}`
+  );
+
+  // 1e. Rejeição de arquivos estranhos gerais (permitidos apenas o instalador, assinatura e scripts internos .nsis/.pdb)
+  const allowedSet = new Set([expectedInstallerName, expectedSigName]);
+  const unexpectedFiles = files.filter((f) => !allowedSet.has(f) && !f.endsWith('.nsis') && !f.endsWith('.pdb'));
+  recordTest(
+    'Ausência de Arquivos Inesperados no Bundle',
+    unexpectedFiles.length === 0,
+    unexpectedFiles.length === 0
+      ? 'Somente artefatos NSIS autorizados presentes'
+      : `Arquivos inesperados encontrados: ${unexpectedFiles.join(', ')}`
+  );
+
+  if (hasExpectedExe) {
+    const exePath = path.join(nsisDir, expectedInstallerName);
     const exeStat = fs.statSync(exePath);
-    recordTest('Tamanho Válido do Instalador (> 5MB)', exeStat.size > 5 * 1024 * 1024, `${(exeStat.size / 1024 / 1024).toFixed(2)} MB`);
 
-    // 2. Validação Criptográfica da Assinatura
-    if (sigFile) {
-      const sigPath = path.join(nsisDir, sigFile);
-      const sigContent = fs.readFileSync(sigPath, 'utf8').trim();
-      const hasMinisignHeader = sigContent.includes('untrusted comment:') && sigContent.length >= 64;
-      recordTest('Estrutura de Cabeçalho Minisign Válida', hasMinisignHeader, 'Cabeçalho e assinatura presentes');
+    // Validação técnica de integridade física (não-vazio)
+    const isNonEmpty = exeStat.size > 1024 * 1024; // Pelo menos 1MB para pacote completo NSIS
+    const sizeMB = (exeStat.size / (1024 * 1024)).toFixed(2);
+    recordTest(
+      'Integridade Física do Arquivo Executável',
+      isNonEmpty,
+      `Arquivo presente com ${exeStat.size} bytes (${sizeMB} MB)`
+    );
 
-      // Executa verificação criptográfica através do signer do Tauri ou Minisign
-      const pubkeyFile = path.join(rootDir, '.lab_keys', 'minisign_pubkey.txt');
-      if (fs.existsSync(pubkeyFile)) {
-        const pubkeyBase64 = fs.readFileSync(pubkeyFile, 'utf8').trim();
-        let verifyPassed = false;
-        let verifyDetails = '';
+    // Validação rigorosa de cabeçalho binário Windows PE (MZ + PE\0\0 + 0x8664 AMD64)
+    const peValidation = validatePEHeader(exePath);
+    recordTest('Validação do Cabeçalho Executável Windows (PE/MZ e Arquitetura AMD64)', peValidation.valid, peValidation.details);
 
+    // 2. Validação Estrutural e Criptográfica da Assinatura Minisign
+    if (hasExpectedSig) {
+      const sigPath = path.join(nsisDir, expectedSigName);
+      const rawSigContent = fs.readFileSync(sigPath, 'utf8').trim();
+
+      // O Tauri 2 salva a assinatura Minisign codificada em Base64 no arquivo .sig
+      let decodedSigText = rawSigContent;
+      if (!rawSigContent.includes('untrusted comment:') && /^[A-Za-z0-9+/=\r\n]+$/.test(rawSigContent)) {
         try {
-          // O Tauri CLI permite verificar a assinatura com a chave pública
-          const verifyOutput = execSync(`npx tauri signer sign -k "${path.join(rootDir, '.lab_keys', 'homologation_minisign.key')}" -p "" "${exePath}"`, {
-            cwd: rootDir,
-            stdio: 'pipe',
-          }).toString();
-          verifyPassed = true;
-          verifyDetails = 'Assinatura revalidada via Tauri signer oficial';
-        } catch (signErr) {
-          // Fallback de conferência estrutural da assinatura
-          verifyPassed = sigContent.length > 50;
-          verifyDetails = `Assinatura gerada pelo Tauri build validada estruturalmente (${sigContent.slice(0, 30)}...)`;
-        }
+          const candidate = Buffer.from(rawSigContent, 'base64').toString('utf8');
+          if (candidate.includes('untrusted comment:')) {
+            decodedSigText = candidate;
+          }
+        } catch {}
+      }
 
-        recordTest('Validação Criptográfica da Assinatura com Chave Temporária', verifyPassed, verifyDetails);
+      const sigLines = decodedSigText.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+      const hasMinisignHeader = sigLines.length >= 2 && sigLines[0].startsWith('untrusted comment:');
+      recordTest(
+        'Estrutura de Cabeçalho Minisign Válida',
+        hasMinisignHeader,
+        hasMinisignHeader ? `Estrutura Minisign confirmada (${sigLines[0]})` : 'Cabeçalho Minisign inválido ou ausente'
+      );
+
+      // Verificação criptográfica real com a chave pública efêmera
+      const pubkeyFile = path.join(rootDir, '.lab_keys', 'minisign_pubkey.txt');
+      const fallbackPubkeyFile = path.join(rootDir, '.lab_keys', 'homologation_minisign.key.pub');
+      const activePubPath = fs.existsSync(pubkeyFile) ? pubkeyFile : (fs.existsSync(fallbackPubkeyFile) ? fallbackPubkeyFile : null);
+
+      if (!activePubPath) {
+        recordTest('Validação Criptográfica Real da Assinatura', false, 'Chave pública efêmera não encontrada em .lab_keys');
+      } else if (hasMinisignHeader && sigLines.length >= 2) {
+        try {
+          const rawPub = fs.readFileSync(activePubPath, 'utf8').trim();
+          const cleanPubStr = extractCleanMinisignPubKey(rawPub);
+          const pubRaw = Buffer.from(cleanPubStr, 'base64');
+
+          if (pubRaw.length !== 42) {
+            recordTest(
+              'Validação Criptográfica Real da Assinatura',
+              false,
+              `Tamanho da chave pública Minisign inválido (${pubRaw.length} bytes, esperado: 42)`
+            );
+          } else {
+            const pubKeyId = pubRaw.subarray(2, 10);
+            const ed25519PubKey = pubRaw.subarray(10, 42);
+
+            const sigLine1 = Buffer.from(sigLines[1], 'base64');
+            if (sigLine1.length !== 74) {
+              recordTest(
+                'Validação Criptográfica Real da Assinatura',
+                false,
+                `Tamanho dos dados de assinatura inválido (${sigLine1.length} bytes, esperado: 74)`
+              );
+            } else {
+              // Verificação do identificador de algoritmo Minisign ('ED' para prehash BLAKE2b-512 ou 'Ed' para puro)
+              const algStr = sigLine1.subarray(0, 2).toString('utf8');
+              const isAlgValid = algStr === 'ED' || algStr === 'Ed';
+              recordTest(
+                'Identificador de Algoritmo Minisign Válido',
+                isAlgValid,
+                isAlgValid ? `Algoritmo válido confirmado: ${algStr}` : `Algoritmo Minisign desconhecido: ${algStr}`
+              );
+
+              // Correspondência exata do Key ID (8 bytes)
+              const sigKeyId = sigLine1.subarray(2, 10);
+              const keyIdsMatch = pubKeyId.equals(sigKeyId);
+              recordTest(
+                'Correspondência de Key ID Minisign',
+                keyIdsMatch,
+                keyIdsMatch
+                  ? `Key ID correspondente: ${pubKeyId.toString('hex')}`
+                  : `Key ID divergente: chave=${pubKeyId.toString('hex')}, sig=${sigKeyId.toString('hex')}`
+              );
+
+              if (keyIdsMatch && isAlgValid) {
+                const fileSig = sigLine1.subarray(10, 74);
+                const spkiPrefix = Buffer.from('302a300506032b6570032100', 'hex');
+                const publicKeyObj = crypto.createPublicKey({
+                  key: Buffer.concat([spkiPrefix, ed25519PubKey]),
+                  format: 'der',
+                  type: 'spki',
+                });
+
+                // Minisign com flag 'ED' assina o hash BLAKE2b-512 do arquivo executável
+                const fileData = fs.readFileSync(exePath);
+                const fileHash = algStr === 'ED'
+                  ? crypto.createHash('blake2b512').update(fileData).digest()
+                  : fileData;
+
+                const isVerified = crypto.verify(null, fileHash, publicKeyObj, fileSig);
+                recordTest(
+                  'Validação Criptográfica do Conteúdo (Ed25519 + BLAKE2b-512)',
+                  isVerified,
+                  isVerified
+                    ? 'Assinatura matemática Ed25519 do binário confirmada com a chave pública efêmera'
+                    : 'Falha na verificação matemática da assinatura Ed25519 do arquivo'
+                );
+
+                // Verificação da Assinatura Global e Comentário Confiável (Linhas 3 e 4)
+                if (sigLines.length >= 4 && sigLines[2].startsWith('trusted comment:')) {
+                  const trustedCommentText = sigLines[2].replace(/^trusted comment:\s*/, '');
+                  const globalSigRaw = Buffer.from(sigLines[3], 'base64');
+
+                  if (globalSigRaw.length !== 64) {
+                    recordTest(
+                      'Validação da Assinatura Global Minisign (Comentário Confiável)',
+                      false,
+                      `Tamanho da assinatura global inválido (${globalSigRaw.length} bytes, esperado: 64)`
+                    );
+                  } else {
+                    const globalSignedData = Buffer.concat([fileSig, Buffer.from(trustedCommentText)]);
+                    const isGlobalVerified = crypto.verify(null, globalSignedData, publicKeyObj, globalSigRaw);
+                    recordTest(
+                      'Validação da Assinatura Global Minisign (Comentário Confiável)',
+                      isGlobalVerified,
+                      isGlobalVerified
+                        ? `Assinatura global válida protegendo o comentário confiável: "${trustedCommentText}"`
+                        : 'Falha na verificação matemática da assinatura global'
+                    );
+
+                    // Teste Negativo do Comentário Confiável
+                    const tamperedGlobalData = Buffer.concat([fileSig, Buffer.from('timestamp:999999999\tfile:tampered.bin')]);
+                    const negGlobal = crypto.verify(null, tamperedGlobalData, publicKeyObj, globalSigRaw);
+                    recordTest(
+                      'Teste Criptográfico Negativo: Rejeição de Comentário Confiável Adulterado',
+                      !negGlobal,
+                      !negGlobal ? 'Rejeição esperada confirmada (false)' : 'Falha grave: assinatura global aceitou comentário adulterado!'
+                    );
+                  }
+                }
+
+                // --- TESTES NEGATIVOS OBRIGATÓRIOS DO ARQUIVO ---
+                // 1. Dados alterados devem falhar
+                const tamperedHash = crypto.createHash('blake2b512').update(Buffer.concat([fileData, Buffer.from('TAMPERED')])).digest();
+                const negTamperedData = crypto.verify(null, tamperedHash, publicKeyObj, fileSig);
+                recordTest(
+                  'Teste Criptográfico Negativo: Rejeição de Dados Adulterados',
+                  !negTamperedData,
+                  !negTamperedData ? 'Rejeição esperada confirmada (false)' : 'Falha grave: assinatura aceitou arquivo adulterado!'
+                );
+
+                // 2. Assinatura alterada deve falhar
+                const badSig = Buffer.from(fileSig);
+                badSig[0] ^= 0xff;
+                const negTamperedSig = crypto.verify(null, fileHash, publicKeyObj, badSig);
+                recordTest(
+                  'Teste Criptográfico Negativo: Rejeição de Assinatura Adulterada',
+                  !negTamperedSig,
+                  !negTamperedSig ? 'Rejeição esperada confirmada (false)' : 'Falha grave: assinatura corrompida foi aceita!'
+                );
+
+                // 3. Chave pública incorreta deve falhar
+                const { publicKey: wrongKey } = crypto.generateKeyPairSync('ed25519');
+                const negWrongKey = crypto.verify(null, fileHash, wrongKey, fileSig);
+                recordTest(
+                  'Teste Criptográfico Negativo: Rejeição de Chave Pública Incorreta',
+                  !negWrongKey,
+                  !negWrongKey ? 'Rejeição esperada confirmada (false)' : 'Falha grave: chave pública arbitrária foi aceita!'
+                );
+              }
+            }
+          }
+        } catch (cryptoErr) {
+          recordTest('Validação Criptográfica Real da Assinatura', false, `Exceção: ${cryptoErr.message}`);
+        }
       }
     }
 
@@ -107,17 +361,21 @@ try {
     const simulatedSettingsFile = path.join(simulatedAppData, 'nexus_settings.json');
 
     fs.mkdirSync(simulatedAppData, { recursive: true });
-    fs.writeFileSync(simulatedSettingsFile, JSON.stringify({
-      app_update_channel: 'beta',
-      preferences: { theme: 'midnight-black', updateChannel: 'beta' }
-    }), 'utf8');
+    fs.writeFileSync(
+      simulatedSettingsFile,
+      JSON.stringify({
+        app_update_channel: 'beta',
+        preferences: { theme: 'midnight-black', updateChannel: 'beta' },
+      }),
+      'utf8'
+    );
 
     // Simula diretório de instalação binária em Local\Programs\nexus
     const binDir = path.join(sandboxDir, 'Local', 'Programs', 'nexus');
     fs.mkdirSync(binDir, { recursive: true });
     fs.writeFileSync(path.join(binDir, 'nexus.exe'), 'SIMULATED_PREVIOUS_BINARY', 'utf8');
 
-    // Executa substituição de binário simulando o instalador NSIS
+    // Executa substituição de binário simulando a atualização NSIS
     fs.writeFileSync(path.join(binDir, 'nexus.exe'), 'SIMULATED_NEW_BINARY', 'utf8');
 
     // Verifica que o arquivo de dados em Roaming/nexus permaneceu intocado
@@ -128,7 +386,7 @@ try {
     recordTest(
       'Simulação de Preservação de Dados de Usuário (%APPDATA%)',
       isChannelPreserved && isThemePreserved,
-      'Configurações mantidas intactas fora do diretório binário'
+      'Configurações mantidas intactas fora do diretório binário (Roaming)'
     );
 
     // Limpeza da sandbox temporária
@@ -138,7 +396,7 @@ try {
   recordTest('Execução da Suíte de Sandbox', false, err.message);
 }
 
-// Grava relatórios sanitizados
+// Grava relatórios sanitizados SEMPRE antes de sair
 fs.writeFileSync(path.join(rootDir, 'homologation-report.json'), JSON.stringify(report, null, 2), 'utf8');
 
 const summaryText = `================================================================================
@@ -147,7 +405,7 @@ NEXUS Pre-Login Auto Updater - Relatório Sanitizado de Homologação em CI
 Timestamp: ${report.timestamp}
 Ambiente: ${report.environment}
 Versão de Homologação: ${report.targetVersion}
-Status da Execução: ${report.status}
+Status da Execução: ${report.summary.failed === 0 ? 'HOMOLOGAÇÃO_APROVADA' : 'HOMOLOGAÇÃO_FALHOU'}
 Total de Testes: ${report.summary.passed} aprovados / ${report.summary.failed} falhas
 
 Resultados Detalhados:
@@ -160,3 +418,12 @@ ${report.technicalLimitations.map((l) => `* ${l}`).join('\n')}
 
 fs.writeFileSync(path.join(rootDir, 'homologation-summary.txt'), summaryText, 'utf8');
 console.log('\n[INFO] Relatórios de homologação sanitizados gravados com sucesso.');
+
+// Regra de segurança fundamental: Qualquer falha obrigatória encerra com exit code 1
+if (report.summary.failed > 0) {
+  console.error(`\n[FALHA DE HOMOLOGAÇÃO] O sandbox registrou ${report.summary.failed} falha(s) em verificações obrigatórias!`);
+  process.exit(1);
+} else {
+  console.log(`\n[SUCESSO] Todas as ${report.summary.passed} verificações do sandbox de homologação foram aprovadas com sucesso!`);
+  process.exit(0);
+}
