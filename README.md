@@ -7,8 +7,8 @@
 Uma plataforma de mensagens e chamadas em tempo real construída com arquitetura nativa em Rust e interface fluida em React 19, inspirada na organização da Steam e na estética gamer escura com detalhes em carmesim.
 
 <!-- NEXUS:STABLE_HEADER_BADGE:START -->
-[![Versão](https://img.shields.io/badge/Versão-v0.2.1%20Stable-e02424?style=flat-square&logo=github)](https://github.com/Sinisterzs/NEXUS/releases/tag/v0.2.1)
-[![Windows](https://img.shields.io/badge/Plataforma-Windows%2010%20%2F%2011%20x64-0f1117?style=flat-square&logo=windows11&logoColor=0078D4)](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1/nexus_0.2.1_x64-setup.exe)
+[![Versão](https://img.shields.io/badge/Versão-v0.2.5%20Stable-e02424?style=flat-square&logo=github)](https://github.com/Sinisterzs/NEXUS/releases/tag/v0.2.5)
+[![Windows](https://img.shields.io/badge/Plataforma-Windows%2010%20%2F%2011%20x64-0f1117?style=flat-square&logo=windows11&logoColor=0078D4)](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.5/nexus_0.2.5_x64-setup.exe)
 <!-- NEXUS:STABLE_HEADER_BADGE:END -->
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-0f1117?style=flat-square&logo=tauri&logoColor=24C8DB)](https://tauri.app)
 [![Rust](https://img.shields.io/badge/Rust-1.85-0f1117?style=flat-square&logo=rust&logoColor=DEA584)](https://www.rust-lang.org)
@@ -16,7 +16,7 @@ Uma plataforma de mensagens e chamadas em tempo real construída com arquitetura
 [![Licença](https://img.shields.io/badge/Licença-MIT-0f1117?style=flat-square)](LICENSE)
 
 <!-- NEXUS:STABLE_HEADER_LINKS:START -->
-[**Baixar v0.2.1 Stable**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1/nexus_0.2.1_x64-setup.exe) • [**Notas de Lançamento**](scripts/release-notes-v0.2.1.md) • [**Releases no GitHub**](https://github.com/Sinisterzs/NEXUS/releases) • [**Histórico de Mudanças**](CHANGELOG.md)
+[**Baixar v0.2.5 Stable**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.5/nexus_0.2.5_x64-setup.exe) • [**Notas de Lançamento**](scripts/release-notes-v0.2.5.md) • [**Releases no GitHub**](https://github.com/Sinisterzs/NEXUS/releases) • [**Histórico de Mudanças**](CHANGELOG.md)
 <!-- NEXUS:STABLE_HEADER_LINKS:END -->
 
 </div>
@@ -61,9 +61,9 @@ O NEXUS disponibiliza instaladores assinados digitalmente para Windows de 64 bit
 <!-- NEXUS:STABLE_ROW:START -->
     <tr>
       <td align="left"><strong>Estável (Recomendado)</strong></td>
-      <td align="center"><strong><code>v0.2.1</code></strong></td>
+      <td align="center"><strong><code>v0.2.5</code></strong></td>
       <td align="center">Homologada</td>
-      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.1/nexus_0.2.1_x64-setup.exe"><strong>nexus_0.2.1_x64-setup.exe</strong></a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.5/nexus_0.2.5_x64-setup.exe"><strong>nexus_0.2.5_x64-setup.exe</strong></a></td>
       <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/latest/download/latest.json"><code>latest.json</code></a></td>
     </tr>
 <!-- NEXUS:STABLE_ROW:END -->
