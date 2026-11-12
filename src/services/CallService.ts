@@ -1125,8 +1125,13 @@ export class CallService {
       return status;
     } catch (err: any) {
       this.teardownNativeScreenState();
+      const msg =
+        typeof err === 'string'
+          ? err
+          : err?.message || (err ? String(err) : 'Falha ao iniciar captura nativa de tela.');
+      console.error('[CallService] Falha ao iniciar captura nativa de tela:', err);
       useAppStore.setState({
-        screenShareError: err?.message || 'Falha ao iniciar captura nativa de tela.',
+        screenShareError: msg,
       });
       return null;
     }

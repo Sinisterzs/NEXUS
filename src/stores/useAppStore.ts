@@ -4176,9 +4176,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ nativeCaptureSources: sources, isLoadingNativeSources: false });
       return sources;
     } catch (err: any) {
+      const msg =
+        typeof err === 'string'
+          ? err
+          : err?.message || (err ? String(err) : 'Falha ao listar monitores e janelas.');
+      console.error('[ScreenCapture] Falha ao listar fontes nativas:', err);
       set({
         isLoadingNativeSources: false,
-        screenShareError: err?.message || 'Falha ao listar monitores e janelas.',
+        screenShareError: msg,
       });
       return null;
     }
@@ -4216,21 +4221,39 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       return true;
     } catch (err: any) {
+      const msg =
+        typeof err === 'string'
+          ? err
+          : err?.message || (err ? String(err) : 'Falha ao iniciar compartilhamento de tela nativo.');
+      console.error('[VoiceRoom] Falha ao iniciar compartilhamento nativo:', err);
       set({
-        voiceRoomError: err?.message || 'Falha ao iniciar compartilhamento de tela nativo.',
+        voiceRoomError: msg,
       });
       return false;
     }
   },
 
   startNativeCallScreenShare: async (options) => {
-    const status = await callService.startNativeScreenShare(options);
-    if (!status) return false;
-    set({
-      screenPickerTarget: null,
-      nativeCaptureStatus: status,
-    });
-    return true;
+    try {
+      const status = await callService.startNativeScreenShare(options);
+      if (!status) return false;
+      set({
+        screenPickerTarget: null,
+        nativeCaptureStatus: status,
+        screenShareError: null,
+      });
+      return true;
+    } catch (err: any) {
+      const msg =
+        typeof err === 'string'
+          ? err
+          : err?.message || (err ? String(err) : 'Falha ao iniciar captura nativa de tela.');
+      console.error('[Call] Falha ao iniciar compartilhamento nativo:', err);
+      set({
+        screenShareError: msg,
+      });
+      return false;
+    }
   },
 
   startScreenShare: async (preset) => {

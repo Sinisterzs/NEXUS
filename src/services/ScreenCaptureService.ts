@@ -69,6 +69,20 @@ export interface NativeScreenEventHandlers {
   onEnded?: (event: NativeScreenEndedEvent) => void;
 }
 
+/**
+ * Tauri 2 expõe os argumentos de comandos Rust em camelCase (peer_id -> peerId).
+ * O payload aninhado de início de captura segue o mesmo padrão; o backend ainda
+ * aceita os nomes snake_case antigos como alias de compatibilidade.
+ */
+export function toNativeStartOptionsPayload(options: StartScreenShareOptions): Record<string, unknown> {
+  const payload: Record<string, unknown> = { sourceId: options.source_id };
+  if (options.preset !== undefined) payload.preset = options.preset;
+  if (options.cursor_enabled !== undefined) payload.cursorEnabled = options.cursor_enabled;
+  if (options.include_app_audio !== undefined) payload.includeAppAudio = options.include_app_audio;
+  if (options.force_software !== undefined) payload.forceSoftware = options.force_software;
+  if (options.ice_servers !== undefined) payload.iceServers = options.ice_servers;
+  return payload;
+}
 export function isTauriWindowsEnvironment(): boolean {
   if (typeof window === 'undefined') return false;
   const hasTauri = Boolean((window as any).__TAURI_INTERNALS__);
@@ -647,7 +661,7 @@ export class ScreenCaptureService {
 
   public async startNativeShare(options: StartScreenShareOptions): Promise<NativeCaptureStatus> {
     const { invoke } = await import('@tauri-apps/api/core');
-    return invoke<NativeCaptureStatus>('native_start_screen_share', { options });
+    return invoke<NativeCaptureStatus>('native_start_screen_share', { options: toNativeStartOptionsPayload(options) });
   }
 
   public async stopNativeShare(): Promise<void> {
@@ -662,7 +676,8 @@ export class ScreenCaptureService {
 
   public async setNativeAdaptiveBitrate(bitrateBps: number): Promise<void> {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('native_set_adaptive_bitrate', { bitrate_bps: Math.max(200_000, Math.round(bitrateBps)) });
+    const val = Math.max(200_000, Math.round(bitrateBps));
+    await invoke('native_set_adaptive_bitrate', { bitrateBps: val });
   }
 
   public async addNativeScreenPeer(
@@ -671,19 +686,19 @@ export class ScreenCaptureService {
   ): Promise<NativeScreenOfferEvent> {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<NativeScreenOfferEvent>('native_add_screen_peer', {
-      peer_id: peerId,
-      ...(iceServers ? { ice_servers: iceServers } : {}),
+      peerId,
+      ...(iceServers ? { iceServers } : {}),
     });
   }
 
   public async removeNativeScreenPeer(peerId: string): Promise<void> {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('native_remove_screen_peer', { peer_id: peerId });
+    await invoke('native_remove_screen_peer', { peerId });
   }
 
   public async handleNativeScreenAnswer(peerId: string, sdp: string): Promise<void> {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('native_handle_screen_answer', { peer_id: peerId, sdp });
+    await invoke('native_handle_screen_answer', { peerId, sdp });
   }
 
   public async handleNativeScreenIce(
@@ -694,10 +709,10 @@ export class ScreenCaptureService {
   ): Promise<void> {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('native_handle_screen_ice', {
-      peer_id: peerId,
+      peerId,
       candidate,
-      sdp_mid: sdpMid ?? null,
-      sdp_mline_index: sdpMlineIndex ?? null,
+      sdpMid: sdpMid ?? null,
+      sdpMlineIndex: sdpMlineIndex ?? null,
     });
   }
 

@@ -59,18 +59,51 @@ pub fn create_d3d11_on_adapter(adapter_index: u32) -> Result<(ID3D11Device, ID3D
         let mut device: Option<ID3D11Device> = None;
         let mut context: Option<ID3D11DeviceContext> = None;
         let mut fl = D3D_FEATURE_LEVEL_11_0;
-        D3D11CreateDevice(
+
+        let feature_levels = [
+            windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_1,
+            windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0,
+            windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_10_1,
+            windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_10_0,
+        ];
+
+        let res = D3D11CreateDevice(
             &adapter,
             D3D_DRIVER_TYPE_UNKNOWN,
             HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-            Some(&[D3D_FEATURE_LEVEL_11_0]),
+            Some(&feature_levels),
             D3D11_SDK_VERSION,
             Some(&mut device),
             Some(&mut fl),
             Some(&mut context),
-        )?;
-        Ok((device.unwrap(), context.unwrap()))
+        );
+
+        let (dev, ctx) = match res {
+            Ok(_) => (device.unwrap(), context.unwrap()),
+            Err(_) => {
+                let mut dev2: Option<ID3D11Device> = None;
+                let mut ctx2: Option<ID3D11DeviceContext> = None;
+                D3D11CreateDevice(
+                    &adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    Some(&feature_levels),
+                    D3D11_SDK_VERSION,
+                    Some(&mut dev2),
+                    Some(&mut fl),
+                    Some(&mut ctx2),
+                )?;
+                (dev2.unwrap(), ctx2.unwrap())
+            }
+        };
+
+        if let Ok(multithread) = dev.cast::<windows::Win32::Graphics::Direct3D11::ID3D11Multithread>() {
+            let _ = multithread.SetMultithreadProtected(true);
+        }
+
+        Ok((dev, ctx))
     }
 }
 

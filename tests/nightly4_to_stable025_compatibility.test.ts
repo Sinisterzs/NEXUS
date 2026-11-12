@@ -24,7 +24,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
-const EXPECTED_NIGHTLY_VERSIONS = ['0.3.0-nightly.5', '0.4.0-nightly.1'] as const;
+const EXPECTED_NIGHTLY_VERSIONS = ['0.3.0-nightly.5', '0.4.0-nightly.1', '0.4.0-nightly.2'] as const;
 const EXPECTED_STABLE_VERSION = '0.2.5';
 const OFFICIAL_MINISIGN_PUBKEY = 'RWSd5/ox8A8dk+NW9lqVAMuCKxJvH9kzKpUxCk1SmABC7b4+8zd5cfHf';
 const OFFICIAL_MINISIGN_KEY_ID = '931D0FF031FAE79D';

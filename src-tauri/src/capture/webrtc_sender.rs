@@ -157,7 +157,9 @@ impl NativeScreenManager {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "".to_owned(),
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
+                        .to_owned(),
                 rtcp_feedback: vec![],
             },
             "nexus-screen-video".to_owned(),
@@ -555,7 +557,7 @@ fn convert_ice_servers(configs: &[IceServerConfig]) -> Vec<RTCIceServer> {
         .collect()
 }
 
-fn build_webrtc_api(include_audio: bool) -> webrtc::error::Result<webrtc::api::API> {
+pub(crate) fn build_webrtc_api(include_audio: bool) -> webrtc::error::Result<webrtc::api::API> {
     let mut m = MediaEngine::default();
     let video_rtcp_feedback = vec![
         RTCPFeedback {
@@ -656,11 +658,21 @@ fn run_capture_encode_loop(
 ) {
     session.capture_thread_alive.store(true, Ordering::SeqCst);
 
+    crate::capture::log_capture_diag(
+        Some(&app),
+        &format!(
+            "Starting capture loop: source_id={}, preset={:?}, cursor={}, app_audio={}, force_sw={}",
+            source_id, preset, cursor_enabled, include_app_audio, force_software
+        ),
+    );
+
     unsafe {
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         if let Err(e) = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET) {
-            let _ = ready_tx.send(Err(format!("MFStartup failed: {e:?}")));
+            let err_msg = format!("MFStartup failed: {e:?}");
+            crate::capture::log_capture_diag(Some(&app), &err_msg);
+            let _ = ready_tx.send(Err(err_msg));
             session.capture_thread_alive.store(false, Ordering::SeqCst);
             CoUninitialize();
             RoUninitialize();
@@ -674,9 +686,14 @@ fn run_capture_encode_loop(
     };
 
     let (device, context) = match create_d3d11_on_adapter(adapter_idx) {
-        Ok(d) => d,
+        Ok(d) => {
+            crate::capture::log_capture_diag(Some(&app), &format!("D3D11CreateDevice succeeded on adapter {}", adapter_idx));
+            d
+        }
         Err(e) => {
-            let _ = ready_tx.send(Err(format!("D3D11CreateDevice failed: {e:?}")));
+            let err_msg = format!("D3D11CreateDevice failed on adapter {}: {e:?}", adapter_idx);
+            crate::capture::log_capture_diag(Some(&app), &err_msg);
+            let _ = ready_tx.send(Err(err_msg));
             unsafe {
                 let _ = MFShutdown();
                 CoUninitialize();
@@ -688,9 +705,14 @@ fn run_capture_encode_loop(
     };
 
     let mut capturer = match HybridCapturer::open(&device, &target, cursor_enabled) {
-        Ok(c) => c,
+        Ok(c) => {
+            crate::capture::log_capture_diag(Some(&app), &format!("HybridCapturer::open succeeded: backend={}", c.backend_used()));
+            c
+        }
         Err(e) => {
-            let _ = ready_tx.send(Err(format!("Capture open failed: {e:?}")));
+            let err_msg = format!("Capture open failed: {e:?}");
+            crate::capture::log_capture_diag(Some(&app), &err_msg);
+            let _ = ready_tx.send(Err(err_msg));
             drop(context);
             drop(device);
             unsafe {
@@ -708,9 +730,14 @@ fn run_capture_encode_loop(
     let (mut dst_w, mut dst_h) = fit_even_resolution(src_w, src_h, spec.width, spec.height);
 
     let mut converter = match GpuBgraToNv12::new(&device, &context, src_w, src_h, dst_w, dst_h) {
-        Ok(c) => c,
+        Ok(c) => {
+            crate::capture::log_capture_diag(Some(&app), &format!("GpuBgraToNv12 initialized: {}x{} -> {}x{}", src_w, src_h, dst_w, dst_h));
+            c
+        }
         Err(e) => {
-            let _ = ready_tx.send(Err(format!("GpuBgraToNv12 failed: {e:?}")));
+            let err_msg = format!("GpuBgraToNv12 failed: {e:?}");
+            crate::capture::log_capture_diag(Some(&app), &err_msg);
+            let _ = ready_tx.send(Err(err_msg));
             capturer.close();
             drop(context);
             drop(device);
@@ -732,9 +759,14 @@ fn run_capture_encode_loop(
         spec.initial_bitrate_bps,
         force_software,
     ) {
-        Ok(enc) => enc,
+        Ok(enc) => {
+            crate::capture::log_capture_diag(Some(&app), &format!("MfH264Encoder initialized: {} (hw={}, d3d_zc={})", enc.encoder_name, enc.is_hardware, enc.uses_d3d_zero_copy()));
+            enc
+        }
         Err(e) => {
-            let _ = ready_tx.send(Err(format!("MfH264Encoder failed: {e:?}")));
+            let err_msg = format!("MfH264Encoder failed: {e:?}");
+            crate::capture::log_capture_diag(Some(&app), &err_msg);
+            let _ = ready_tx.send(Err(err_msg));
             drop(converter);
             capturer.close();
             drop(context);

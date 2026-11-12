@@ -160,17 +160,19 @@ pub fn fit_even_resolution(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartScreenShareOptions {
+    #[serde(alias = "source_id")]
     pub source_id: String,
     #[serde(default = "default_preset_str")]
     pub preset: String,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", alias = "cursor_enabled")]
     pub cursor_enabled: bool,
-    #[serde(default)]
+    #[serde(default, alias = "include_app_audio")]
     pub include_app_audio: bool,
-    #[serde(default)]
+    #[serde(default, alias = "force_software")]
     pub force_software: bool,
-    #[serde(default)]
+    #[serde(default, alias = "ice_servers")]
     pub ice_servers: Option<Vec<crate::commands::IceServerConfig>>,
 }
 
@@ -279,11 +281,90 @@ impl Default for NativeCaptureState {
     }
 }
 
+const CAPTURE_LOG_MAX_BYTES: u64 = 1_048_576;
+
+/// Formats a Unix timestamp (ms) as `YYYY-MM-DD HH:MM:SS.mmm` (UTC) without extra dependencies.
+fn format_utc_timestamp(unix_ms: u128) -> String {
+    let secs = (unix_ms / 1000) as i64;
+    let ms = (unix_ms % 1000) as u32;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // Howard Hinnant's civil-from-days algorithm.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}.{ms:03}Z")
+}
+
+/// Location of the persistent capture diagnostics log:
+/// `%APPDATA%\com.nexus.desktop\capture.log` (or `$NEXUS_APP_DATA_DIR\capture.log` in the lab).
+pub fn capture_log_path(app: Option<&tauri::AppHandle>) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    if let Ok(custom) = std::env::var("NEXUS_APP_DATA_DIR") {
+        let custom = custom.trim();
+        if !custom.is_empty() {
+            return Some(std::path::PathBuf::from(custom).join("capture.log"));
+        }
+    }
+    if let Some(app) = app {
+        if let Ok(dir) = app.path().app_data_dir() {
+            return Some(dir.join("capture.log"));
+        }
+    }
+    std::env::var("APPDATA")
+        .ok()
+        .map(|a| std::path::PathBuf::from(a).join("com.nexus.desktop").join("capture.log"))
+}
+
+fn append_capture_log(path: &std::path::Path, line: &str) {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Keep a single previous generation so the log never grows without bound.
+    if std::fs::metadata(path).map(|m| m.len() > CAPTURE_LOG_MAX_BYTES).unwrap_or(false) {
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+/// Diagnostic logging for the native capture pipeline. Never receives tokens or credentials:
+/// callers pass only step names, HRESULTs, source handles and encoder/backend names.
+pub fn log_capture_diag(app: Option<&tauri::AppHandle>, msg: &str) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let line = format!("[{}] [CAPTURE] {msg}", format_utc_timestamp(now_ms));
+    eprintln!("{line}");
+    if let Some(path) = capture_log_path(app) {
+        append_capture_log(&path, &line);
+    }
+}
 #[tauri::command]
 pub fn native_list_capture_sources() -> Result<CaptureSources, String> {
     #[cfg(target_os = "windows")]
     {
-        selector::enumerate_all_sources().map_err(|e| format!("enumerate_all_sources failed: {e:?}"))
+        match selector::enumerate_all_sources() {
+            Ok(sources) => {
+                log_capture_diag(None, &format!("enumerate_all_sources ok: {} monitors, {} windows", sources.monitors.len(), sources.windows.len()));
+                Ok(sources)
+            }
+            Err(e) => {
+                log_capture_diag(None, &format!("enumerate_all_sources FAILED: {e:?}"));
+                Err(format!("enumerate_all_sources failed: {e:?}"))
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -297,9 +378,25 @@ pub async fn native_start_screen_share(
     state: tauri::State<'_, NativeCaptureState>,
     options: StartScreenShareOptions,
 ) -> Result<NativeCaptureStatus, String> {
+    log_capture_diag(Some(&app), &format!(
+        "native_start_screen_share requested: source_id={}, preset={}, cursor={}, app_audio={}, force_sw={}",
+        options.source_id, options.preset, options.cursor_enabled, options.include_app_audio, options.force_software
+    ));
     #[cfg(target_os = "windows")]
     {
-        state.inner.start_capture(app, options).await
+        match state.inner.start_capture(app.clone(), options).await {
+            Ok(status) => {
+                log_capture_diag(Some(&app), &format!(
+                    "native_start_screen_share SUCCESS: backend={}, encoder={}, hw={}, dim={}x{}@{}fps",
+                    status.backend_used, status.encoder_name, status.is_hardware, status.width, status.height, status.fps
+                ));
+                Ok(status)
+            }
+            Err(e) => {
+                log_capture_diag(Some(&app), &format!("native_start_screen_share FAILED: {e}"));
+                Err(e)
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -313,6 +410,7 @@ pub async fn native_stop_screen_share(
     app: tauri::AppHandle,
     state: tauri::State<'_, NativeCaptureState>,
 ) -> Result<(), String> {
+    log_capture_diag(Some(&app), "native_stop_screen_share requested by user");
     #[cfg(target_os = "windows")]
     {
         state.inner.stop_capture(Some(&app), "user_stopped").await;
@@ -364,9 +462,19 @@ pub async fn native_add_screen_peer(
     peer_id: String,
     ice_servers: Option<Vec<crate::commands::IceServerConfig>>,
 ) -> Result<NativeScreenOfferEvent, String> {
+    log_capture_diag(Some(&app), &format!("native_add_screen_peer requested: peer_id={}", peer_id));
     #[cfg(target_os = "windows")]
     {
-        state.inner.add_peer(app, peer_id, ice_servers).await
+        match state.inner.add_peer(app.clone(), peer_id.clone(), ice_servers).await {
+            Ok(offer) => {
+                log_capture_diag(Some(&app), &format!("native_add_screen_peer SUCCESS: peer_id={}, sdp_len={}", peer_id, offer.sdp.len()));
+                Ok(offer)
+            }
+            Err(e) => {
+                log_capture_diag(Some(&app), &format!("native_add_screen_peer FAILED: peer_id={}, error={}", peer_id, e));
+                Err(e)
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -474,5 +582,225 @@ mod tests {
         assert_eq!(fit_even_resolution(2560, 1440, 1280, 720), (1280, 720));
         assert_eq!(fit_even_resolution(1279, 719, 1920, 1080), (1278, 718));
         assert_eq!(fit_even_resolution(3440, 1440, 1920, 1080), (1920, 804));
+    }
+
+    #[test]
+    fn test_start_options_accept_camel_case_and_legacy_snake_case() {
+        // Payload sent by the Nightly.2 frontend (Tauri 2 camelCase convention).
+        let camel: StartScreenShareOptions = serde_json::from_value(serde_json::json!({
+            "sourceId": "monitor:0x10001",
+            "preset": "720p60",
+            "cursorEnabled": false,
+            "includeAppAudio": true,
+            "forceSoftware": true,
+            "iceServers": [{ "urls": ["stun:stun.example.org:3478"] }]
+        }))
+        .expect("camelCase options must deserialize");
+        assert_eq!(camel.source_id, "monitor:0x10001");
+        assert_eq!(camel.preset, "720p60");
+        assert!(!camel.cursor_enabled);
+        assert!(camel.include_app_audio);
+        assert!(camel.force_software);
+        assert_eq!(camel.ice_servers.as_ref().map(|v| v.len()), Some(1));
+
+        // Legacy Nightly.1 payload must keep working.
+        let snake: StartScreenShareOptions = serde_json::from_value(serde_json::json!({
+            "source_id": "window:0xABCD",
+            "cursor_enabled": true,
+            "include_app_audio": false,
+            "force_software": false
+        }))
+        .expect("legacy snake_case options must deserialize");
+        assert_eq!(snake.source_id, "window:0xABCD");
+        assert_eq!(snake.preset, "auto");
+        assert!(snake.cursor_enabled);
+        assert!(snake.ice_servers.is_none());
+
+        // Defaults when only the source is provided.
+        let minimal: StartScreenShareOptions =
+            serde_json::from_value(serde_json::json!({ "sourceId": "monitor:0x1" })).unwrap();
+        assert!(minimal.cursor_enabled);
+        assert!(!minimal.include_app_audio);
+    }
+
+    #[test]
+    fn test_capture_log_timestamp_format() {
+        assert_eq!(format_utc_timestamp(0), "1970-01-01 00:00:00.000Z");
+        assert_eq!(format_utc_timestamp(1_794_244_036_461), "2026-11-09 17:07:16.461Z");
+        assert_eq!(format_utc_timestamp(951_782_400_000), "2000-02-29 00:00:00.000Z");
+    }
+
+    #[test]
+    fn test_capture_log_is_persisted_and_rotated() {
+        let dir = std::env::temp_dir().join(format!("nexus_capture_log_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("capture.log");
+
+        append_capture_log(&path, "[t] [CAPTURE] step=d3d11 hresult=0x80070005");
+        append_capture_log(&path, "[t] [CAPTURE] step=wgc ok");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("hresult=0x80070005"));
+        assert_eq!(content.lines().count(), 2);
+
+        // Oversized log is rotated to capture.log.1 and a fresh file is started.
+        std::fs::write(&path, vec![b'x'; (CAPTURE_LOG_MAX_BYTES + 1) as usize]).unwrap();
+        append_capture_log(&path, "[t] [CAPTURE] after rotation");
+        assert!(dir.join("capture.log.1").exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "[t] [CAPTURE] after rotation");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_capture_log_default_location() {
+        // Without an override the log lives in %APPDATA%\com.nexus.desktop\capture.log.
+        if std::env::var("NEXUS_APP_DATA_DIR").map(|v| !v.trim().is_empty()).unwrap_or(false) {
+            return;
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = capture_log_path(None).expect("path");
+            assert_eq!(
+                p,
+                std::path::PathBuf::from(appdata).join("com.nexus.desktop").join("capture.log")
+            );
+        }
+    }
+
+    #[test]
+    fn test_diagnose_native_capture_on_host() {
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+            use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+            use windows::Win32::Media::MediaFoundation::{MFStartup, MFShutdown, MF_VERSION, MFSTARTUP_NOSOCKET};
+
+            unsafe {
+                let _ = RoInitialize(RO_INIT_MULTITHREADED);
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                if let Err(e) = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET) {
+                    println!("[DIAG] MFStartup failed: {:?}", e);
+                } else {
+                    println!("[DIAG] MFStartup ok");
+                }
+            }
+
+            println!("[DIAG] 1. Enumerating sources...");
+            match selector::enumerate_all_sources() {
+                Ok(sources) => {
+                    println!("[DIAG] Found {} monitors, {} windows", sources.monitors.len(), sources.windows.len());
+                    for (i, m) in sources.monitors.iter().enumerate() {
+                        println!("[DIAG] Monitor[{}]: id={}, title={}, adapter={:?}, output={:?}, dim={}x{}",
+                            i, m.id, m.title, m.adapter_index, m.output_index, m.width, m.height);
+                    }
+                    if let Some(first_mon) = sources.monitors.first() {
+                        let parsed = selector::parse_source_handle(&first_mon.id);
+                        println!("[DIAG] parse_source_handle({}): {:?}", first_mon.id, parsed);
+
+                        let adapter_idx = first_mon.adapter_index.unwrap_or(0);
+                        println!("[DIAG] 2. Testing create_d3d11_on_adapter({})...", adapter_idx);
+                        match dxgi_wgc::create_d3d11_on_adapter(adapter_idx) {
+                            Ok((dev, ctx)) => {
+                                println!("[DIAG] D3D11 device and context created successfully!");
+
+                                let (_kind, handle_raw) = parsed.unwrap();
+                                let target = dxgi_wgc::CaptureTarget::DxgiMonitor {
+                                    hmonitor: handle_raw,
+                                    adapter_index: adapter_idx,
+                                    output_index: first_mon.output_index.unwrap_or(0),
+                                };
+
+                                println!("[DIAG] 3. Testing HybridCapturer::open with DxgiMonitor...");
+                                match dxgi_wgc::HybridCapturer::open(&dev, &target, true) {
+                                    Ok(mut capturer) => {
+                                        println!("[DIAG] HybridCapturer::open succeeded with backend: {}", capturer.backend_used());
+                                        let (w, h) = capturer.src_size();
+                                        println!("[DIAG] Captured size: {}x{}", w, h);
+
+                                        println!("[DIAG] 4. Testing GpuBgraToNv12::new...");
+                                        match mf_encoder::GpuBgraToNv12::new(&dev, &ctx, w, h, 1920, 1080) {
+                                            Ok(_) => println!("[DIAG] GpuBgraToNv12 initialized successfully!"),
+                                            Err(e) => println!("[DIAG] GpuBgraToNv12 failed: {:?}", e),
+                                        }
+
+                                        println!("[DIAG] 5. Testing MfH264Encoder::new (HW/SW)...");
+                                        match mf_encoder::MfH264Encoder::new(&dev, 1920, 1080, 30, 2_000_000, false) {
+                                            Ok(enc) => println!("[DIAG] MfH264Encoder initialized: {}", enc.encoder_name),
+                                            Err(e) => println!("[DIAG] MfH264Encoder failed: {:?}", e),
+                                        }
+
+                                        println!("[DIAG] 6. Testing frame acquisition...");
+                                        match capturer.acquire_into_texture(&dev, &ctx, 200) {
+                                            Ok((tex, captured)) => {
+                                                println!("[DIAG] Frame acquisition ok: has_texture={}, captured_new={}", tex.is_some(), captured);
+                                            }
+                                            Err(e) => {
+                                                println!("[DIAG] Frame acquisition failed: {:?}", e);
+                                            }
+                                        }
+
+                                        println!("[DIAG] 7. Testing WebRTC API build & PC creation...");
+                                        match webrtc_sender::build_webrtc_api(false) {
+                                            Ok(api) => {
+                                                println!("[DIAG] WebRTC API built successfully!");
+                                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                                rt.block_on(async {
+                                                    match api.new_peer_connection(webrtc::peer_connection::configuration::RTCConfiguration::default()).await {
+                                                        Ok(pc) => {
+                                                            println!("[DIAG] RTCPeerConnection created ok!");
+                                                            let track = std::sync::Arc::new(webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample::new(
+                                                                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                                                                    mime_type: "video/H264".to_string(),
+                                                                    clock_rate: 90000,
+                                                                    channels: 0,
+                                                                    sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_string(),
+                                                                    rtcp_feedback: vec![],
+                                                                },
+                                                                "test-video".to_string(),
+                                                                "test-stream".to_string(),
+                                                            ));
+                                                            match pc.add_track(track).await {
+                                                                Ok(_) => {
+                                                                    println!("[DIAG] Video track added to PC ok!");
+                                                                    match pc.create_offer(None).await {
+                                                                        Ok(offer) => {
+                                                                            println!("[DIAG] WebRTC Offer generated successfully! (sdp length: {})", offer.sdp.len());
+                                                                        }
+                                                                        Err(e) => println!("[DIAG] create_offer failed: {:?}", e),
+                                                                    }
+                                                                }
+                                                                Err(e) => println!("[DIAG] add_track failed: {:?}", e),
+                                                            }
+                                                        }
+                                                        Err(e) => println!("[DIAG] new_peer_connection failed: {:?}", e),
+                                                    }
+                                                });
+                                            }
+                                            Err(e) => println!("[DIAG] build_webrtc_api failed: {:?}", e),
+                                        }
+
+                                        capturer.close();
+                                    }
+                                    Err(e) => {
+                                        println!("[DIAG] HybridCapturer::open failed: {:?}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                println!("[DIAG] create_d3d11_on_adapter failed: {:?}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("[DIAG] enumerate_all_sources failed: {:?}", e);
+                }
+            }
+
+            unsafe {
+                let _ = MFShutdown();
+                CoUninitialize();
+                RoUninitialize();
+            }
+        }
     }
 }
