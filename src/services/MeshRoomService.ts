@@ -510,10 +510,6 @@ export class MeshRoomService {
       options.ice_servers ?? this.cachedIceServers ?? (await this.fetchIceServers());
 
     this.nativeUnlisten = await screenCaptureService.subscribeNativeEvents({
-      onOffer: (ev) => {
-        if (!this.isActive || !this.nativeScreenActive) return;
-        this.callbacks?.onSendOffer(ev.peer_id, ev.sdp, 'screen');
-      },
       onIce: (ev) => {
         if (!this.isActive || !this.nativeScreenActive) return;
         this.callbacks?.onSendIceCandidate(

@@ -2191,86 +2191,103 @@ export class WebRtcService {
     this.onScreenReceiverIceCallback = cb;
   }
 
+  private screenReceiverSignalingChain: Promise<void> = Promise.resolve();
+
+  private enqueueScreenReceiverSignaling<T>(op: () => Promise<T>): Promise<T> {
+    const next = this.screenReceiverSignalingChain.then(op, op);
+    this.screenReceiverSignalingChain = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
+  }
+
   public async handleRemoteScreenOffer(sdp: string): Promise<string | null> {
-    if (this.isDestroyed) return null;
-    if (!this.screenReceiverPc) {
-      const iceServers = this.cachedIceServers ?? (await this.fetchIceServers());
-      const pc = new RTCPeerConnection({
-        iceServers,
-        bundlePolicy: 'max-bundle',
-        rtcpMuxPolicy: 'require',
-        iceCandidatePoolSize: 2,
-      });
-      const stream = new MediaStream();
-      this.screenReceiverPc = pc;
+    return this.enqueueScreenReceiverSignaling(async () => {
+      if (this.isDestroyed) return null;
+      if (!this.screenReceiverPc) {
+        const iceServers = this.cachedIceServers ?? (await this.fetchIceServers());
+        if (this.isDestroyed) return null;
+        const pc = new RTCPeerConnection({
+          iceServers,
+          bundlePolicy: 'max-bundle',
+          rtcpMuxPolicy: 'require',
+          iceCandidatePoolSize: 2,
+        });
+        const stream = new MediaStream();
+        this.screenReceiverPc = pc;
 
-      pc.onicecandidate = (event) => {
-        if (this.isDestroyed || this.screenReceiverPc !== pc || !event.candidate) return;
-        const init =
-          typeof event.candidate.toJSON === 'function'
-            ? event.candidate.toJSON()
-            : {
-                candidate: event.candidate.candidate,
-                sdpMid: event.candidate.sdpMid,
-                sdpMLineIndex: event.candidate.sdpMLineIndex,
-              };
-        this.onScreenReceiverIceCallback?.(init);
-      };
+        pc.onicecandidate = (event) => {
+          if (this.isDestroyed || this.screenReceiverPc !== pc || !event.candidate) return;
+          const init =
+            typeof event.candidate.toJSON === 'function'
+              ? event.candidate.toJSON()
+              : {
+                  candidate: event.candidate.candidate,
+                  sdpMid: event.candidate.sdpMid,
+                  sdpMLineIndex: event.candidate.sdpMLineIndex,
+                };
+          this.onScreenReceiverIceCallback?.(init);
+        };
 
-      pc.ontrack = (event) => {
-        if (this.isDestroyed || this.screenReceiverPc !== pc) return;
-        const track = event.track;
-        if (!stream.getTracks().some((t) => t.id === track.id)) {
-          stream.addTrack(track);
-        }
-        if (track.kind === 'video') {
-          this.remoteVideoStream = stream;
-          this.callbacks.onRemoteVideoTrack?.(track, stream);
-          track.onended = () => {
+        pc.ontrack = (event) => {
+          if (this.isDestroyed || this.screenReceiverPc !== pc) return;
+          const track = event.track;
+          if (!stream.getTracks().some((t) => t.id === track.id)) {
+            stream.addTrack(track);
+          }
+          if (track.kind === 'video') {
+            this.remoteVideoStream = stream;
+            this.callbacks.onRemoteVideoTrack?.(track, stream);
+            track.onended = () => {
+              if (this.remoteVideoStream === stream) {
+                this.remoteVideoStream = null;
+                this.callbacks.onRemoteVideoEnded?.();
+              }
+            };
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (this.isDestroyed || this.screenReceiverPc !== pc) return;
+          if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
             if (this.remoteVideoStream === stream) {
               this.remoteVideoStream = null;
               this.callbacks.onRemoteVideoEnded?.();
             }
-          };
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        if (this.isDestroyed || this.screenReceiverPc !== pc) return;
-        if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
-          if (this.remoteVideoStream === stream) {
-            this.remoteVideoStream = null;
-            this.callbacks.onRemoteVideoEnded?.();
           }
-        }
-      };
-    }
-
-    const pc = this.screenReceiverPc;
-    await pc.setRemoteDescription({ type: 'offer', sdp });
-    while (this.screenReceiverCandidateQueue.length > 0) {
-      const cand = this.screenReceiverCandidateQueue.shift();
-      if (cand) {
-        await pc.addIceCandidate(cand).catch(() => {});
+        };
       }
-    }
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    return pc.localDescription?.sdp ?? null;
+
+      const pc = this.screenReceiverPc;
+      await pc.setRemoteDescription({ type: 'offer', sdp });
+      while (this.screenReceiverCandidateQueue.length > 0) {
+        const cand = this.screenReceiverCandidateQueue.shift();
+        if (cand) {
+          await pc.addIceCandidate(cand).catch(() => {});
+        }
+      }
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      return pc.localDescription?.sdp ?? null;
+    });
   }
 
   public async addScreenReceiverIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-    if (this.isDestroyed) return;
-    if (!this.screenReceiverPc || !this.screenReceiverPc.remoteDescription) {
-      if (this.screenReceiverCandidateQueue.length < 256) {
-        this.screenReceiverCandidateQueue.push(candidate);
+    return this.enqueueScreenReceiverSignaling(async () => {
+      if (this.isDestroyed) return;
+      if (!this.screenReceiverPc || !this.screenReceiverPc.remoteDescription) {
+        if (this.screenReceiverCandidateQueue.length < 256) {
+          this.screenReceiverCandidateQueue.push(candidate);
+        }
+        return;
       }
-      return;
-    }
-    await this.screenReceiverPc.addIceCandidate(candidate).catch(() => {});
+      await this.screenReceiverPc.addIceCandidate(candidate).catch(() => {});
+    });
   }
 
   public closeScreenReceiver(): void {
+    this.screenReceiverSignalingChain = Promise.resolve();
     if (this.screenReceiverPc) {
       try {
         this.screenReceiverPc.onicecandidate = null;

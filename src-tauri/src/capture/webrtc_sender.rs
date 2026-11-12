@@ -438,7 +438,6 @@ impl NativeScreenManager {
             sdp: offer.sdp,
             sdp_type: "offer".to_string(),
         };
-        let _ = app.emit("native-screen-offer", &offer_ev);
         Ok(offer_ev)
     }
 

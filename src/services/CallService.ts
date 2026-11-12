@@ -1060,13 +1060,6 @@ export class CallService {
       options.ice_servers ?? (this.webRtc ? await this.webRtc.fetchIceServers() : undefined);
 
     this.nativeScreenUnlisten = await screenCaptureService.subscribeNativeEvents({
-      onOffer: (ev) => {
-        const s = useAppStore.getState();
-        if (token !== this.callSessionToken || !this.nativeScreenActive || s.activeCallId !== callId) {
-          return;
-        }
-        gatewayClient.sendCallWebrtcOffer(callId, peerId, ev.sdp, 'screen');
-      },
       onIce: (ev) => {
         const s = useAppStore.getState();
         if (token !== this.callSessionToken || !this.nativeScreenActive || s.activeCallId !== callId) {
