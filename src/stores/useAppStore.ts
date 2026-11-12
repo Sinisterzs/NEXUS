@@ -16,6 +16,45 @@ import {
   NetworkStatus,
   PersistedPreferences,
   ScreenShareQualityPreset,
+  CaptureSources,
+  NativeCaptureStatus,
+  NativeScreenStatsEvent,
+  StartScreenShareOptions,
+  CommunityDto,
+  CommunitySnapshotDto,
+  CommunityCategoryDto,
+  CommunityChannelDto,
+  CommunityRoleDto,
+  CommunityMemberDto,
+  ChannelPermissionOverwriteDto,
+  ChannelMessageDto,
+  CommunityInviteDto,
+  InvitePreviewDto,
+  AcceptInviteResponse,
+  CommunityBanDto,
+  CommunityMemberMuteDto,
+  CommunityAuditLogDto,
+  CreateCommunityPayload,
+  UpdateCommunityPayload,
+  DeleteCommunityPayload,
+  TransferOwnershipPayload,
+  CreateCategoryPayload,
+  UpdateCategoryPayload,
+  ReorderCategoryItem,
+  CreateChannelPayload,
+  UpdateChannelPayload,
+  ReorderChannelItem,
+  UpsertChannelOverwritePayload,
+  OverwriteTargetType,
+  CreateRolePayload,
+  UpdateRolePayload,
+  ReorderRoleItem,
+  UpdateMemberPayload,
+  KickMemberPayload,
+  BanMemberPayload,
+  MuteMemberPayload,
+  AuditLogsQueryPayload,
+  CreateInvitePayload,
 } from '../lib/types';
 import {
   mockCurrentUser,
@@ -26,15 +65,24 @@ import { authRepository, normalizeAuthUser } from '../repositories/AuthRepositor
 import { friendRepository } from '../repositories/FriendRepository';
 import { presenceRepository } from '../repositories/PresenceRepository';
 import { dmRepository } from '../repositories/DmRepository';
+import { communityRepository } from '../repositories/CommunityRepository';
 import { conversationRepository } from '../repositories/ConversationRepository';
 import { messageRepository } from '../repositories/MessageRepository';
 import { callHistoryRepository } from '../repositories/CallHistoryRepository';
 import { gatewayClient } from '../services/GatewayClient';
 import { callService } from '../services/CallService';
+import { meshRoomService } from '../services/MeshRoomService';
 import { screenCaptureService } from '../services/ScreenCaptureService';
 import { networkManager, DEFAULT_NETWORK_STATUS } from '../services/NetworkManager';
 import { updateService } from '../services/UpdateService';
-import { DeliveryStatus } from '../lib/types';
+import {
+  DeliveryStatus,
+  RoomParticipantDto,
+  VoiceRoomMetricsSnapshot,
+  VoiceRoomPeerStatus,
+  VoiceRoomQualityPreset,
+  VoiceRoomState,
+} from '../lib/types';
 
 export function syncAccountRepositories(accountId?: string | null): void {
   const resolved = accountId?.trim() || 'offline_demo';
@@ -183,7 +231,152 @@ export function mergeAndSortMessages(
   return result;
 }
 
+export function mergeSingleChannelMessage(
+  existing: ChannelMessageDto,
+  incoming: ChannelMessageDto
+): ChannelMessageDto {
+  const existingIsOptimistic = existing.id.startsWith('opt_');
+  const incomingIsOptimistic = incoming.id.startsWith('opt_');
+
+  const canonicalId =
+    existingIsOptimistic && !incomingIsOptimistic ? incoming.id : existing.id;
+
+  const createdAt =
+    existingIsOptimistic && !incomingIsOptimistic
+      ? incoming.created_at
+      : existing.created_at || incoming.created_at;
+
+  const deletedAt = existing.deleted_at || incoming.deleted_at || null;
+  const content = deletedAt
+    ? '[Mensagem apagada]'
+    : incoming.edited_at &&
+      (!existing.edited_at ||
+        Date.parse(incoming.edited_at) >= Date.parse(existing.edited_at))
+    ? incoming.content
+    : incoming.content || existing.content;
+
+  const editedAt = deletedAt
+    ? existing.edited_at || null
+    : incoming.edited_at || existing.edited_at || null;
+
+  const existingStatus = existing.delivery_status || 'sent';
+  const incomingStatus = incoming.delivery_status || 'sent';
+  let finalStatus: DeliveryStatus;
+  if (incomingStatus === 'failed' && existingStatus === 'sending') {
+    finalStatus = 'failed';
+  } else {
+    finalStatus =
+      deliveryStatusRank(incomingStatus) >= deliveryStatusRank(existingStatus)
+        ? incomingStatus
+        : existingStatus;
+  }
+
+  return {
+    ...existing,
+    ...incoming,
+    id: canonicalId,
+    client_message_id: incoming.client_message_id || existing.client_message_id,
+    created_at: createdAt,
+    content,
+    edited_at: editedAt,
+    deleted_at: deletedAt,
+    delivery_status: finalStatus,
+  };
+}
+
+export function mergeAndSortChannelMessages(
+  existingList: ChannelMessageDto[],
+  incomingList: ChannelMessageDto[]
+): ChannelMessageDto[] {
+  const result: ChannelMessageDto[] = [];
+  const byId = new Map<string, number>();
+  const byClientId = new Map<string, number>();
+
+  const upsert = (msg: ChannelMessageDto) => {
+    const normMsg: ChannelMessageDto = {
+      ...msg,
+      delivery_status: msg.delivery_status || 'sent',
+    };
+    const cid = normMsg.client_message_id?.trim();
+
+    let matchIdx: number | undefined = byId.get(normMsg.id);
+    if (matchIdx === undefined && cid) {
+      matchIdx = byClientId.get(cid);
+    }
+
+    if (matchIdx !== undefined) {
+      const merged = mergeSingleChannelMessage(result[matchIdx], normMsg);
+      result[matchIdx] = merged;
+      byId.set(merged.id, matchIdx);
+      if (merged.client_message_id?.trim()) {
+        byClientId.set(merged.client_message_id.trim(), matchIdx);
+      }
+    } else {
+      const idx = result.length;
+      result.push(normMsg);
+      byId.set(normMsg.id, idx);
+      if (cid) {
+        byClientId.set(cid, idx);
+      }
+    }
+  };
+
+  for (const m of existingList) upsert(m);
+  for (const m of incomingList) upsert(m);
+
+  result.sort((a, b) => {
+    const ta = Date.parse(a.created_at) || 0;
+    const tb = Date.parse(b.created_at) || 0;
+    if (ta !== tb) return ta - tb;
+    return a.id.localeCompare(b.id);
+  });
+
+  return result;
+}
+
+export function syncCommunityMembersPresence(
+  members: CommunityMemberDto[],
+  friends: Friend[],
+  currentUser: UserProfile
+): CommunityMemberDto[] {
+  if (members.length === 0) return members;
+  const friendMap = new Map<string, Friend>();
+  for (const f of friends) {
+    friendMap.set(f.id, f);
+  }
+
+  return members.map((m) => {
+    if (m.user_id === currentUser.id) {
+      return {
+        ...m,
+        status: currentUser.status || m.status,
+        custom_status: currentUser.customStatus ?? m.custom_status,
+      };
+    }
+    const friend = friendMap.get(m.user_id);
+    if (friend) {
+      return {
+        ...m,
+        status: friend.status || m.status,
+        custom_status: friend.customStatus ?? m.custom_status,
+      };
+    }
+    return m;
+  });
+}
+
 let wsUnsubscribe: (() => void) | null = null;
+
+function clearActiveCommunityState() {
+  return {
+    activeCommunityId: null,
+    activeChannelId: null,
+    communitySnapshot: null,
+    activeCommunityChannelMessages: [] as ChannelMessageDto[],
+    communityMessagesHasMore: false,
+    communityMessagesNextBefore: null,
+  };
+}
 
 interface AppState {
   // Initialization state
@@ -216,6 +409,7 @@ interface AppState {
   isSearchingUsers: boolean;
   userSearchResults: UserSearchResult[];
   isWsConnected: boolean;
+  gatewayConnected: boolean;
 
   // Phase 2.3: Direct Messages State
   conversations: DirectConversationDto[];
@@ -225,6 +419,40 @@ interface AppState {
   isLoadingMessages: boolean;
   isSendingDm: boolean;
   dmError: string | null;
+
+  // Phase B2: Communities State
+  communities: CommunityDto[];
+  communitySnapshot: CommunitySnapshotDto | null;
+  activeCommunityChannelMessages: ChannelMessageDto[];
+  communityMessagesHasMore: boolean;
+  communityMessagesNextBefore: string | null;
+  communityBans: CommunityBanDto[];
+  communityAuditLogs: CommunityAuditLogDto[];
+  communityInvites: CommunityInviteDto[];
+  isLoadingCommunities: boolean;
+  isLoadingCommunitySnapshot: boolean;
+  isLoadingChannelMessages: boolean;
+  isSendingChannelMessage: boolean;
+  communityError: string | null;
+
+  // Phase B3.2: Multi-participant Voice Rooms State
+  voiceRoomState: VoiceRoomState;
+  activeVoiceCommunityId: string | null;
+  activeVoiceChannelId: string | null;
+  voiceRoomMaxParticipants: number;
+  voiceRoomCanSpeak: boolean;
+  voiceRoomCanScreenShare: boolean;
+  voiceRoomParticipants: RoomParticipantDto[];
+  voiceRoomMuted: boolean;
+  voiceRoomDeafened: boolean;
+  voiceRoomScreenSharing: boolean;
+  voiceRoomQuality: VoiceRoomQualityPreset;
+  voiceRoomPeerStatuses: Record<string, VoiceRoomPeerStatus>;
+  voiceRoomRemoteStreams: Record<string, MediaStream>;
+  voiceRoomParticipantVolumes: Record<string, number>;
+  voiceRoomMetrics: VoiceRoomMetricsSnapshot | null;
+  voiceRoomError: string | null;
+  communityVoiceRooms: Record<string, Record<string, RoomParticipantDto[]>>;
 
   // Local Audio & Call Controls (simulated state)
   isMicMuted: boolean;
@@ -266,6 +494,16 @@ interface AppState {
   screenCaptureNotice: string | null;
   screenDisplaySurface: string | null;
   screenShareError: string | null;
+  screenPickerTarget: 'room' | 'call' | null;
+  nativeCaptureSources: CaptureSources | null;
+  nativeCaptureStatus: NativeCaptureStatus | null;
+  nativeScreenStats: NativeScreenStatsEvent | null;
+  isLoadingNativeSources: boolean;
+  openScreenSourcePicker: (target: 'room' | 'call') => Promise<void>;
+  closeScreenSourcePicker: () => void;
+  refreshNativeCaptureSources: () => Promise<CaptureSources | null>;
+  startNativeVoiceRoomScreenShare: (options: StartScreenShareOptions) => Promise<boolean>;
+  startNativeCallScreenShare: (options: StartScreenShareOptions) => Promise<boolean>;
   startScreenShare: (preset?: ScreenShareQualityPreset) => Promise<MediaStream | null>;
   stopScreenShare: () => void;
   setScreenShareQuality: (preset: ScreenShareQualityPreset) => Promise<void>;
@@ -341,6 +579,67 @@ interface AppState {
   deleteDirectMessage: (messageId: string) => Promise<boolean>;
   markActiveConversationRead: () => Promise<void>;
   loadOlderMessages: () => Promise<void>;
+
+  // Phase B2: Communities Actions
+  loadCommunities: () => Promise<void>;
+  selectCommunity: (communityId: string | null) => Promise<void>;
+  loadCommunitySnapshot: (communityId: string) => Promise<CommunitySnapshotDto | null>;
+  createCommunity: (payload: CreateCommunityPayload) => Promise<CommunityDto | null>;
+  updateCommunity: (communityId: string, payload: UpdateCommunityPayload) => Promise<CommunityDto | null>;
+  deleteCommunity: (communityId: string, payload: DeleteCommunityPayload) => Promise<boolean>;
+  transferCommunityOwnership: (communityId: string, payload: TransferOwnershipPayload) => Promise<CommunityDto | null>;
+  leaveCommunity: (communityId: string) => Promise<boolean>;
+  createCommunityCategory: (communityId: string, payload: CreateCategoryPayload) => Promise<CommunityCategoryDto | null>;
+  updateCommunityCategory: (communityId: string, categoryId: string, payload: UpdateCategoryPayload) => Promise<CommunityCategoryDto | null>;
+  deleteCommunityCategory: (communityId: string, categoryId: string) => Promise<boolean>;
+  reorderCommunityCategories: (communityId: string, items: ReorderCategoryItem[]) => Promise<boolean>;
+  createCommunityChannel: (communityId: string, payload: CreateChannelPayload) => Promise<CommunityChannelDto | null>;
+  updateCommunityChannel: (communityId: string, channelId: string, payload: UpdateChannelPayload) => Promise<CommunityChannelDto | null>;
+  deleteCommunityChannel: (communityId: string, channelId: string) => Promise<boolean>;
+  reorderCommunityChannels: (communityId: string, items: ReorderChannelItem[]) => Promise<boolean>;
+  selectCommunityChannel: (channelId: string | null) => Promise<void>;
+  listChannelOverwrites: (communityId: string, channelId: string) => Promise<ChannelPermissionOverwriteDto[]>;
+  upsertChannelOverwrite: (communityId: string, channelId: string, payload: UpsertChannelOverwritePayload) => Promise<ChannelPermissionOverwriteDto | null>;
+  deleteChannelOverwrite: (communityId: string, channelId: string, targetType: OverwriteTargetType | string, targetId: string) => Promise<boolean>;
+  loadChannelMessages: (communityId: string, channelId: string, before?: string, limit?: number) => Promise<void>;
+  refreshActiveChannelMessages: () => Promise<void>;
+  loadOlderChannelMessages: () => Promise<void>;
+  sendChannelMessage: (content: string, replyToMessageId?: string | null) => Promise<boolean>;
+  editChannelMessage: (messageId: string, content: string) => Promise<boolean>;
+  deleteChannelMessage: (messageId: string) => Promise<boolean>;
+  markChannelRead: (communityId?: string, channelId?: string, lastReadMessageId?: string | null) => Promise<void>;
+  createCommunityRole: (communityId: string, payload: CreateRolePayload) => Promise<CommunityRoleDto | null>;
+  updateCommunityRole: (communityId: string, roleId: string, payload: UpdateRolePayload) => Promise<CommunityRoleDto | null>;
+  deleteCommunityRole: (communityId: string, roleId: string) => Promise<boolean>;
+  reorderCommunityRoles: (communityId: string, items: ReorderRoleItem[]) => Promise<boolean>;
+  updateCommunityMember: (communityId: string, userId: string, payload: UpdateMemberPayload) => Promise<CommunityMemberDto | null>;
+  setCommunityMemberRoles: (communityId: string, userId: string, roleIds: string[]) => Promise<CommunityMemberDto | null>;
+  addCommunityMemberRole: (communityId: string, userId: string, roleId: string) => Promise<CommunityMemberDto | null>;
+  removeCommunityMemberRole: (communityId: string, userId: string, roleId: string) => Promise<CommunityMemberDto | null>;
+  kickCommunityMember: (communityId: string, userId: string, payload?: KickMemberPayload) => Promise<boolean>;
+  banCommunityMember: (communityId: string, userId: string, payload?: BanMemberPayload) => Promise<boolean>;
+  unbanCommunityMember: (communityId: string, userId: string) => Promise<boolean>;
+  loadCommunityBans: (communityId: string) => Promise<CommunityBanDto[]>;
+  muteCommunityMember: (communityId: string, userId: string, payload: MuteMemberPayload) => Promise<CommunityMemberMuteDto | null>;
+  loadCommunityAuditLogs: (communityId: string, query?: AuditLogsQueryPayload) => Promise<CommunityAuditLogDto[]>;
+  createCommunityInvite: (communityId: string, payload?: CreateInvitePayload) => Promise<CommunityInviteDto | null>;
+  loadCommunityInvites: (communityId: string) => Promise<CommunityInviteDto[]>;
+  revokeCommunityInvite: (communityId: string, inviteId: string) => Promise<boolean>;
+  previewCommunityInvite: (code: string) => Promise<InvitePreviewDto>;
+  acceptCommunityInvite: (code: string) => Promise<AcceptInviteResponse | null>;
+  clearCommunityError: () => void;
+
+  // Phase B3.2: Multi-participant Voice Room Actions
+  loadCommunityVoiceRooms: (communityId: string) => Promise<void>;
+  joinVoiceChannel: (communityId: string, channelId: string) => Promise<void>;
+  leaveVoiceChannel: () => Promise<void>;
+  toggleVoiceRoomMute: () => void;
+  toggleVoiceRoomDeafen: () => void;
+  setVoiceRoomParticipantVolume: (peerUserId: string, volume: number) => void;
+  startVoiceRoomScreenShare: (preset?: VoiceRoomQualityPreset) => Promise<boolean>;
+  stopVoiceRoomScreenShare: () => Promise<void>;
+  setVoiceRoomQuality: (preset: VoiceRoomQualityPreset) => Promise<void>;
+  clearVoiceRoomError: () => void;
 
   // Actions
   setActiveTab: (tab: MainTab) => void;
@@ -485,7 +784,7 @@ function createAuthenticatedState(
       avatarUrl: resolvedAvatar,
     },
     backendAvailable: true,
-    // Reset DM/friend state if switching from another account or offline demo
+    // Reset DM/friend/community state if switching from another account or offline demo
     ...(isDifferentAccount
       ? {
           conversations: [],
@@ -495,6 +794,15 @@ function createAuthenticatedState(
           friendRequests: { incoming: [], outgoing: [] },
           userSearchResults: [],
           dmError: null,
+          communities: [],
+          communitySnapshot: null,
+          activeCommunityChannelMessages: [],
+          communityMessagesHasMore: false,
+          communityMessagesNextBefore: null,
+          communityBans: [],
+          communityAuditLogs: [],
+          communityInvites: [],
+          communityError: null,
         }
       : {}),
     currentUser: {
@@ -543,6 +851,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isSearchingUsers: false,
   userSearchResults: [],
   isWsConnected: false,
+  gatewayConnected: false,
 
   // Phase 2.3: DM Initial State
   conversations: [],
@@ -552,6 +861,40 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingMessages: false,
   isSendingDm: false,
   dmError: null,
+
+  // Phase B2: Communities Initial State
+  communities: [],
+  communitySnapshot: null,
+  activeCommunityChannelMessages: [],
+  communityMessagesHasMore: false,
+  communityMessagesNextBefore: null,
+  communityBans: [],
+  communityAuditLogs: [],
+  communityInvites: [],
+  isLoadingCommunities: false,
+  isLoadingCommunitySnapshot: false,
+  isLoadingChannelMessages: false,
+  isSendingChannelMessage: false,
+  communityError: null,
+
+  // Phase B3.2: Multi-participant Voice Rooms Initial State
+  voiceRoomState: 'idle',
+  activeVoiceCommunityId: null,
+  activeVoiceChannelId: null,
+  voiceRoomMaxParticipants: 4,
+  voiceRoomCanSpeak: true,
+  voiceRoomCanScreenShare: true,
+  voiceRoomParticipants: [],
+  voiceRoomMuted: false,
+  voiceRoomDeafened: false,
+  voiceRoomScreenSharing: false,
+  voiceRoomQuality: 'auto',
+  voiceRoomPeerStatuses: {},
+  voiceRoomRemoteStreams: {},
+  voiceRoomParticipantVolumes: {},
+  voiceRoomMetrics: null,
+  voiceRoomError: null,
+  communityVoiceRooms: {},
 
   // Call & Audio State
   isMicMuted: false,
@@ -590,6 +933,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   screenCaptureNotice: null,
   screenDisplaySurface: null,
   screenShareError: null,
+  screenPickerTarget: null,
+  nativeCaptureSources: null,
+  nativeCaptureStatus: null,
+  nativeScreenStats: null,
+  isLoadingNativeSources: false,
 
   // Phase 3.1 Remote Screen Share Initial State
   isRemoteScreenSharing: false,
@@ -810,10 +1158,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         const accPrefs = await settingsRepository.loadPreferences(user.id);
         set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs));
 
-        // Initialize social friends & real-time presence
+        // Initialize social friends, communities & real-time presence
         get().loadFriends();
         get().loadFriendRequests();
         get().loadConversations();
+        get().loadCommunities();
         get().initWebSocket();
 
         // Restore saved presence preference if available
@@ -904,10 +1253,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const accPrefs = await settingsRepository.loadPreferences(user.id);
       set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs));
 
-      // Initialize friends & real-time presence
+      // Initialize friends, communities & real-time presence
       get().loadFriends();
       get().loadFriendRequests();
       get().loadConversations();
+      get().loadCommunities();
       get().initWebSocket();
 
       return true;
@@ -926,10 +1276,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const accPrefs = await settingsRepository.loadPreferences(user.id);
       set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs));
 
-      // Initialize friends & real-time presence
+      // Initialize friends, communities & real-time presence
       get().loadFriends();
       get().loadFriendRequests();
       get().loadConversations();
+      get().loadCommunities();
       get().initWebSocket();
 
       return true;
@@ -951,10 +1302,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         isGoogleLoading: false,
       }));
 
-      // Initialize friends & real-time presence
+      // Initialize friends, communities & real-time presence
       get().loadFriends();
       get().loadFriendRequests();
       get().loadConversations();
+      get().loadCommunities();
       get().initWebSocket();
 
       return true;
@@ -1002,6 +1354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   logoutOnline: async () => {
     await settingsRepository.flushSave();
     callService.terminateOnLogout();
+    void meshRoomService.leaveRoom();
     get().closeWebSocket();
     await authRepository.logout();
     syncAccountRepositories('offline_demo');
@@ -1022,6 +1375,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeConversationId: null,
       activeConversationMessages: [],
       dmError: null,
+      communities: [],
+      communitySnapshot: null,
+      activeCommunityId: null,
+      activeChannelId: null,
+      activeCommunityChannelMessages: [],
+      communityMessagesHasMore: false,
+      communityMessagesNextBefore: null,
+      communityBans: [],
+      communityAuditLogs: [],
+      communityInvites: [],
+      communityError: null,
+
+  // Phase B3.2: Multi-participant Voice Rooms Initial State
+  voiceRoomState: 'idle',
+  activeVoiceCommunityId: null,
+  activeVoiceChannelId: null,
+  voiceRoomMaxParticipants: 4,
+  voiceRoomCanSpeak: true,
+  voiceRoomCanScreenShare: true,
+  voiceRoomParticipants: [],
+  voiceRoomMuted: false,
+  voiceRoomDeafened: false,
+  voiceRoomScreenSharing: false,
+  voiceRoomQuality: 'auto',
+  voiceRoomPeerStatuses: {},
+  voiceRoomRemoteStreams: {},
+  voiceRoomParticipantVolumes: {},
+  voiceRoomMetrics: null,
+  voiceRoomError: null,
+  communityVoiceRooms: {},
       isAuthModalOpen: false,
       settings: {
         ...get().settings,
@@ -1035,6 +1418,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setOfflineDemoMode: () => {
     callService.terminateOnLogout();
+    void meshRoomService.leaveRoom();
     get().closeWebSocket();
     syncAccountRepositories('offline_demo');
     set({
@@ -1049,6 +1433,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeConversationId: null,
       activeConversationMessages: [],
       dmError: null,
+      communities: [],
+      communitySnapshot: null,
+      activeCommunityId: null,
+      activeChannelId: null,
+      activeCommunityChannelMessages: [],
+      communityMessagesHasMore: false,
+      communityMessagesNextBefore: null,
+      communityBans: [],
+      communityAuditLogs: [],
+      communityInvites: [],
+      communityError: null,
+
+  // Phase B3.2: Multi-participant Voice Rooms Initial State
+  voiceRoomState: 'idle',
+  activeVoiceCommunityId: null,
+  activeVoiceChannelId: null,
+  voiceRoomMaxParticipants: 4,
+  voiceRoomCanSpeak: true,
+  voiceRoomCanScreenShare: true,
+  voiceRoomParticipants: [],
+  voiceRoomMuted: false,
+  voiceRoomDeafened: false,
+  voiceRoomScreenSharing: false,
+  voiceRoomQuality: 'auto',
+  voiceRoomPeerStatuses: {},
+  voiceRoomRemoteStreams: {},
+  voiceRoomParticipantVolumes: {},
+  voiceRoomMetrics: null,
+  voiceRoomError: null,
+  communityVoiceRooms: {},
       authError: null,
       isAuthModalOpen: false,
     });
@@ -1210,7 +1624,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     wsUnsubscribe = gatewayClient.addListener({
       onConnectionReady: ({ friends }) => {
-        set({ friends });
+        set((state) => ({
+          friends,
+          communitySnapshot: state.communitySnapshot
+            ? {
+                ...state.communitySnapshot,
+                members: syncCommunityMembersPresence(
+                  state.communitySnapshot.members,
+                  friends,
+                  state.currentUser
+                ),
+              }
+            : null,
+        }));
         const cur = get().currentUser;
         const effectiveStatus: UserStatus =
           cur.status && cur.status !== 'offline' ? cur.status : 'online';
@@ -1220,6 +1646,21 @@ export const useAppStore = create<AppState>((set, get) => ({
           }));
         }
         gatewayClient.sendPresence(effectiveStatus, cur.customStatus);
+
+        if (
+          get().authStatus === 'authenticated' &&
+          (get().communities.length > 0 || get().activeCommunityId)
+        ) {
+          void get().loadCommunities();
+          const activeCommId = get().activeCommunityId;
+          const activeChanId = get().activeChannelId;
+          if (activeCommId) {
+            void get().loadCommunitySnapshot(activeCommId);
+            if (activeChanId) {
+              void get().loadChannelMessages(activeCommId, activeChanId);
+            }
+          }
+        }
       },
       onPresenceUpdated: (update) => {
         if (update.userId === get().currentUser.id) {
@@ -1245,6 +1686,20 @@ export const useAppStore = create<AppState>((set, get) => ({
                 }
               : f
           ),
+          communitySnapshot: state.communitySnapshot
+            ? {
+                ...state.communitySnapshot,
+                members: state.communitySnapshot.members.map((m) =>
+                  m.user_id === update.userId
+                    ? {
+                        ...m,
+                        status: update.status || m.status,
+                        custom_status: update.customStatus ?? m.custom_status,
+                      }
+                    : m
+                ),
+              }
+            : null,
         }));
       },
       onFriendRequestReceived: (req) => {
@@ -1449,6 +1904,570 @@ export const useAppStore = create<AppState>((set, get) => ({
           }),
         }));
       },
+      onCommunityMessageCreated: (msg) => {
+        const myId = get().onlineUser?.id || get().currentUser.id;
+        const normalizedMsg: ChannelMessageDto = {
+          ...msg,
+          is_mine: msg.is_mine ?? (myId ? msg.sender_id === myId : false),
+          delivery_status: 'sent',
+        };
+        const cur = get();
+        const isActiveChannel =
+          cur.activeCommunityId === normalizedMsg.community_id &&
+          cur.activeChannelId === normalizedMsg.channel_id;
+        const isViewingActiveChannel = isActiveChannel && cur.activeTab === 'communities';
+
+        set((state) => {
+          const nextMessages = isActiveChannel
+            ? mergeAndSortChannelMessages(state.activeCommunityChannelMessages, [normalizedMsg])
+            : state.activeCommunityChannelMessages;
+
+          const shouldIncrementUnread = !normalizedMsg.is_mine && !isViewingActiveChannel;
+          const nextSnapshot =
+            shouldIncrementUnread && state.communitySnapshot?.community.id === normalizedMsg.community_id
+              ? {
+                  ...state.communitySnapshot,
+                  channels: state.communitySnapshot.channels.map((ch) =>
+                    ch.id === normalizedMsg.channel_id
+                      ? { ...ch, unread_count: (ch.unread_count || 0) + 1 }
+                      : ch
+                  ),
+                }
+              : state.communitySnapshot;
+
+          const nextCommunities = shouldIncrementUnread
+            ? state.communities.map((c) =>
+                c.id === normalizedMsg.community_id
+                  ? { ...c, unread_count: (c.unread_count || 0) + 1 }
+                  : c
+              )
+            : state.communities;
+
+          return {
+            activeCommunityChannelMessages: nextMessages,
+            communitySnapshot: nextSnapshot,
+            communities: nextCommunities,
+          };
+        });
+
+        if (isViewingActiveChannel && !normalizedMsg.is_mine) {
+          void get().markChannelRead(
+            normalizedMsg.community_id,
+            normalizedMsg.channel_id,
+            normalizedMsg.id
+          );
+        }
+      },
+      onCommunityMessageUpdated: (msg) => {
+        const myId = get().onlineUser?.id || get().currentUser.id;
+        const normalizedMsg: ChannelMessageDto = {
+          ...msg,
+          is_mine: msg.is_mine ?? (myId ? msg.sender_id === myId : false),
+          delivery_status: 'sent',
+        };
+        set((state) => {
+          if (
+            state.activeCommunityId !== normalizedMsg.community_id ||
+            state.activeChannelId !== normalizedMsg.channel_id
+          ) {
+            return state;
+          }
+          return {
+            activeCommunityChannelMessages: mergeAndSortChannelMessages(
+              state.activeCommunityChannelMessages,
+              [normalizedMsg]
+            ),
+          };
+        });
+      },
+      onCommunityMessageDeleted: (data) => {
+        set((state) => {
+          if (state.activeChannelId !== data.channel_id) {
+            return state;
+          }
+          return {
+            activeCommunityChannelMessages: state.activeCommunityChannelMessages.map((m) =>
+              m.id === data.id
+                ? {
+                    ...m,
+                    content: '[Mensagem apagada]',
+                    deleted_at: data.deleted_at || m.deleted_at || new Date().toISOString(),
+                  }
+                : m
+            ),
+          };
+        });
+      },
+      onCommunityChannelCreated: (channel) => {
+        set((state) => {
+          if (state.communitySnapshot?.community.id !== channel.community_id) {
+            return state;
+          }
+          const exists = state.communitySnapshot.channels.some((c) => c.id === channel.id);
+          const nextChannels = (
+            exists
+              ? state.communitySnapshot.channels.map((c) => (c.id === channel.id ? channel : c))
+              : [...state.communitySnapshot.channels, channel]
+          ).sort((a, b) => a.position - b.position);
+          return {
+            communitySnapshot: {
+              ...state.communitySnapshot,
+              channels: nextChannels,
+            },
+          };
+        });
+      },
+      onCommunityChannelUpdated: (channel) => {
+        set((state) => {
+          if (state.communitySnapshot?.community.id !== channel.community_id) {
+            return state;
+          }
+          const exists = state.communitySnapshot.channels.some((c) => c.id === channel.id);
+          const nextChannels = (
+            exists
+              ? state.communitySnapshot.channels.map((c) => (c.id === channel.id ? channel : c))
+              : [...state.communitySnapshot.channels, channel]
+          ).sort((a, b) => a.position - b.position);
+          return {
+            communitySnapshot: {
+              ...state.communitySnapshot,
+              channels: nextChannels,
+            },
+          };
+        });
+      },
+      onCommunityChannelDeleted: (data) => {
+        set((state) => {
+          if (state.communitySnapshot?.community.id !== data.community_id) {
+            return state;
+          }
+          const remaining = state.communitySnapshot.channels.filter((c) => c.id !== data.id);
+          const wasActive = state.activeChannelId === data.id;
+          return {
+            communitySnapshot: {
+              ...state.communitySnapshot,
+              channels: remaining,
+            },
+            ...(wasActive
+              ? {
+                  activeChannelId: null,
+                  activeCommunityChannelMessages: [],
+                  communityMessagesHasMore: false,
+                  communityMessagesNextBefore: null,
+                }
+              : {}),
+          };
+        });
+      },
+      onCommunityCategoryUpdated: (data) => {
+        set((state) => {
+          if (state.communitySnapshot?.community.id !== data.community_id) {
+            return state;
+          }
+          if (data.action === 'deleted' && data.category_id) {
+            return {
+              communitySnapshot: {
+                ...state.communitySnapshot,
+                categories: state.communitySnapshot.categories.filter(
+                  (cat) => cat.id !== data.category_id
+                ),
+              },
+            };
+          }
+          if (data.category) {
+            const cat = data.category;
+            const exists = state.communitySnapshot.categories.some((c) => c.id === cat.id);
+            const nextCategories = (
+              exists
+                ? state.communitySnapshot.categories.map((c) => (c.id === cat.id ? cat : c))
+                : [...state.communitySnapshot.categories, cat]
+            ).sort((a, b) => a.position - b.position);
+            return {
+              communitySnapshot: {
+                ...state.communitySnapshot,
+                categories: nextCategories,
+              },
+            };
+          }
+          return state;
+        });
+        if (get().authStatus === 'authenticated' && get().activeCommunityId === data.community_id) {
+          void get().loadCommunitySnapshot(data.community_id);
+        }
+      },
+      onCommunityMemberJoined: (data) => {
+        set((state) => {
+          const nextCommunities = state.communities.map((c) =>
+            c.id === data.community_id ? { ...c, member_count: (c.member_count || 0) + 1 } : c
+          );
+          if (state.communitySnapshot?.community.id !== data.community_id || !data.member) {
+            return { communities: nextCommunities };
+          }
+          const alreadyExists = state.communitySnapshot.members.some(
+            (m) => m.user_id === data.member!.user_id
+          );
+          const rawMembers = alreadyExists
+            ? state.communitySnapshot.members.map((m) =>
+                m.user_id === data.member!.user_id ? data.member! : m
+              )
+            : [...state.communitySnapshot.members, data.member];
+          const syncedMembers = syncCommunityMembersPresence(
+            rawMembers,
+            state.friends,
+            state.currentUser
+          );
+          return {
+            communities: nextCommunities,
+            communitySnapshot: {
+              ...state.communitySnapshot,
+              community: {
+                ...state.communitySnapshot.community,
+                member_count: syncedMembers.length,
+              },
+              members: syncedMembers,
+            },
+          };
+        });
+        if (
+          !data.member &&
+          get().authStatus === 'authenticated' &&
+          get().activeCommunityId === data.community_id
+        ) {
+          void get().loadCommunitySnapshot(data.community_id);
+        }
+      },
+      onCommunityMemberLeft: (data) => {
+        const myId = get().onlineUser?.id || get().currentUser.id;
+        if (myId && data.user_id === myId) {
+          set((state) => {
+            const wasActive = state.activeCommunityId === data.community_id;
+            return {
+              communities: state.communities.filter((c) => c.id !== data.community_id),
+              ...(wasActive ? clearActiveCommunityState() : {}),
+            };
+          });
+          return;
+        }
+        set((state) => {
+          const nextCommunities = state.communities.map((c) =>
+            c.id === data.community_id
+              ? { ...c, member_count: Math.max(0, (c.member_count || 1) - 1) }
+              : c
+          );
+          if (state.communitySnapshot?.community.id !== data.community_id) {
+            return { communities: nextCommunities };
+          }
+          const nextMembers = state.communitySnapshot.members.filter(
+            (m) => m.user_id !== data.user_id
+          );
+          return {
+            communities: nextCommunities,
+            communitySnapshot: {
+              ...state.communitySnapshot,
+              community: {
+                ...state.communitySnapshot.community,
+                member_count: nextMembers.length,
+              },
+              members: nextMembers,
+            },
+          };
+        });
+      },
+      onCommunityMemberUpdated: (data) => {
+        if (data.member) {
+          const updatedMember = data.member;
+          set((state) => {
+            if (state.communitySnapshot?.community.id !== data.community_id) {
+              return state;
+            }
+            const exists = state.communitySnapshot.members.some(
+              (m) => m.user_id === updatedMember.user_id
+            );
+            const rawMembers = exists
+              ? state.communitySnapshot.members.map((m) =>
+                  m.user_id === updatedMember.user_id ? updatedMember : m
+                )
+              : [...state.communitySnapshot.members, updatedMember];
+            return {
+              communitySnapshot: {
+                ...state.communitySnapshot,
+                members: syncCommunityMembersPresence(
+                  rawMembers,
+                  state.friends,
+                  state.currentUser
+                ),
+              },
+            };
+          });
+        }
+        const myId = get().onlineUser?.id || get().currentUser.id;
+        if (
+          get().authStatus === 'authenticated' &&
+          get().activeCommunityId === data.community_id &&
+          (!data.member || (myId && data.member.user_id === myId))
+        ) {
+          void get().loadCommunitySnapshot(data.community_id);
+        }
+      },
+      onCommunityRoleUpdated: (data) => {
+        if (get().authStatus === 'authenticated' && get().activeCommunityId === data.community_id) {
+          void get().loadCommunitySnapshot(data.community_id);
+        }
+      },
+      onCommunityUpdated: (community) => {
+        set((state) => ({
+          communities: state.communities.map((c) => (c.id === community.id ? community : c)),
+          communitySnapshot:
+            state.communitySnapshot?.community.id === community.id
+              ? { ...state.communitySnapshot, community }
+              : state.communitySnapshot,
+        }));
+      },
+      onCommunityDeleted: (data) => {
+        set((state) => {
+          const wasActive = state.activeCommunityId === data.community_id;
+          return {
+            communities: state.communities.filter((c) => c.id !== data.community_id),
+            ...(wasActive ? clearActiveCommunityState() : {}),
+          };
+        });
+      },
+      onCommunityAccessRevoked: (data) => {
+        set((state) => {
+          if (data.channel_id) {
+            const isActiveComm = state.communitySnapshot?.community.id === data.community_id;
+            const wasActiveChannel = state.activeChannelId === data.channel_id;
+            return {
+              ...(isActiveComm && state.communitySnapshot
+                ? {
+                    communitySnapshot: {
+                      ...state.communitySnapshot,
+                      channels: state.communitySnapshot.channels.filter(
+                        (ch) => ch.id !== data.channel_id
+                      ),
+                    },
+                  }
+                : {}),
+              ...(wasActiveChannel
+                ? {
+                    activeChannelId: null,
+                    activeCommunityChannelMessages: [],
+                    communityMessagesHasMore: false,
+                    communityMessagesNextBefore: null,
+                  }
+                : {}),
+            };
+          }
+
+          const wasActiveComm = state.activeCommunityId === data.community_id;
+          return {
+            communities: state.communities.filter((c) => c.id !== data.community_id),
+            ...(wasActiveComm ? clearActiveCommunityState() : {}),
+          };
+        });
+      },
+      onRoomJoined: (data) => {
+        const selfUserId = get().onlineUser?.id || get().currentUser.id;
+        const canSpeak = data.can_speak !== false;
+        const initialMuted = !canSpeak;
+        set((state) => ({
+          voiceRoomState: 'connected',
+          activeVoiceCommunityId: data.community_id,
+          activeVoiceChannelId: data.channel_id,
+          voiceRoomMaxParticipants: data.max_participants || 4,
+          voiceRoomCanSpeak: canSpeak,
+          voiceRoomCanScreenShare: data.can_screen_share !== false,
+          voiceRoomParticipants: data.participants,
+          voiceRoomMuted: initialMuted,
+          voiceRoomDeafened: false,
+          voiceRoomScreenSharing: false,
+          voiceRoomError: null,
+          communityVoiceRooms: {
+            ...state.communityVoiceRooms,
+            [data.community_id]: {
+              ...(state.communityVoiceRooms[data.community_id] || {}),
+              [data.channel_id]: data.participants,
+            },
+          },
+        }));
+
+        if (selfUserId) {
+          void meshRoomService.startRoomSession({
+            selfUserId,
+            communityId: data.community_id,
+            channelId: data.channel_id,
+            participants: data.participants,
+            maxParticipants: data.max_participants,
+            canSpeak,
+            initialVolumes: get().voiceRoomParticipantVolumes,
+          });
+        }
+      },
+      onRoomLeft: (data) => {
+        const { activeVoiceCommunityId, activeVoiceChannelId } = get();
+        if (
+          activeVoiceCommunityId === data.community_id &&
+          activeVoiceChannelId === data.channel_id
+        ) {
+          void meshRoomService.leaveRoom();
+          set({
+            voiceRoomState: 'idle',
+            activeVoiceCommunityId: null,
+            activeVoiceChannelId: null,
+            voiceRoomParticipants: [],
+            voiceRoomMuted: false,
+            voiceRoomDeafened: false,
+            voiceRoomScreenSharing: false,
+            voiceRoomPeerStatuses: {},
+            voiceRoomRemoteStreams: {},
+            voiceRoomMetrics: null,
+            voiceRoomError: data.reason || null,
+          });
+        }
+      },
+      onRoomParticipantJoined: (data) => {
+        set((state) => {
+          const isCurrentRoom =
+            state.activeVoiceCommunityId === data.community_id &&
+            state.activeVoiceChannelId === data.channel_id;
+          if (!isCurrentRoom) return state;
+
+          const exists = state.voiceRoomParticipants.some(
+            (p) => p.user_id === data.participant.user_id
+          );
+          const nextParticipants = exists
+            ? state.voiceRoomParticipants.map((p) =>
+                p.user_id === data.participant.user_id ? data.participant : p
+              )
+            : [...state.voiceRoomParticipants, data.participant];
+
+          return {
+            voiceRoomParticipants: nextParticipants,
+            communityVoiceRooms: {
+              ...state.communityVoiceRooms,
+              [data.community_id]: {
+                ...(state.communityVoiceRooms[data.community_id] || {}),
+                [data.channel_id]: nextParticipants,
+              },
+            },
+          };
+        });
+
+        const state = get();
+        if (
+          state.activeVoiceCommunityId === data.community_id &&
+          state.activeVoiceChannelId === data.channel_id
+        ) {
+          void meshRoomService.addParticipant(data.participant);
+        }
+      },
+      onRoomParticipantLeft: (data) => {
+        const state = get();
+        if (
+          state.activeVoiceCommunityId === data.community_id &&
+          state.activeVoiceChannelId === data.channel_id
+        ) {
+          meshRoomService.removeParticipant(data.user_id);
+        }
+
+        set((prev) => {
+          const isCurrentRoom =
+            prev.activeVoiceCommunityId === data.community_id &&
+            prev.activeVoiceChannelId === data.channel_id;
+          if (!isCurrentRoom) return prev;
+
+          const nextParticipants = prev.voiceRoomParticipants.filter(
+            (p) => p.user_id !== data.user_id
+          );
+          const nextPeerStatuses = { ...prev.voiceRoomPeerStatuses };
+          delete nextPeerStatuses[data.user_id];
+          const nextStreams = { ...prev.voiceRoomRemoteStreams };
+          delete nextStreams[data.user_id];
+
+          return {
+            voiceRoomParticipants: nextParticipants,
+            voiceRoomPeerStatuses: nextPeerStatuses,
+            voiceRoomRemoteStreams: nextStreams,
+            communityVoiceRooms: {
+              ...prev.communityVoiceRooms,
+              [data.community_id]: {
+                ...(prev.communityVoiceRooms[data.community_id] || {}),
+                [data.channel_id]: nextParticipants,
+              },
+            },
+          };
+        });
+      },
+      onRoomParticipantUpdated: (data) => {
+        set((state) => {
+          const isCurrentRoom =
+            state.activeVoiceCommunityId === data.community_id &&
+            state.activeVoiceChannelId === data.channel_id;
+          if (!isCurrentRoom) return state;
+
+          const nextParticipants = state.voiceRoomParticipants.map((p) =>
+            p.user_id === data.participant.user_id ? { ...p, ...data.participant } : p
+          );
+          return {
+            voiceRoomParticipants: nextParticipants,
+            communityVoiceRooms: {
+              ...state.communityVoiceRooms,
+              [data.community_id]: {
+                ...(state.communityVoiceRooms[data.community_id] || {}),
+                [data.channel_id]: nextParticipants,
+              },
+            },
+          };
+        });
+      },
+      onCommunityVoiceStateUpdated: (data) => {
+        set((state) => ({
+          communityVoiceRooms: {
+            ...state.communityVoiceRooms,
+            [data.community_id]: {
+              ...(state.communityVoiceRooms[data.community_id] || {}),
+              [data.channel_id]: data.participants,
+            },
+          },
+        }));
+      },
+      onRoomWebrtcOffer: (data) => {
+        const { activeVoiceCommunityId, activeVoiceChannelId } = get();
+        if (
+          activeVoiceCommunityId === data.community_id &&
+          activeVoiceChannelId === data.channel_id
+        ) {
+          void meshRoomService.handleRemoteOffer(data.sender_id, data.sdp, data.stream_kind);
+        }
+      },
+      onRoomWebrtcAnswer: (data) => {
+        const { activeVoiceCommunityId, activeVoiceChannelId } = get();
+        if (
+          activeVoiceCommunityId === data.community_id &&
+          activeVoiceChannelId === data.channel_id
+        ) {
+          void meshRoomService.handleRemoteAnswer(data.sender_id, data.sdp, data.stream_kind);
+        }
+      },
+      onRoomWebrtcIceCandidate: (data) => {
+        const { activeVoiceCommunityId, activeVoiceChannelId } = get();
+        if (
+          activeVoiceCommunityId === data.community_id &&
+          activeVoiceChannelId === data.channel_id
+        ) {
+          void meshRoomService.handleRemoteIceCandidate(
+            data.sender_id,
+            data.candidate,
+            data.stream_kind
+          );
+        }
+      },
+      onRoomError: (data) => {
+        set((state) => ({
+          voiceRoomError: data.message,
+          voiceRoomState: state.voiceRoomState === 'joining' ? 'error' : state.voiceRoomState,
+        }));
+      },
       onReconnected: () => {
         get().loadFriends();
         get().loadFriendRequests();
@@ -1457,9 +2476,23 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (activeId) {
           get().selectConversation(activeId);
         }
+        if (get().authStatus === 'offline' && get().onlineUser) {
+          set({ authStatus: 'authenticated', authMode: 'authenticated' });
+        }
+        if (get().authStatus === 'authenticated') {
+          void get().loadCommunities();
+          const activeCommId = get().activeCommunityId;
+          const activeChanId = get().activeChannelId;
+          if (activeCommId) {
+            void get().loadCommunitySnapshot(activeCommId);
+            if (activeChanId) {
+              void get().loadChannelMessages(activeCommId, activeChanId);
+            }
+          }
+        }
       },
       onConnectionChange: (connected) => {
-        set({ isWsConnected: connected });
+        set({ isWsConnected: connected, gatewayConnected: connected });
       },
     });
 
@@ -1472,7 +2505,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       wsUnsubscribe = null;
     }
     gatewayClient.disconnect();
-    set({ isWsConnected: false });
+    set({ isWsConnected: false, gatewayConnected: false });
   },
 
   // Phase 2.3: DM Actions
@@ -1744,6 +2777,1311 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  // ==========================================
+  // Phase B2: Communities Actions
+  // ==========================================
+
+  loadCommunities: async () => {
+    if (get().authStatus === 'unauthenticated' || !get().onlineUser) {
+      set({ communities: [] });
+      return;
+    }
+    if (get().authStatus !== 'authenticated') {
+      return;
+    }
+    const expectedUserId = get().onlineUser?.id;
+    set({ isLoadingCommunities: true, communityError: null });
+    try {
+      const communities = await communityRepository.listCommunities();
+      if (get().onlineUser?.id !== expectedUserId) return;
+
+      const currentActiveId = get().activeCommunityId;
+      const activeStillExists =
+        currentActiveId && communities.some((c) => c.id === currentActiveId);
+
+      set({
+        communities,
+        isLoadingCommunities: false,
+        ...(currentActiveId && !activeStillExists
+          ? {
+              activeCommunityId: null,
+              activeChannelId: null,
+              communitySnapshot: null,
+              activeCommunityChannelMessages: [],
+              communityMessagesHasMore: false,
+              communityMessagesNextBefore: null,
+            }
+          : {}),
+      });
+
+      if (activeStillExists && currentActiveId) {
+        await get().loadCommunitySnapshot(currentActiveId);
+      }
+    } catch (err: any) {
+      if (get().onlineUser?.id === expectedUserId) {
+        set({
+          isLoadingCommunities: false,
+          communityError: err?.message || String(err),
+        });
+      }
+    }
+  },
+
+  selectCommunity: async (communityId) => {
+    set({
+      activeCommunityId: communityId,
+      activeChannelId: null,
+      activeCommunityChannelMessages: [],
+      communityMessagesHasMore: false,
+      communityMessagesNextBefore: null,
+      communityBans: [],
+      communityAuditLogs: [],
+      communityInvites: [],
+      communityError: null,
+    });
+    settingsRepository.savePreferences({
+      activeCommunityId: communityId,
+      activeChannelId: null,
+    });
+
+    if (!communityId) {
+      set({ communitySnapshot: null });
+      return;
+    }
+
+    const snapshot = await get().loadCommunitySnapshot(communityId);
+    if (snapshot && get().activeCommunityId === communityId && !get().activeChannelId) {
+      const firstTextChannel =
+        snapshot.channels.find((ch) => ch.channel_type === 'text') ||
+        snapshot.channels[0] ||
+        null;
+      if (firstTextChannel) {
+        await get().selectCommunityChannel(firstTextChannel.id);
+      }
+    }
+  },
+
+  loadCommunitySnapshot: async (communityId) => {
+    const expectedUserId = get().onlineUser?.id;
+    set({ isLoadingCommunitySnapshot: true, communityError: null });
+    try {
+      const snapshot = await communityRepository.getSnapshot(communityId);
+      if (get().onlineUser?.id !== expectedUserId) return null;
+
+      const syncedSnapshot: CommunitySnapshotDto = {
+        ...snapshot,
+        members: syncCommunityMembersPresence(
+          snapshot.members,
+          get().friends,
+          get().currentUser
+        ),
+      };
+
+      set((state) => ({
+        isLoadingCommunitySnapshot: false,
+        communitySnapshot:
+          state.activeCommunityId === communityId ? syncedSnapshot : state.communitySnapshot,
+        communities: state.communities.some((c) => c.id === syncedSnapshot.community.id)
+          ? state.communities.map((c) =>
+              c.id === syncedSnapshot.community.id ? syncedSnapshot.community : c
+            )
+          : [syncedSnapshot.community, ...state.communities],
+      }));
+      return syncedSnapshot;
+    } catch (err: any) {
+      if (get().onlineUser?.id === expectedUserId) {
+        set({
+          isLoadingCommunitySnapshot: false,
+          communityError: err?.message || String(err),
+        });
+      }
+      return null;
+    }
+  },
+
+  createCommunity: async (payload) => {
+    set({ communityError: null });
+    try {
+      const created = await communityRepository.createCommunity(payload);
+      set((state) => ({
+        communities: [created, ...state.communities.filter((c) => c.id !== created.id)],
+      }));
+      await get().selectCommunity(created.id);
+      return created;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  updateCommunity: async (communityId, payload) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.updateCommunity(communityId, payload);
+      set((state) => ({
+        communities: state.communities.map((c) => (c.id === communityId ? updated : c)),
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? { ...state.communitySnapshot, community: updated }
+            : state.communitySnapshot,
+      }));
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  deleteCommunity: async (communityId, payload) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.deleteCommunity(communityId, payload);
+      const wasActive = get().activeCommunityId === communityId;
+      set((state) => ({
+        communities: state.communities.filter((c) => c.id !== communityId),
+        ...(wasActive
+          ? {
+              activeCommunityId: null,
+              activeChannelId: null,
+              communitySnapshot: null,
+              activeCommunityChannelMessages: [],
+              communityMessagesHasMore: false,
+              communityMessagesNextBefore: null,
+            }
+          : {}),
+      }));
+      if (wasActive) {
+        settingsRepository.savePreferences({
+          activeCommunityId: null,
+          activeChannelId: null,
+        });
+      }
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  transferCommunityOwnership: async (communityId, payload) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.transferOwnership(communityId, payload);
+      set((state) => ({
+        communities: state.communities.map((c) => (c.id === communityId ? updated : c)),
+      }));
+      if (get().activeCommunityId === communityId) {
+        await get().loadCommunitySnapshot(communityId);
+      }
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  leaveCommunity: async (communityId) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.leaveCommunity(communityId);
+      const wasActive = get().activeCommunityId === communityId;
+      set((state) => ({
+        communities: state.communities.filter((c) => c.id !== communityId),
+        ...(wasActive
+          ? {
+              activeCommunityId: null,
+              activeChannelId: null,
+              communitySnapshot: null,
+              activeCommunityChannelMessages: [],
+              communityMessagesHasMore: false,
+              communityMessagesNextBefore: null,
+            }
+          : {}),
+      }));
+      if (wasActive) {
+        settingsRepository.savePreferences({
+          activeCommunityId: null,
+          activeChannelId: null,
+        });
+      }
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  createCommunityCategory: async (communityId, payload) => {
+    set({ communityError: null });
+    try {
+      const created = await communityRepository.createCategory(communityId, payload);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                categories: (
+                  state.communitySnapshot.categories.some((c) => c.id === created.id)
+                    ? state.communitySnapshot.categories.map((c) =>
+                        c.id === created.id ? created : c
+                      )
+                    : [...state.communitySnapshot.categories, created]
+                ).sort((a, b) => a.position - b.position),
+              }
+            : state.communitySnapshot,
+      }));
+      return created;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  updateCommunityCategory: async (communityId, categoryId, payload) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.updateCategory(communityId, categoryId, payload);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                categories: state.communitySnapshot.categories
+                  .map((cat) => (cat.id === categoryId ? updated : cat))
+                  .sort((a, b) => a.position - b.position),
+              }
+            : state.communitySnapshot,
+      }));
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  deleteCommunityCategory: async (communityId, categoryId) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.deleteCategory(communityId, categoryId);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                categories: state.communitySnapshot.categories.filter(
+                  (cat) => cat.id !== categoryId
+                ),
+                channels: state.communitySnapshot.channels.map((ch) =>
+                  ch.category_id === categoryId ? { ...ch, category_id: null } : ch
+                ),
+              }
+            : state.communitySnapshot,
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  reorderCommunityCategories: async (communityId, items) => {
+    set({ communityError: null });
+    try {
+      const categories = await communityRepository.reorderCategories(communityId, items);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                categories: [...categories].sort((a, b) => a.position - b.position),
+              }
+            : state.communitySnapshot,
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  createCommunityChannel: async (communityId, payload) => {
+    set({ communityError: null });
+    try {
+      const created = await communityRepository.createChannel(communityId, payload);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                channels: (
+                  state.communitySnapshot.channels.some((c) => c.id === created.id)
+                    ? state.communitySnapshot.channels.map((c) =>
+                        c.id === created.id ? created : c
+                      )
+                    : [...state.communitySnapshot.channels, created]
+                ).sort((a, b) => a.position - b.position),
+              }
+            : state.communitySnapshot,
+      }));
+      return created;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  updateCommunityChannel: async (communityId, channelId, payload) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.updateChannel(communityId, channelId, payload);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                channels: state.communitySnapshot.channels
+                  .map((ch) => (ch.id === channelId ? updated : ch))
+                  .sort((a, b) => a.position - b.position),
+              }
+            : state.communitySnapshot,
+      }));
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  deleteCommunityChannel: async (communityId, channelId) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.deleteChannel(communityId, channelId);
+      const wasActiveChannel = get().activeChannelId === channelId;
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                channels: state.communitySnapshot.channels.filter((ch) => ch.id !== channelId),
+              }
+            : state.communitySnapshot,
+        ...(wasActiveChannel
+          ? {
+              activeChannelId: null,
+              activeCommunityChannelMessages: [],
+              communityMessagesHasMore: false,
+              communityMessagesNextBefore: null,
+            }
+          : {}),
+      }));
+      if (wasActiveChannel) {
+        settingsRepository.savePreferences({ activeChannelId: null });
+      }
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  reorderCommunityChannels: async (communityId, items) => {
+    set({ communityError: null });
+    try {
+      const channels = await communityRepository.reorderChannels(communityId, items);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                channels: [...channels].sort((a, b) => a.position - b.position),
+              }
+            : state.communitySnapshot,
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  selectCommunityChannel: async (channelId) => {
+    const communityId = get().activeCommunityId;
+    set({
+      activeChannelId: channelId,
+      activeCommunityChannelMessages: [],
+      communityMessagesHasMore: false,
+      communityMessagesNextBefore: null,
+      communityError: null,
+    });
+    settingsRepository.savePreferences({ activeChannelId: channelId });
+
+    if (communityId && channelId) {
+      await get().loadChannelMessages(communityId, channelId);
+    }
+  },
+
+  listChannelOverwrites: async (communityId, channelId) => {
+    const overwrites = await communityRepository.listChannelOverwrites(communityId, channelId);
+    set((state) => ({
+      communitySnapshot:
+        state.communitySnapshot?.community.id === communityId
+          ? {
+              ...state.communitySnapshot,
+              channels: state.communitySnapshot.channels.map((ch) =>
+                ch.id === channelId ? { ...ch, overwrites } : ch
+              ),
+            }
+          : state.communitySnapshot,
+    }));
+    return overwrites;
+  },
+
+  upsertChannelOverwrite: async (communityId, channelId, payload) => {
+    set({ communityError: null });
+    try {
+      const overwrite = await communityRepository.upsertChannelOverwrite(
+        communityId,
+        channelId,
+        payload
+      );
+      if (get().activeCommunityId === communityId) {
+        await get().loadCommunitySnapshot(communityId);
+      }
+      return overwrite;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  deleteChannelOverwrite: async (communityId, channelId, targetType, targetId) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.deleteChannelOverwrite(
+        communityId,
+        channelId,
+        targetType,
+        targetId
+      );
+      if (get().activeCommunityId === communityId) {
+        await get().loadCommunitySnapshot(communityId);
+      }
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  loadChannelMessages: async (communityId, channelId, before, limit = 50) => {
+    const expectedUserId = get().onlineUser?.id;
+    set({ isLoadingChannelMessages: true, communityError: null });
+    try {
+      const page = await communityRepository.listChannelMessages(
+        communityId,
+        channelId,
+        before,
+        limit
+      );
+      if (
+        get().onlineUser?.id !== expectedUserId ||
+        get().activeCommunityId !== communityId ||
+        get().activeChannelId !== channelId
+      ) {
+        return;
+      }
+
+      const existingForChannel = before
+        ? get().activeCommunityChannelMessages
+        : get().activeCommunityChannelMessages.filter((m) => m.channel_id === channelId);
+      const merged = mergeAndSortChannelMessages(existingForChannel, page.messages);
+      set({
+        activeCommunityChannelMessages: merged,
+        communityMessagesHasMore: page.has_more,
+        communityMessagesNextBefore: page.next_before ?? null,
+        isLoadingChannelMessages: false,
+      });
+
+      if (!before && merged.length > 0) {
+        const lastMsg = merged[merged.length - 1];
+        await get().markChannelRead(communityId, channelId, lastMsg.id);
+      }
+    } catch (err: any) {
+      if (
+        get().onlineUser?.id === expectedUserId &&
+        get().activeCommunityId === communityId &&
+        get().activeChannelId === channelId
+      ) {
+        set({
+          isLoadingChannelMessages: false,
+          communityError: err?.message || String(err),
+        });
+      }
+    }
+  },
+
+  refreshActiveChannelMessages: async () => {
+    const communityId = get().activeCommunityId;
+    const channelId = get().activeChannelId;
+    const expectedUserId = get().onlineUser?.id;
+    if (!communityId || !channelId || get().authStatus !== 'authenticated') return;
+
+    try {
+      const page = await communityRepository.listChannelMessages(
+        communityId,
+        channelId,
+        undefined,
+        50
+      );
+      if (
+        get().onlineUser?.id !== expectedUserId ||
+        get().activeCommunityId !== communityId ||
+        get().activeChannelId !== channelId
+      ) {
+        return;
+      }
+
+      const existing = get().activeCommunityChannelMessages;
+      const merged = mergeAndSortChannelMessages(existing, page.messages);
+      if (merged.length !== existing.length || page.messages.length > 0) {
+        set({ activeCommunityChannelMessages: merged });
+      }
+    } catch {
+      // Silent background poll failure
+    }
+  },
+
+  loadOlderChannelMessages: async () => {
+    const communityId = get().activeCommunityId;
+    const channelId = get().activeChannelId;
+    const nextBefore = get().communityMessagesNextBefore;
+    if (!communityId || !channelId || !get().communityMessagesHasMore || !nextBefore) {
+      return;
+    }
+    await get().loadChannelMessages(communityId, channelId, nextBefore, 50);
+  },
+
+  sendChannelMessage: async (content, replyToMessageId = null) => {
+    const communityId = get().activeCommunityId;
+    const channelId = get().activeChannelId;
+    const trimmed = content.trim();
+    if (!communityId || !channelId || !trimmed) return false;
+
+    const user = get().onlineUser;
+    const currentUser = get().currentUser;
+    const expectedUserId = user?.id;
+    const clientMsgId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    const optimisticMsg: ChannelMessageDto = {
+      id: `opt_${clientMsgId}`,
+      channel_id: channelId,
+      community_id: communityId,
+      sender_id: user?.id || currentUser.id,
+      author: {
+        id: user?.id || currentUser.id,
+        username: currentUser.username,
+        display_name: currentUser.displayName,
+        avatar_url: currentUser.avatarUrl ?? null,
+      },
+      reply_to_message_id: replyToMessageId ?? null,
+      content: trimmed,
+      client_message_id: clientMsgId,
+      attachments: [],
+      created_at: new Date().toISOString(),
+      edited_at: null,
+      deleted_at: null,
+      is_mine: true,
+      delivery_status: 'sending',
+    };
+
+    set((state) => ({
+      isSendingChannelMessage: true,
+      communityError: null,
+      activeCommunityChannelMessages: mergeAndSortChannelMessages(
+        state.activeCommunityChannelMessages,
+        [optimisticMsg]
+      ),
+    }));
+
+    try {
+      const sent = await communityRepository.sendChannelMessage(communityId, channelId, {
+        content: trimmed,
+        client_message_id: clientMsgId,
+        reply_to_message_id: replyToMessageId ?? null,
+      });
+      if (get().onlineUser?.id !== expectedUserId) return false;
+
+      set((state) => ({
+        isSendingChannelMessage: false,
+        activeCommunityChannelMessages:
+          state.activeChannelId === channelId
+            ? mergeAndSortChannelMessages(state.activeCommunityChannelMessages, [sent])
+            : state.activeCommunityChannelMessages,
+      }));
+      return true;
+    } catch (err: any) {
+      if (get().onlineUser?.id === expectedUserId) {
+        set((state) => ({
+          isSendingChannelMessage: false,
+          communityError: err?.message || String(err),
+          activeCommunityChannelMessages: state.activeCommunityChannelMessages.map((m) =>
+            m.client_message_id === clientMsgId && m.delivery_status === 'sending'
+              ? { ...m, delivery_status: 'failed' }
+              : m
+          ),
+        }));
+      }
+      return false;
+    }
+  },
+
+  editChannelMessage: async (messageId, content) => {
+    const communityId = get().activeCommunityId;
+    const channelId = get().activeChannelId;
+    if (!communityId || !channelId || !content.trim()) return false;
+    set({ communityError: null });
+    try {
+      const edited = await communityRepository.editChannelMessage(
+        communityId,
+        channelId,
+        messageId,
+        content.trim()
+      );
+      set((state) => ({
+        activeCommunityChannelMessages: state.activeCommunityChannelMessages.map((m) =>
+          m.id === messageId ? mergeSingleChannelMessage(m, edited) : m
+        ),
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      return false;
+    }
+  },
+
+  deleteChannelMessage: async (messageId) => {
+    const communityId = get().activeCommunityId;
+    const channelId = get().activeChannelId;
+    if (!communityId || !channelId) return false;
+    set({ communityError: null });
+    try {
+      const deleted = await communityRepository.deleteChannelMessage(
+        communityId,
+        channelId,
+        messageId
+      );
+      const deletedAt =
+        deleted && typeof deleted === 'object' && 'deleted_at' in deleted && deleted.deleted_at
+          ? deleted.deleted_at
+          : new Date().toISOString();
+      set((state) => ({
+        activeCommunityChannelMessages: state.activeCommunityChannelMessages.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                ...(deleted && typeof deleted === 'object' ? deleted : {}),
+                content: '[Mensagem apagada]',
+                deleted_at: deletedAt,
+              }
+            : m
+        ),
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      return false;
+    }
+  },
+
+  markChannelRead: async (communityIdArg, channelIdArg, lastReadMessageId) => {
+    const communityId = communityIdArg || get().activeCommunityId;
+    const channelId = channelIdArg || get().activeChannelId;
+    if (!communityId || !channelId) return;
+
+    const messages = get().activeCommunityChannelMessages;
+    const resolvedLastId =
+      lastReadMessageId !== undefined
+        ? lastReadMessageId
+        : messages.length > 0
+        ? messages[messages.length - 1].id
+        : null;
+
+    if (!resolvedLastId || resolvedLastId.startsWith('opt_')) return;
+
+    try {
+      await communityRepository.markChannelRead(communityId, channelId, resolvedLastId);
+      set((state) => {
+        const snapshot = state.communitySnapshot;
+        let nextSnapshot = snapshot;
+        let nextTotalUnread = 0;
+        if (snapshot && snapshot.community.id === communityId) {
+          const nextChannels = snapshot.channels.map((ch) =>
+            ch.id === channelId ? { ...ch, unread_count: 0 } : ch
+          );
+          nextTotalUnread = nextChannels.reduce((acc, ch) => acc + (ch.unread_count || 0), 0);
+          nextSnapshot = {
+            ...snapshot,
+            channels: nextChannels,
+            community: { ...snapshot.community, unread_count: nextTotalUnread },
+          };
+        }
+        return {
+          communitySnapshot: nextSnapshot,
+          communities: state.communities.map((c) =>
+            c.id === communityId
+              ? {
+                  ...c,
+                  unread_count:
+                    nextSnapshot && nextSnapshot.community.id === communityId
+                      ? nextTotalUnread
+                      : c.unread_count,
+                }
+              : c
+          ),
+        };
+      });
+    } catch {
+      // Non-fatal read state sync failure
+    }
+  },
+
+  createCommunityRole: async (communityId, payload) => {
+    set({ communityError: null });
+    try {
+      const created = await communityRepository.createRole(communityId, payload);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                roles: (
+                  state.communitySnapshot.roles.some((r) => r.id === created.id)
+                    ? state.communitySnapshot.roles.map((r) =>
+                        r.id === created.id ? created : r
+                      )
+                    : [...state.communitySnapshot.roles, created]
+                ).sort((a, b) => b.position - a.position),
+              }
+            : state.communitySnapshot,
+      }));
+      return created;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  updateCommunityRole: async (communityId, roleId, payload) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.updateRole(communityId, roleId, payload);
+      if (get().activeCommunityId === communityId) {
+        await get().loadCommunitySnapshot(communityId);
+      }
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  deleteCommunityRole: async (communityId, roleId) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.deleteRole(communityId, roleId);
+      if (get().activeCommunityId === communityId) {
+        await get().loadCommunitySnapshot(communityId);
+      }
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  reorderCommunityRoles: async (communityId, items) => {
+    set({ communityError: null });
+    try {
+      const roles = await communityRepository.reorderRoles(communityId, items);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                roles: [...roles].sort((a, b) => b.position - a.position),
+              }
+            : state.communitySnapshot,
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  updateCommunityMember: async (communityId, userId, payload) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.updateMember(communityId, userId, payload);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                members: syncCommunityMembersPresence(
+                  state.communitySnapshot.members.map((m) =>
+                    m.user_id === userId ? updated : m
+                  ),
+                  state.friends,
+                  state.currentUser
+                ),
+              }
+            : state.communitySnapshot,
+      }));
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  setCommunityMemberRoles: async (communityId, userId, roleIds) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.setMemberRoles(communityId, userId, roleIds);
+      if (get().activeCommunityId === communityId) {
+        await get().loadCommunitySnapshot(communityId);
+      }
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  addCommunityMemberRole: async (communityId, userId, roleId) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.addMemberRole(communityId, userId, roleId);
+      if (get().activeCommunityId === communityId) {
+        await get().loadCommunitySnapshot(communityId);
+      }
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  removeCommunityMemberRole: async (communityId, userId, roleId) => {
+    set({ communityError: null });
+    try {
+      const updated = await communityRepository.removeMemberRole(communityId, userId, roleId);
+      if (get().activeCommunityId === communityId) {
+        await get().loadCommunitySnapshot(communityId);
+      }
+      return updated;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  kickCommunityMember: async (communityId, userId, payload = {}) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.kickMember(communityId, userId, payload);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                members: state.communitySnapshot.members.filter((m) => m.user_id !== userId),
+                community: {
+                  ...state.communitySnapshot.community,
+                  member_count: Math.max(0, state.communitySnapshot.community.member_count - 1),
+                },
+              }
+            : state.communitySnapshot,
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  banCommunityMember: async (communityId, userId, payload = {}) => {
+    set({ communityError: null });
+    try {
+      const ban = await communityRepository.banMember(communityId, userId, payload);
+      set((state) => ({
+        communityBans: [ban, ...state.communityBans.filter((b) => b.user_id !== userId)],
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                members: state.communitySnapshot.members.filter((m) => m.user_id !== userId),
+                community: {
+                  ...state.communitySnapshot.community,
+                  member_count: Math.max(0, state.communitySnapshot.community.member_count - 1),
+                },
+              }
+            : state.communitySnapshot,
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  unbanCommunityMember: async (communityId, userId) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.unbanMember(communityId, userId);
+      set((state) => ({
+        communityBans: state.communityBans.filter((b) => b.user_id !== userId),
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  loadCommunityBans: async (communityId) => {
+    set({ communityError: null });
+    try {
+      const bans = await communityRepository.listBans(communityId);
+      if (get().activeCommunityId === communityId) {
+        set({ communityBans: bans });
+      }
+      return bans;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  muteCommunityMember: async (communityId, userId, payload) => {
+    set({ communityError: null });
+    try {
+      const mute = await communityRepository.muteMember(communityId, userId, payload);
+      set((state) => ({
+        communitySnapshot:
+          state.communitySnapshot?.community.id === communityId
+            ? {
+                ...state.communitySnapshot,
+                members: state.communitySnapshot.members.map((m) =>
+                  m.user_id === userId
+                    ? {
+                        ...m,
+                        text_muted_until: mute.text_muted_until ?? null,
+                        voice_muted_until: mute.voice_muted_until ?? null,
+                        server_voice_muted: mute.server_voice_muted,
+                      }
+                    : m
+                ),
+                my_mute:
+                  userId === state.onlineUser?.id ? mute : state.communitySnapshot.my_mute,
+              }
+            : state.communitySnapshot,
+      }));
+      return mute;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  loadCommunityAuditLogs: async (communityId, query = {}) => {
+    set({ communityError: null });
+    try {
+      const logs = await communityRepository.listAuditLogs(communityId, query);
+      if (get().activeCommunityId === communityId) {
+        set({ communityAuditLogs: logs });
+      }
+      return logs;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  createCommunityInvite: async (communityId, payload = {}) => {
+    set({ communityError: null });
+    try {
+      const invite = await communityRepository.createInvite(communityId, payload);
+      set((state) => ({
+        communityInvites: [invite, ...state.communityInvites],
+      }));
+      return invite;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  loadCommunityInvites: async (communityId) => {
+    set({ communityError: null });
+    try {
+      const invites = await communityRepository.listInvites(communityId);
+      if (get().activeCommunityId === communityId) {
+        set({ communityInvites: invites });
+      }
+      return invites;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  revokeCommunityInvite: async (communityId, inviteId) => {
+    set({ communityError: null });
+    try {
+      await communityRepository.revokeInvite(communityId, inviteId);
+      set((state) => ({
+        communityInvites: state.communityInvites.filter((i) => i.id !== inviteId),
+      }));
+      return true;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  previewCommunityInvite: async (code) => {
+    set({ communityError: null });
+    try {
+      return await communityRepository.getInvitePreview(code);
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  acceptCommunityInvite: async (code) => {
+    set({ communityError: null });
+    try {
+      const res = await communityRepository.acceptInvite(code);
+      set((state) => ({
+        communities: [
+          res.community,
+          ...state.communities.filter((c) => c.id !== res.community.id),
+        ],
+      }));
+      await get().selectCommunity(res.community.id);
+      if (res.channel_id) {
+        await get().selectCommunityChannel(res.channel_id);
+      }
+      return res;
+    } catch (err: any) {
+      set({ communityError: err?.message || String(err) });
+      throw err;
+    }
+  },
+
+  clearCommunityError: () => set({ communityError: null }),
+
+  // Phase B3.2: Multi-participant Voice Room Actions
+  loadCommunityVoiceRooms: async (communityId) => {
+    try {
+      let raw: any = null;
+      const isTauriRuntime =
+        typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__);
+
+      if (isTauriRuntime) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          raw = await invoke('communities_get_voice_rooms', { communityId });
+        } catch {
+          raw = null;
+        }
+      }
+
+      if (!raw && typeof window !== 'undefined' && typeof fetch === 'function') {
+        const apiBase = window.localStorage?.getItem('nexus_test_api_base')?.trim();
+        const token = window.localStorage?.getItem('nexus_test_token')?.trim();
+        if (apiBase && token) {
+          const resp = await fetch(
+            `${apiBase.replace(/\/+$/, '')}/v1/communities/${communityId}/voice-rooms`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (resp.ok) {
+            raw = await resp.json();
+          }
+        }
+      }
+
+      if (!raw) return;
+
+      const byChannel: Record<string, RoomParticipantDto[]> = {};
+      const list = Array.isArray(raw) ? raw : Array.isArray(raw?.rooms) ? raw.rooms : null;
+      if (list) {
+        for (const item of list) {
+          if (item?.channel_id && Array.isArray(item.participants)) {
+            byChannel[item.channel_id] = item.participants;
+          }
+        }
+      } else if (typeof raw === 'object') {
+        for (const [chId, participants] of Object.entries(raw)) {
+          if (Array.isArray(participants)) {
+            byChannel[chId] = participants as RoomParticipantDto[];
+          }
+        }
+      }
+
+      set((state) => ({
+        communityVoiceRooms: {
+          ...state.communityVoiceRooms,
+          [communityId]: byChannel,
+        },
+      }));
+    } catch (err: any) {
+      console.warn('[useAppStore] Falha ao carregar salas de voz:', err);
+    }
+  },
+
+  joinVoiceChannel: async (communityId, channelId) => {
+    const current = get();
+    if (
+      current.activeVoiceCommunityId === communityId &&
+      current.activeVoiceChannelId === channelId &&
+      (current.voiceRoomState === 'connected' || current.voiceRoomState === 'joining')
+    ) {
+      return;
+    }
+
+    if (current.activeVoiceCommunityId && current.activeVoiceChannelId) {
+      await get().leaveVoiceChannel();
+    }
+
+    set({
+      voiceRoomState: 'joining',
+      activeVoiceCommunityId: communityId,
+      activeVoiceChannelId: channelId,
+      voiceRoomError: null,
+      voiceRoomPeerStatuses: {},
+      voiceRoomRemoteStreams: {},
+      voiceRoomMetrics: null,
+    });
+
+    gatewayClient.sendRoomJoin(communityId, channelId);
+  },
+
+  leaveVoiceChannel: async () => {
+    const { activeVoiceCommunityId, activeVoiceChannelId } = get();
+    if (activeVoiceCommunityId && activeVoiceChannelId) {
+      gatewayClient.sendRoomLeave(activeVoiceCommunityId, activeVoiceChannelId);
+    }
+    await meshRoomService.leaveRoom();
+    set({
+      voiceRoomState: 'idle',
+      activeVoiceCommunityId: null,
+      activeVoiceChannelId: null,
+      voiceRoomParticipants: [],
+      voiceRoomMuted: false,
+      voiceRoomDeafened: false,
+      voiceRoomScreenSharing: false,
+      voiceRoomPeerStatuses: {},
+      voiceRoomRemoteStreams: {},
+      voiceRoomMetrics: null,
+      voiceRoomError: null,
+    });
+  },
+
+  toggleVoiceRoomMute: () => {
+    const {
+      activeVoiceCommunityId,
+      activeVoiceChannelId,
+      voiceRoomMuted,
+      voiceRoomCanSpeak,
+    } = get();
+    if (!activeVoiceCommunityId || !activeVoiceChannelId) return;
+    if (voiceRoomMuted && !voiceRoomCanSpeak) {
+      set({ voiceRoomError: 'Você não tem permissão para falar neste canal.' });
+      return;
+    }
+    const nextMuted = !voiceRoomMuted;
+    meshRoomService.setMuted(nextMuted);
+    set({ voiceRoomMuted: nextMuted });
+    gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
+      is_muted: nextMuted,
+    });
+  },
+
+  toggleVoiceRoomDeafen: () => {
+    const { activeVoiceCommunityId, activeVoiceChannelId, voiceRoomDeafened } = get();
+    if (!activeVoiceCommunityId || !activeVoiceChannelId) return;
+    const nextDeafened = !voiceRoomDeafened;
+    meshRoomService.setDeafened(nextDeafened);
+    set({ voiceRoomDeafened: nextDeafened });
+    gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
+      is_deafened: nextDeafened,
+    });
+  },
+
+  setVoiceRoomParticipantVolume: (peerUserId, volume) => {
+    const clamped = Math.max(0, Math.min(200, Math.round(volume)));
+    meshRoomService.setParticipantVolume(peerUserId, clamped);
+    set((state) => ({
+      voiceRoomParticipantVolumes: {
+        ...state.voiceRoomParticipantVolumes,
+        [peerUserId]: clamped,
+      },
+    }));
+  },
+
+  startVoiceRoomScreenShare: async (preset) => {
+    const {
+      activeVoiceCommunityId,
+      activeVoiceChannelId,
+      voiceRoomCanScreenShare,
+      voiceRoomQuality,
+    } = get();
+    if (!activeVoiceCommunityId || !activeVoiceChannelId) return false;
+    if (!voiceRoomCanScreenShare) {
+      set({ voiceRoomError: 'Você não tem permissão para compartilhar tela neste canal.' });
+      return false;
+    }
+
+    const chosenPreset = preset ?? voiceRoomQuality;
+    const ok = await meshRoomService.startScreenShare(chosenPreset);
+    if (ok) {
+      set({ voiceRoomScreenSharing: true, voiceRoomQuality: chosenPreset, voiceRoomError: null });
+      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
+        is_screen_sharing: true,
+      });
+    }
+    return ok;
+  },
+
+  stopVoiceRoomScreenShare: async () => {
+    const { activeVoiceCommunityId, activeVoiceChannelId } = get();
+    await meshRoomService.stopScreenShare();
+    set({
+      voiceRoomScreenSharing: false,
+      nativeCaptureStatus: null,
+      nativeScreenStats: null,
+    });
+    if (activeVoiceCommunityId && activeVoiceChannelId) {
+      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
+        is_screen_sharing: false,
+      });
+    }
+  },
+
+  setVoiceRoomQuality: async (preset) => {
+    set({ voiceRoomQuality: preset });
+    await meshRoomService.setScreenShareQuality(preset);
+  },
+
+  clearVoiceRoomError: () => set({ voiceRoomError: null }),
+
   setActiveTab: (tab) => {
     set({ activeTab: tab });
     settingsRepository.savePreferences({ activeTab: tab });
@@ -1818,6 +4156,83 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
 
+  openScreenSourcePicker: async (target) => {
+    set({ screenPickerTarget: target, screenShareError: null });
+    await get().refreshNativeCaptureSources();
+  },
+
+  closeScreenSourcePicker: () => {
+    set({ screenPickerTarget: null });
+  },
+
+  refreshNativeCaptureSources: async () => {
+    if (!screenCaptureService.isNativeCaptureSupported()) {
+      set({ nativeCaptureSources: null, isLoadingNativeSources: false });
+      return null;
+    }
+    set({ isLoadingNativeSources: true });
+    try {
+      const sources = await screenCaptureService.listNativeSources();
+      set({ nativeCaptureSources: sources, isLoadingNativeSources: false });
+      return sources;
+    } catch (err: any) {
+      set({
+        isLoadingNativeSources: false,
+        screenShareError: err?.message || 'Falha ao listar monitores e janelas.',
+      });
+      return null;
+    }
+  },
+
+  startNativeVoiceRoomScreenShare: async (options) => {
+    const {
+      activeVoiceCommunityId,
+      activeVoiceChannelId,
+      voiceRoomCanScreenShare,
+      voiceRoomQuality,
+    } = get();
+    if (!activeVoiceCommunityId || !activeVoiceChannelId) return false;
+    if (!voiceRoomCanScreenShare) {
+      set({ voiceRoomError: 'Você não tem permissão para compartilhar tela neste canal.' });
+      return false;
+    }
+
+    const chosenPreset = options.preset ?? voiceRoomQuality;
+    try {
+      const status = await meshRoomService.startNativeScreenShare({
+        ...options,
+        preset: chosenPreset,
+      });
+      if (!status) return false;
+      set({
+        voiceRoomScreenSharing: true,
+        voiceRoomQuality: chosenPreset,
+        voiceRoomError: null,
+        screenPickerTarget: null,
+        nativeCaptureStatus: status,
+      });
+      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
+        is_screen_sharing: true,
+      });
+      return true;
+    } catch (err: any) {
+      set({
+        voiceRoomError: err?.message || 'Falha ao iniciar compartilhamento de tela nativo.',
+      });
+      return false;
+    }
+  },
+
+  startNativeCallScreenShare: async (options) => {
+    const status = await callService.startNativeScreenShare(options);
+    if (!status) return false;
+    set({
+      screenPickerTarget: null,
+      nativeCaptureStatus: status,
+    });
+    return true;
+  },
+
   startScreenShare: async (preset) => {
     return callService.startScreenShare(preset);
   },
@@ -1890,6 +4305,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   setUserStatus: (status) => {
     set((state) => ({
       currentUser: { ...state.currentUser, status },
+      communitySnapshot: state.communitySnapshot
+        ? {
+            ...state.communitySnapshot,
+            members: state.communitySnapshot.members.map((m) =>
+              m.user_id === state.currentUser.id ? { ...m, status } : m
+            ),
+          }
+        : null,
     }));
 
     if (get().authStatus === 'authenticated') {
@@ -2052,4 +4475,103 @@ screenCaptureService.addListener((state) => {
 if (typeof window !== 'undefined') {
   (window as any).__NEXUS_STORE__ = useAppStore;
 }
+
+meshRoomService.setCallbacks({
+  onSendOffer: (peerUserId, sdp, streamKind) => {
+    const { activeVoiceCommunityId, activeVoiceChannelId } = useAppStore.getState();
+    if (activeVoiceCommunityId && activeVoiceChannelId) {
+      gatewayClient.sendRoomWebrtcOffer(
+        activeVoiceCommunityId,
+        activeVoiceChannelId,
+        peerUserId,
+        sdp,
+        streamKind
+      );
+    }
+  },
+  onSendAnswer: (peerUserId, sdp, streamKind) => {
+    const { activeVoiceCommunityId, activeVoiceChannelId } = useAppStore.getState();
+    if (activeVoiceCommunityId && activeVoiceChannelId) {
+      gatewayClient.sendRoomWebrtcAnswer(
+        activeVoiceCommunityId,
+        activeVoiceChannelId,
+        peerUserId,
+        sdp,
+        streamKind
+      );
+    }
+  },
+  onSendIceCandidate: (peerUserId, candidate, streamKind) => {
+    const { activeVoiceCommunityId, activeVoiceChannelId } = useAppStore.getState();
+    if (activeVoiceCommunityId && activeVoiceChannelId) {
+      gatewayClient.sendRoomWebrtcIceCandidate(
+        activeVoiceCommunityId,
+        activeVoiceChannelId,
+        peerUserId,
+        candidate,
+        streamKind
+      );
+    }
+  },
+  onNativeStatusChange: (status) => {
+    useAppStore.setState({ nativeCaptureStatus: status });
+  },
+  onNativeStats: (stats) => {
+    useAppStore.setState({ nativeScreenStats: stats });
+  },
+  onNativeScreenEnded: () => {
+    const { activeVoiceCommunityId, activeVoiceChannelId } = useAppStore.getState();
+    useAppStore.setState({
+      voiceRoomScreenSharing: false,
+      nativeCaptureStatus: null,
+      nativeScreenStats: null,
+    });
+    if (activeVoiceCommunityId && activeVoiceChannelId) {
+      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
+        is_screen_sharing: false,
+      });
+    }
+  },
+  onPeerStatusChange: (peerUserId, status) => {
+    useAppStore.setState((state) => ({
+      voiceRoomPeerStatuses: {
+        ...state.voiceRoomPeerStatuses,
+        [peerUserId]: status,
+      },
+    }));
+  },
+  onLocalSpeaking: (isSpeaking) => {
+    const state = useAppStore.getState();
+    const selfId = state.onlineUser?.id || state.currentUser.id;
+    if (!state.activeVoiceCommunityId || !state.activeVoiceChannelId || !selfId) return;
+    useAppStore.setState((prev) => ({
+      voiceRoomParticipants: prev.voiceRoomParticipants.map((p) =>
+        p.user_id === selfId ? { ...p, is_speaking: isSpeaking } : p
+      ),
+    }));
+    gatewayClient.sendRoomStateUpdate(state.activeVoiceCommunityId, state.activeVoiceChannelId, {
+      is_speaking: isSpeaking,
+    });
+  },
+  onPeerSpeaking: (peerUserId, isSpeaking) => {
+    useAppStore.setState((prev) => ({
+      voiceRoomParticipants: prev.voiceRoomParticipants.map((p) =>
+        p.user_id === peerUserId ? { ...p, is_speaking: isSpeaking } : p
+      ),
+    }));
+  },
+  onRemoteVideoStreamsChange: (streams) => {
+    const record: Record<string, MediaStream> = {};
+    streams.forEach((stream, uid) => {
+      record[uid] = stream;
+    });
+    useAppStore.setState({ voiceRoomRemoteStreams: record });
+  },
+  onMetricsUpdate: (snapshot) => {
+    useAppStore.setState({ voiceRoomMetrics: snapshot });
+  },
+  onError: (message) => {
+    useAppStore.setState({ voiceRoomError: message });
+  },
+});
 

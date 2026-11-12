@@ -7,7 +7,18 @@
  * e ciclo de vida estrito contra tracks órfãs.
  */
 
-import type { ScreenShareQualityPreset } from '../lib/types.ts';
+import type {
+  CaptureSources,
+  NativeCaptureStatus,
+  NativeScreenEndedEvent,
+  NativeScreenErrorEvent,
+  NativeScreenIceEvent,
+  NativeScreenOfferEvent,
+  NativeScreenStatsEvent,
+  ScreenShareQualityPreset,
+  StartScreenShareOptions,
+  VoiceRoomQualityPreset,
+} from '../lib/types.ts';
 import {
   canRetryDisplayCapture,
   getCaptureSourcePresentation,
@@ -50,6 +61,25 @@ export interface ScreenCaptureState {
 
 export type ScreenCaptureListener = (state: ScreenCaptureState) => void;
 
+export interface NativeScreenEventHandlers {
+  onOffer?: (event: NativeScreenOfferEvent) => void;
+  onIce?: (event: NativeScreenIceEvent) => void;
+  onStats?: (event: NativeScreenStatsEvent) => void;
+  onError?: (event: NativeScreenErrorEvent) => void;
+  onEnded?: (event: NativeScreenEndedEvent) => void;
+}
+
+export function isTauriWindowsEnvironment(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hasTauri = Boolean((window as any).__TAURI_INTERNALS__);
+  if (!hasTauri) return false;
+  const platform =
+    (typeof navigator !== 'undefined' &&
+      ((navigator as any).userAgentData?.platform || navigator.platform || navigator.userAgent)) ||
+    '';
+  return /win/i.test(String(platform));
+}
+
 export const SCREEN_QUALITY_CONFIGS: Record<ScreenShareQualityPreset, ScreenEncodingTargets> = {
   auto: {
     maxBitrate: 3_000_000,
@@ -72,6 +102,17 @@ export const SCREEN_QUALITY_CONFIGS: Record<ScreenShareQualityPreset, ScreenEnco
     degradationPreference: 'maintain-resolution',
     steadyContentHint: 'detail',
     label: '720p • 30 FPS',
+  },
+  '720p60': {
+    maxBitrate: 3_200_000,
+    minBitrate: 1_400_000,
+    initialBitrate: 2_200_000,
+    maxFramerate: 60,
+    targetWidth: 1280,
+    targetHeight: 720,
+    degradationPreference: 'balanced',
+    steadyContentHint: 'motion',
+    label: '720p • 60 FPS',
   },
   '1080p30': {
     maxBitrate: 3_500_000,
@@ -593,6 +634,110 @@ export class ScreenCaptureService {
     } catch {
       // Ignora erro quando executado fora do runtime nativo Tauri (ex: testes de unidade / ambiente web)
     }
+  }
+
+  public isNativeCaptureSupported(): boolean {
+    return isTauriWindowsEnvironment();
+  }
+
+  public async listNativeSources(): Promise<CaptureSources> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<CaptureSources>('native_list_capture_sources');
+  }
+
+  public async startNativeShare(options: StartScreenShareOptions): Promise<NativeCaptureStatus> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<NativeCaptureStatus>('native_start_screen_share', { options });
+  }
+
+  public async stopNativeShare(): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('native_stop_screen_share');
+  }
+
+  public async setNativeScreenQuality(preset: VoiceRoomQualityPreset): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('native_set_screen_quality', { preset });
+  }
+
+  public async setNativeAdaptiveBitrate(bitrateBps: number): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('native_set_adaptive_bitrate', { bitrate_bps: Math.max(200_000, Math.round(bitrateBps)) });
+  }
+
+  public async addNativeScreenPeer(
+    peerId: string,
+    iceServers?: RTCIceServer[]
+  ): Promise<NativeScreenOfferEvent> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<NativeScreenOfferEvent>('native_add_screen_peer', {
+      peer_id: peerId,
+      ...(iceServers ? { ice_servers: iceServers } : {}),
+    });
+  }
+
+  public async removeNativeScreenPeer(peerId: string): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('native_remove_screen_peer', { peer_id: peerId });
+  }
+
+  public async handleNativeScreenAnswer(peerId: string, sdp: string): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('native_handle_screen_answer', { peer_id: peerId, sdp });
+  }
+
+  public async handleNativeScreenIce(
+    peerId: string,
+    candidate: string,
+    sdpMid?: string | null,
+    sdpMlineIndex?: number | null
+  ): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('native_handle_screen_ice', {
+      peer_id: peerId,
+      candidate,
+      sdp_mid: sdpMid ?? null,
+      sdp_mline_index: sdpMlineIndex ?? null,
+    });
+  }
+
+  public async subscribeNativeEvents(handlers: NativeScreenEventHandlers): Promise<() => void> {
+    const { listen } = await import('@tauri-apps/api/event');
+    const unlisteners: Array<() => void> = [];
+
+    if (handlers.onOffer) {
+      unlisteners.push(
+        await listen<NativeScreenOfferEvent>('native-screen-offer', (ev) => handlers.onOffer?.(ev.payload))
+      );
+    }
+    if (handlers.onIce) {
+      unlisteners.push(
+        await listen<NativeScreenIceEvent>('native-screen-ice', (ev) => handlers.onIce?.(ev.payload))
+      );
+    }
+    if (handlers.onStats) {
+      unlisteners.push(
+        await listen<NativeScreenStatsEvent>('native-screen-stats', (ev) => handlers.onStats?.(ev.payload))
+      );
+    }
+    if (handlers.onError) {
+      unlisteners.push(
+        await listen<NativeScreenErrorEvent>('native-screen-error', (ev) => handlers.onError?.(ev.payload))
+      );
+    }
+    if (handlers.onEnded) {
+      unlisteners.push(
+        await listen<NativeScreenEndedEvent>('native-screen-ended', (ev) => handlers.onEnded?.(ev.payload))
+      );
+    }
+
+    return () => {
+      for (const unlisten of unlisteners) {
+        try {
+          unlisten();
+        } catch {}
+      }
+    };
   }
 }
 

@@ -1,17 +1,22 @@
 use std::time::Duration;
 
 use axum::{
+    extract::{Path, State},
     http::{header, Method},
     routing::{delete, get, patch, post, put},
-    Router,
+    Extension, Json, Router,
 };
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use uuid::Uuid;
 
 use crate::config::AppConfig;
+use crate::errors::AppError;
 use crate::handlers;
-use crate::middleware::{auth_middleware, rate_limit_layer, RateLimiter};
-use crate::services::{AuthService, DmService, FriendService};
+use crate::middleware::{auth_middleware, rate_limit_layer, CurrentUser, RateLimiter};
+use crate::models::VoiceRoomStateDto;
+use crate::repositories::CommunityRepository;
+use crate::services::{AuthService, CommunityService, DmService, FriendService, RoomService};
 
 #[derive(Clone)]
 pub struct UsersState {
@@ -178,12 +183,18 @@ pub fn create_router_with_identity(
         auth_service.clone(),
         friend_service.presence_manager().clone(),
     );
+    let room_service = RoomService::new(
+        auth_service.pool().clone(),
+        auth_service.clone(),
+        friend_service.presence_manager().clone(),
+    );
 
     let ws_state = handlers::ws::WsState {
         auth_service: auth_service.clone(),
         friend_service: friend_service.clone(),
         dm_service: dm_service.clone(),
         call_service: call_service.clone(),
+        room_service: room_service.clone(),
     };
     let gateway_ws_routes = Router::new()
         .route("/", get(handlers::ws::ws_handler))
@@ -213,6 +224,178 @@ pub fn create_router_with_identity(
             auth_middleware,
         ))
         .with_state(webrtc_state);
+
+    // 8. Community & Invite routes protected by auth middleware
+    let community_repo = CommunityRepository::new(auth_service.pool().clone());
+    let community_service = CommunityService::new_with_presence(
+        community_repo,
+        friend_service.presence_manager().clone(),
+    );
+
+    let communities_routes = Router::new()
+        .route(
+            "/",
+            get(handlers::communities::list_communities)
+                .post(handlers::communities::create_community),
+        )
+        .route(
+            "/:community_id",
+            get(handlers::communities::get_snapshot)
+                .patch(handlers::communities::update_community)
+                .delete(handlers::communities::delete_community),
+        )
+        .route(
+            "/:community_id/transfer-ownership",
+            post(handlers::communities::transfer_ownership),
+        )
+        .route(
+            "/:community_id/leave",
+            post(handlers::communities::leave_community),
+        )
+        // Categories
+        .route(
+            "/:community_id/categories",
+            post(handlers::communities::create_category),
+        )
+        .route(
+            "/:community_id/categories/reorder",
+            put(handlers::communities::reorder_categories),
+        )
+        .route(
+            "/:community_id/categories/:category_id",
+            patch(handlers::communities::update_category)
+                .delete(handlers::communities::delete_category),
+        )
+        // Channels & Overwrites
+        .route(
+            "/:community_id/channels",
+            post(handlers::communities::create_channel),
+        )
+        .route(
+            "/:community_id/channels/reorder",
+            put(handlers::communities::reorder_channels),
+        )
+        .route(
+            "/:community_id/channels/:channel_id",
+            patch(handlers::communities::update_channel)
+                .delete(handlers::communities::delete_channel),
+        )
+        .route(
+            "/:community_id/channels/:channel_id/overwrites",
+            get(handlers::communities::list_channel_overwrites)
+                .put(handlers::communities::upsert_channel_overwrite),
+        )
+        .route(
+            "/:community_id/channels/:channel_id/overwrites/:target_type/:target_id",
+            delete(handlers::communities::delete_channel_overwrite),
+        )
+        // Messages & Read states
+        .route(
+            "/:community_id/channels/:channel_id/messages",
+            get(handlers::communities::list_channel_messages)
+                .post(handlers::communities::send_channel_message),
+        )
+        .route(
+            "/:community_id/channels/:channel_id/messages/:message_id",
+            patch(handlers::communities::edit_channel_message)
+                .delete(handlers::communities::delete_channel_message),
+        )
+        .route(
+            "/:community_id/channels/:channel_id/read",
+            post(handlers::communities::mark_channel_read),
+        )
+        // Roles & Members
+        .route(
+            "/:community_id/roles",
+            get(handlers::communities::list_roles).post(handlers::communities::create_role),
+        )
+        .route(
+            "/:community_id/roles/reorder",
+            put(handlers::communities::reorder_roles),
+        )
+        .route(
+            "/:community_id/roles/:role_id",
+            patch(handlers::communities::update_role)
+                .delete(handlers::communities::delete_role),
+        )
+        .route(
+            "/:community_id/members",
+            get(handlers::communities::list_members),
+        )
+        .route(
+            "/:community_id/members/:user_id",
+            patch(handlers::communities::update_member),
+        )
+        .route(
+            "/:community_id/members/:user_id/roles",
+            put(handlers::communities::set_member_roles),
+        )
+        .route(
+            "/:community_id/members/:user_id/roles/:role_id",
+            post(handlers::communities::add_member_role)
+                .delete(handlers::communities::remove_member_role),
+        )
+        // Moderation & Audit Logs
+        .route(
+            "/:community_id/members/:user_id/kick",
+            post(handlers::communities::kick_member),
+        )
+        .route(
+            "/:community_id/members/:user_id/ban",
+            post(handlers::communities::ban_member),
+        )
+        .route(
+            "/:community_id/bans",
+            get(handlers::communities::list_bans),
+        )
+        .route(
+            "/:community_id/bans/:user_id",
+            delete(handlers::communities::unban_member),
+        )
+        .route(
+            "/:community_id/members/:user_id/mute",
+            put(handlers::communities::mute_member),
+        )
+        .route(
+            "/:community_id/audit-logs",
+            get(handlers::communities::list_audit_logs),
+        )
+        // Invites
+        .route(
+            "/:community_id/invites",
+            get(handlers::communities::list_invites).post(handlers::communities::create_invite),
+        )
+        .route(
+            "/:community_id/invites/:invite_id",
+            delete(handlers::communities::revoke_invite),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            auth_service.clone(),
+            auth_middleware,
+        ))
+        .with_state(community_service.clone());
+
+    let community_voice_rooms_routes = Router::new()
+        .route(
+            "/:community_id/voice-rooms",
+            get(list_community_voice_rooms),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            auth_service.clone(),
+            auth_middleware,
+        ))
+        .with_state(room_service);
+
+    let communities_routes = communities_routes.merge(community_voice_rooms_routes);
+
+    let invites_routes = Router::new()
+        .route("/:code", get(handlers::communities::get_invite_preview))
+        .route("/:code/accept", post(handlers::communities::accept_invite))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_service.clone(),
+            auth_middleware,
+        ))
+        .with_state(community_service);
 
     // CORS configuration for Tauri & Web clients (strictly scoped origins)
     let public_fqdn = config.public_fqdn.clone();
@@ -279,6 +462,8 @@ pub fn create_router_with_identity(
         .nest("/v1/users", users_routes)
         .nest("/v1/friends", friends_routes)
         .nest("/v1/dm", dm_routes)
+        .nest("/v1/communities", communities_routes)
+        .nest("/v1/invites", invites_routes)
         .nest("/v1/webrtc", webrtc_routes)
         .nest("/v1/gateway", gateway_routes.clone())
         .nest("/v1/ws", gateway_routes.clone())
@@ -295,4 +480,15 @@ pub fn create_router_with_identity(
                 )
             }),
         )
+}
+
+async fn list_community_voice_rooms(
+    State(room_service): State<RoomService>,
+    Extension(CurrentUser(user)): Extension<CurrentUser>,
+    Path(community_id): Path<Uuid>,
+) -> Result<Json<Vec<VoiceRoomStateDto>>, AppError> {
+    let rooms = room_service
+        .list_community_voice_rooms(community_id, user.id)
+        .await?;
+    Ok(Json(rooms))
 }

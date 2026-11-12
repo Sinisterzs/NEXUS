@@ -437,19 +437,99 @@ pub enum GatewayClientMessage {
         call_id: Uuid,
         target_user_id: Uuid,
         sdp: String,
+        #[serde(default)]
+        stream_kind: Option<String>,
     },
     #[serde(rename = "call.webrtc.answer")]
     CallWebrtcAnswer {
         call_id: Uuid,
         target_user_id: Uuid,
         sdp: String,
+        #[serde(default)]
+        stream_kind: Option<String>,
     },
     #[serde(rename = "call.webrtc.ice_candidate")]
     CallWebrtcIceCandidate {
         call_id: Uuid,
         target_user_id: Uuid,
         candidate: serde_json::Value,
+        #[serde(default)]
+        stream_kind: Option<String>,
     },
+    // Phase 3.2: Multi-party Community Voice Rooms
+    #[serde(rename = "room_join")]
+    RoomJoin {
+        community_id: Uuid,
+        channel_id: Uuid,
+    },
+    #[serde(rename = "room_leave")]
+    RoomLeave {
+        community_id: Uuid,
+        channel_id: Uuid,
+    },
+    #[serde(rename = "room_state_update")]
+    RoomStateUpdate {
+        community_id: Uuid,
+        channel_id: Uuid,
+        is_muted: Option<bool>,
+        is_deafened: Option<bool>,
+        is_speaking: Option<bool>,
+        is_screen_sharing: Option<bool>,
+    },
+    #[serde(rename = "room_webrtc_offer")]
+    RoomWebrtcOffer {
+        community_id: Uuid,
+        channel_id: Uuid,
+        target_user_id: Uuid,
+        sdp: String,
+        #[serde(default)]
+        stream_kind: Option<String>,
+    },
+    #[serde(rename = "room_webrtc_answer")]
+    RoomWebrtcAnswer {
+        community_id: Uuid,
+        channel_id: Uuid,
+        target_user_id: Uuid,
+        sdp: String,
+        #[serde(default)]
+        stream_kind: Option<String>,
+    },
+    #[serde(rename = "room_webrtc_ice_candidate")]
+    RoomWebrtcIceCandidate {
+        community_id: Uuid,
+        channel_id: Uuid,
+        target_user_id: Uuid,
+        candidate: serde_json::Value,
+        #[serde(default)]
+        stream_kind: Option<String>,
+    },
+}
+
+// ==========================================
+// Phase 3.2: Community Voice Rooms Models
+// ==========================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomParticipantDto {
+    pub user_id: Uuid,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub is_muted: bool,
+    pub is_deafened: bool,
+    pub is_speaking: bool,
+    pub is_screen_sharing: bool,
+    pub can_speak: bool,
+    pub can_screen_share: bool,
+    pub joined_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceRoomStateDto {
+    pub community_id: Uuid,
+    pub channel_id: Uuid,
+    pub max_participants: usize,
+    pub participants: Vec<RoomParticipantDto>,
 }
 
 // ==========================================
@@ -578,4 +658,113 @@ pub struct GatewayTicketResponse {
     pub ticket: String,
     pub expires_in_secs: u64,
 }
+
+pub mod communities;
+pub use communities::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_webrtc_signaling_stream_kind_backwards_compat_and_parsing() {
+        let id = Uuid::new_v4();
+        let target = Uuid::new_v4();
+
+        // 1:1 call offer without stream_kind -> None
+        let raw_offer = serde_json::json!({
+            "op": "call.webrtc.offer",
+            "call_id": id,
+            "target_user_id": target,
+            "sdp": "v=0"
+        });
+        let msg: GatewayClientMessage = serde_json::from_value(raw_offer).unwrap();
+        match msg {
+            GatewayClientMessage::CallWebrtcOffer { stream_kind, .. } => assert_eq!(stream_kind, None),
+            _ => panic!("expected CallWebrtcOffer"),
+        }
+
+        // 1:1 call answer with stream_kind: "screen"
+        let raw_answer = serde_json::json!({
+            "op": "call.webrtc.answer",
+            "call_id": id,
+            "target_user_id": target,
+            "sdp": "v=0",
+            "stream_kind": "screen"
+        });
+        let msg: GatewayClientMessage = serde_json::from_value(raw_answer).unwrap();
+        match msg {
+            GatewayClientMessage::CallWebrtcAnswer { stream_kind, .. } => {
+                assert_eq!(stream_kind.as_deref(), Some("screen"));
+            }
+            _ => panic!("expected CallWebrtcAnswer"),
+        }
+
+        // 1:1 call ice_candidate without stream_kind -> None
+        let raw_ice = serde_json::json!({
+            "op": "call.webrtc.ice_candidate",
+            "call_id": id,
+            "target_user_id": target,
+            "candidate": { "candidate": "abc" }
+        });
+        let msg: GatewayClientMessage = serde_json::from_value(raw_ice).unwrap();
+        match msg {
+            GatewayClientMessage::CallWebrtcIceCandidate { stream_kind, .. } => {
+                assert_eq!(stream_kind, None);
+            }
+            _ => panic!("expected CallWebrtcIceCandidate"),
+        }
+
+        // Room offer with stream_kind: "voice"
+        let raw_room_offer = serde_json::json!({
+            "op": "room_webrtc_offer",
+            "community_id": id,
+            "channel_id": id,
+            "target_user_id": target,
+            "sdp": "v=0",
+            "stream_kind": "voice"
+        });
+        let msg: GatewayClientMessage = serde_json::from_value(raw_room_offer).unwrap();
+        match msg {
+            GatewayClientMessage::RoomWebrtcOffer { stream_kind, .. } => {
+                assert_eq!(stream_kind.as_deref(), Some("voice"));
+            }
+            _ => panic!("expected RoomWebrtcOffer"),
+        }
+
+        // Room answer without stream_kind -> None
+        let raw_room_answer = serde_json::json!({
+            "op": "room_webrtc_answer",
+            "community_id": id,
+            "channel_id": id,
+            "target_user_id": target,
+            "sdp": "v=0"
+        });
+        let msg: GatewayClientMessage = serde_json::from_value(raw_room_answer).unwrap();
+        match msg {
+            GatewayClientMessage::RoomWebrtcAnswer { stream_kind, .. } => {
+                assert_eq!(stream_kind, None);
+            }
+            _ => panic!("expected RoomWebrtcAnswer"),
+        }
+
+        // Room ice_candidate with stream_kind: "screen"
+        let raw_room_ice = serde_json::json!({
+            "op": "room_webrtc_ice_candidate",
+            "community_id": id,
+            "channel_id": id,
+            "target_user_id": target,
+            "candidate": { "candidate": "xyz" },
+            "stream_kind": "screen"
+        });
+        let msg: GatewayClientMessage = serde_json::from_value(raw_room_ice).unwrap();
+        match msg {
+            GatewayClientMessage::RoomWebrtcIceCandidate { stream_kind, .. } => {
+                assert_eq!(stream_kind.as_deref(), Some("screen"));
+            }
+            _ => panic!("expected RoomWebrtcIceCandidate"),
+        }
+    }
+}
+
 

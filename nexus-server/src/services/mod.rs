@@ -1,5 +1,7 @@
 pub mod auth;
 pub mod calls;
+pub mod communities;
+pub mod community_permissions;
 pub mod dm;
 pub mod email;
 pub mod friends;
@@ -7,12 +9,15 @@ pub mod google_oauth;
 pub mod password_reset;
 pub mod password_reset_policy;
 pub mod presence;
+pub mod rooms;
 
 pub use auth::AuthService;
 pub use calls::CallService;
+pub use communities::CommunityService;
 pub use dm::DmService;
 pub use email::{EmailMessage, EmailOutbox, EmailService};
 pub use friends::FriendService;
 pub use google_oauth::{GoogleIdTokenClaims, GoogleJwkKey, GoogleJwkSet, GoogleOAuthVerifier, NoncePolicy};
 pub use password_reset::PasswordResetService;
 pub use presence::PresenceManager;
+pub use rooms::RoomService;

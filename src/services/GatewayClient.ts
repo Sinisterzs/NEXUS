@@ -1,4 +1,22 @@
-import { Friend, FriendRequest, UserStatus, GatewayEvent, DirectMessageDto } from '../lib/types';
+import {
+  Friend,
+  FriendRequest,
+  UserStatus,
+  GatewayEvent,
+  DirectMessageDto,
+  ChannelMessageDto,
+  CommunityCategoryDto,
+  CommunityChannelDto,
+  CommunityDto,
+  CommunityMemberDto,
+  CommunityRoleDto,
+  RoomParticipantDto,
+  StreamKind,
+} from '../lib/types';
+
+function parseStreamKind(raw: unknown): StreamKind | undefined {
+  return raw === 'screen' || raw === 'voice' ? raw : undefined;
+}
 
 export type GatewayEventListener = {
   onConnectionReady?: (data: { userId: string; friends: Friend[] }) => void;
@@ -45,10 +63,108 @@ export type GatewayEventListener = {
   onCallCanceled?: (data: { callId: string }) => void;
   onCallEnded?: (data: { callId: string; reason: string }) => void;
   onCallParticipantMuted?: (data: { callId: string; userId: string; isMuted: boolean }) => void;
-  onCallWebrtcOffer?: (data: { callId: string; senderId: string; sdp: string }) => void;
-  onCallWebrtcAnswer?: (data: { callId: string; senderId: string; sdp: string }) => void;
-  onCallWebrtcIceCandidate?: (data: { callId: string; senderId: string; candidate: any }) => void;
+  onCallWebrtcOffer?: (data: { callId: string; senderId: string; sdp: string; stream_kind?: StreamKind }) => void;
+  onCallWebrtcAnswer?: (data: { callId: string; senderId: string; sdp: string; stream_kind?: StreamKind }) => void;
+  onCallWebrtcIceCandidate?: (data: { callId: string; senderId: string; candidate: any; stream_kind?: StreamKind }) => void;
   onCallError?: (data: { message: string }) => void;
+  // Communities (Phase B3.1)
+  onCommunityMessageCreated?: (message: ChannelMessageDto) => void;
+  onCommunityMessageUpdated?: (message: ChannelMessageDto) => void;
+  onCommunityMessageDeleted?: (data: {
+    id: string;
+    channel_id: string;
+    community_id?: string;
+    deleted_at?: string;
+  }) => void;
+  onCommunityChannelCreated?: (channel: CommunityChannelDto) => void;
+  onCommunityChannelUpdated?: (channel: CommunityChannelDto) => void;
+  onCommunityChannelDeleted?: (data: { id: string; community_id: string }) => void;
+  onCommunityCategoryUpdated?: (data: {
+    community_id: string;
+    category?: CommunityCategoryDto;
+    category_id?: string;
+    action?: string;
+  }) => void;
+  onCommunityMemberJoined?: (data: { community_id: string; member?: CommunityMemberDto }) => void;
+  onCommunityMemberLeft?: (data: { community_id: string; user_id: string }) => void;
+  onCommunityMemberUpdated?: (data: {
+    community_id: string;
+    member?: CommunityMemberDto;
+    user_id?: string;
+  }) => void;
+  onCommunityRoleUpdated?: (data: {
+    community_id: string;
+    role?: CommunityRoleDto;
+    role_id?: string;
+    action?: string;
+  }) => void;
+  onCommunityUpdated?: (community: CommunityDto) => void;
+  onCommunityDeleted?: (data: { community_id: string }) => void;
+  onCommunityAccessRevoked?: (data: {
+    community_id: string;
+    channel_id?: string | null;
+    reason?: string;
+  }) => void;
+  // Voice Rooms (Phase B3.2)
+  onRoomJoined?: (data: {
+    community_id: string;
+    channel_id: string;
+    max_participants: number;
+    participants: RoomParticipantDto[];
+    can_speak: boolean;
+    can_screen_share: boolean;
+  }) => void;
+  onRoomLeft?: (data: {
+    community_id: string;
+    channel_id: string;
+    reason?: string | null;
+  }) => void;
+  onRoomParticipantJoined?: (data: {
+    community_id: string;
+    channel_id: string;
+    participant: RoomParticipantDto;
+  }) => void;
+  onRoomParticipantLeft?: (data: {
+    community_id: string;
+    channel_id: string;
+    user_id: string;
+  }) => void;
+  onRoomParticipantUpdated?: (data: {
+    community_id: string;
+    channel_id: string;
+    participant: RoomParticipantDto;
+  }) => void;
+  onCommunityVoiceStateUpdated?: (data: {
+    community_id: string;
+    channel_id: string;
+    participants: RoomParticipantDto[];
+  }) => void;
+  onRoomWebrtcOffer?: (data: {
+    community_id: string;
+    channel_id: string;
+    sender_id: string;
+    sdp: string;
+    stream_kind?: StreamKind;
+  }) => void;
+  onRoomWebrtcAnswer?: (data: {
+    community_id: string;
+    channel_id: string;
+    sender_id: string;
+    sdp: string;
+    stream_kind?: StreamKind;
+  }) => void;
+  onRoomWebrtcIceCandidate?: (data: {
+    community_id: string;
+    channel_id: string;
+    sender_id: string;
+    candidate: any;
+    stream_kind?: StreamKind;
+  }) => void;
+  onRoomError?: (data: {
+    community_id?: string | null;
+    channel_id?: string | null;
+    message: string;
+  }) => void;
 };
 
 export class GatewayClient {
@@ -86,8 +202,22 @@ export class GatewayClient {
     const currentGen = ++this.connectGeneration;
 
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const wsUrl = await invoke<string>('gateway_get_ws_url');
+      const isTauriRuntime =
+        typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__);
+      const testWsUrl =
+        !isTauriRuntime && typeof localStorage !== 'undefined'
+          ? localStorage.getItem('nexus_test_ws_url')
+          : null;
+      const testToken =
+        !isTauriRuntime && typeof localStorage !== 'undefined'
+          ? localStorage.getItem('nexus_test_token')
+          : null;
+      const useBrowserTestWs = Boolean(!isTauriRuntime && testWsUrl && testToken);
+
+      const tauriCore = useBrowserTestWs ? null : await import('@tauri-apps/api/core');
+      const wsUrl = useBrowserTestWs
+        ? (testWsUrl as string)
+        : await tauriCore!.invoke<string>('gateway_get_ws_url');
 
       if (currentGen !== this.connectGeneration || this.isExplicitlyClosed) {
         this.isConnecting = false;
@@ -106,20 +236,26 @@ export class GatewayClient {
           } catch {}
           return;
         }
-        console.log('[GatewayClient] Socket aberto. Solicitando ticket efêmero para autenticação...');
         try {
-          // Request ephemeral single-use 60s ticket from Rust backend (never expose persistent token to WebView)
-          const ticket = await invoke<string>('gateway_get_ticket');
+          if (useBrowserTestWs) {
+            if (sock.readyState === WebSocket.OPEN) {
+              sock.send(JSON.stringify({ op: 'authenticate', token: testToken }));
+            }
+          } else {
+            console.log('[GatewayClient] Socket aberto. Solicitando ticket efêmero para autenticação...');
+            // Request ephemeral single-use 60s ticket from Rust backend (never expose persistent token to WebView)
+            const ticket = await tauriCore!.invoke<string>('gateway_get_ticket');
 
-          if (this.socket !== sock || currentGen !== this.connectGeneration || this.isExplicitlyClosed) {
-            try {
-              sock.close();
-            } catch {}
-            return;
-          }
+            if (this.socket !== sock || currentGen !== this.connectGeneration || this.isExplicitlyClosed) {
+              try {
+                sock.close();
+              } catch {}
+              return;
+            }
 
-          if (sock.readyState === WebSocket.OPEN) {
-            sock.send(JSON.stringify({ op: 'authenticate', ticket }));
+            if (sock.readyState === WebSocket.OPEN) {
+              sock.send(JSON.stringify({ op: 'authenticate', ticket }));
+            }
           }
         } catch (authErr: any) {
           const errStr = String(authErr?.message || authErr || '');
@@ -440,12 +576,14 @@ export class GatewayClient {
         const callId = payload?.call_id || payload?.callId;
         const senderId = payload?.sender_id || payload?.senderId;
         const sdp = payload?.sdp;
+        const stream_kind = parseStreamKind(payload?.stream_kind);
         if (callId && senderId && sdp) {
           this.listeners.forEach((l) =>
             l.onCallWebrtcOffer?.({
               callId,
               senderId,
               sdp,
+              ...(stream_kind ? { stream_kind } : {}),
             })
           );
         }
@@ -456,12 +594,14 @@ export class GatewayClient {
         const callId = payload?.call_id || payload?.callId;
         const senderId = payload?.sender_id || payload?.senderId;
         const sdp = payload?.sdp;
+        const stream_kind = parseStreamKind(payload?.stream_kind);
         if (callId && senderId && sdp) {
           this.listeners.forEach((l) =>
             l.onCallWebrtcAnswer?.({
               callId,
               senderId,
               sdp,
+              ...(stream_kind ? { stream_kind } : {}),
             })
           );
         }
@@ -472,12 +612,14 @@ export class GatewayClient {
         const callId = payload?.call_id || payload?.callId;
         const senderId = payload?.sender_id || payload?.senderId;
         const candidate = payload?.candidate;
+        const stream_kind = parseStreamKind(payload?.stream_kind);
         if (callId && senderId && candidate) {
           this.listeners.forEach((l) =>
             l.onCallWebrtcIceCandidate?.({
               callId,
               senderId,
               candidate,
+              ...(stream_kind ? { stream_kind } : {}),
             })
           );
         }
@@ -494,8 +636,347 @@ export class GatewayClient {
         }
         break;
 
+      // Communities (Phase B3.1)
+      case 'community_message_created':
+      case 'community.message.created': {
+        const msg = (payload?.message ?? payload) as ChannelMessageDto;
+        if (msg?.id && msg?.channel_id) {
+          this.listeners.forEach((l) => l.onCommunityMessageCreated?.(msg));
+        }
+        break;
+      }
+
+      case 'community_message_updated':
+      case 'community.message.updated': {
+        const msg = (payload?.message ?? payload) as ChannelMessageDto;
+        if (msg?.id && msg?.channel_id) {
+          this.listeners.forEach((l) => l.onCommunityMessageUpdated?.(msg));
+        }
+        break;
+      }
+
+      case 'community_message_deleted':
+      case 'community.message.deleted': {
+        const id = payload?.id ?? payload?.message_id;
+        const channel_id = payload?.channel_id;
+        if (id && channel_id) {
+          this.listeners.forEach((l) =>
+            l.onCommunityMessageDeleted?.({
+              id,
+              channel_id,
+              community_id: payload?.community_id,
+              deleted_at: payload?.deleted_at,
+            })
+          );
+        }
+        break;
+      }
+
+      case 'community_channel_created':
+      case 'community.channel.created': {
+        const channel = (payload?.channel ?? payload) as CommunityChannelDto;
+        if (channel?.id && channel?.community_id) {
+          this.listeners.forEach((l) => l.onCommunityChannelCreated?.(channel));
+        }
+        break;
+      }
+
+      case 'community_channel_updated':
+      case 'community.channel.updated': {
+        const channel = (payload?.channel ?? payload) as CommunityChannelDto;
+        if (channel?.id && channel?.community_id) {
+          this.listeners.forEach((l) => l.onCommunityChannelUpdated?.(channel));
+        }
+        break;
+      }
+
+      case 'community_channel_deleted':
+      case 'community.channel.deleted': {
+        const id = payload?.id ?? payload?.channel_id;
+        const community_id = payload?.community_id;
+        if (id && community_id) {
+          this.listeners.forEach((l) => l.onCommunityChannelDeleted?.({ id, community_id }));
+        }
+        break;
+      }
+
+      case 'community_category_updated':
+      case 'community.category.updated': {
+        const community_id = payload?.community_id;
+        if (community_id) {
+          const category = (payload?.category ?? (payload?.id ? payload : undefined)) as
+            | CommunityCategoryDto
+            | undefined;
+          this.listeners.forEach((l) =>
+            l.onCommunityCategoryUpdated?.({
+              community_id,
+              category,
+              category_id: payload?.category_id ?? category?.id,
+              action: payload?.action,
+            })
+          );
+        }
+        break;
+      }
+
+      case 'community_member_joined':
+      case 'community.member.joined': {
+        const community_id = payload?.community_id;
+        if (community_id) {
+          this.listeners.forEach((l) =>
+            l.onCommunityMemberJoined?.({
+              community_id,
+              member: payload?.member as CommunityMemberDto | undefined,
+            })
+          );
+        }
+        break;
+      }
+
+      case 'community_member_left':
+      case 'community.member.left': {
+        const community_id = payload?.community_id;
+        const user_id = payload?.user_id;
+        if (community_id && user_id) {
+          this.listeners.forEach((l) => l.onCommunityMemberLeft?.({ community_id, user_id }));
+        }
+        break;
+      }
+
+      case 'community_member_updated':
+      case 'community.member.updated': {
+        const community_id = payload?.community_id;
+        if (community_id) {
+          this.listeners.forEach((l) =>
+            l.onCommunityMemberUpdated?.({
+              community_id,
+              member: payload?.member as CommunityMemberDto | undefined,
+              user_id: payload?.user_id ?? payload?.member?.user_id,
+            })
+          );
+        }
+        break;
+      }
+
+      case 'community_role_updated':
+      case 'community.role.updated': {
+        const community_id = payload?.community_id;
+        if (community_id) {
+          this.listeners.forEach((l) =>
+            l.onCommunityRoleUpdated?.({
+              community_id,
+              role: payload?.role as CommunityRoleDto | undefined,
+              role_id: payload?.role_id ?? payload?.role?.id,
+              action: payload?.action,
+            })
+          );
+        }
+        break;
+      }
+
+      case 'community_updated':
+      case 'community.updated': {
+        const community = (payload?.community ?? payload) as CommunityDto;
+        if (community?.id) {
+          this.listeners.forEach((l) => l.onCommunityUpdated?.(community));
+        }
+        break;
+      }
+
+      case 'community_deleted':
+      case 'community.deleted': {
+        const community_id = payload?.community_id ?? payload?.id;
+        if (community_id) {
+          this.listeners.forEach((l) => l.onCommunityDeleted?.({ community_id }));
+        }
+        break;
+      }
+
+      case 'community_access_revoked':
+      case 'community.access.revoked': {
+        const community_id = payload?.community_id;
+        if (community_id) {
+          this.listeners.forEach((l) =>
+            l.onCommunityAccessRevoked?.({
+              community_id,
+              channel_id: payload?.channel_id ?? null,
+              reason: payload?.reason,
+            })
+          );
+        }
+        break;
+      }
+
       case 'pong':
         break;
+
+      // Voice Rooms (Phase B3.2)
+      case 'room_joined':
+      case 'room.joined': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        if (community_id && channel_id) {
+          this.listeners.forEach((l) =>
+            l.onRoomJoined?.({
+              community_id,
+              channel_id,
+              max_participants: typeof payload?.max_participants === 'number' ? payload.max_participants : 4,
+              participants: Array.isArray(payload?.participants) ? payload.participants : [],
+              can_speak: payload?.can_speak !== false,
+              can_screen_share: payload?.can_screen_share !== false,
+            })
+          );
+        }
+        break;
+      }
+
+      case 'room_left':
+      case 'room.left': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        if (community_id && channel_id) {
+          this.listeners.forEach((l) =>
+            l.onRoomLeft?.({
+              community_id,
+              channel_id,
+              reason: payload?.reason ?? null,
+            })
+          );
+        }
+        break;
+      }
+
+      case 'room_participant_joined':
+      case 'room.participant.joined': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        const participant = payload?.participant as RoomParticipantDto | undefined;
+        if (community_id && channel_id && participant?.user_id) {
+          this.listeners.forEach((l) =>
+            l.onRoomParticipantJoined?.({ community_id, channel_id, participant })
+          );
+        }
+        break;
+      }
+
+      case 'room_participant_left':
+      case 'room.participant.left': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        const user_id = payload?.user_id;
+        if (community_id && channel_id && user_id) {
+          this.listeners.forEach((l) =>
+            l.onRoomParticipantLeft?.({ community_id, channel_id, user_id })
+          );
+        }
+        break;
+      }
+
+      case 'room_participant_updated':
+      case 'room.participant.updated': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        const participant = payload?.participant as RoomParticipantDto | undefined;
+        if (community_id && channel_id && participant?.user_id) {
+          this.listeners.forEach((l) =>
+            l.onRoomParticipantUpdated?.({ community_id, channel_id, participant })
+          );
+        }
+        break;
+      }
+
+      case 'community_voice_state_updated':
+      case 'community.voice_state.updated': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        if (community_id && channel_id) {
+          this.listeners.forEach((l) =>
+            l.onCommunityVoiceStateUpdated?.({
+              community_id,
+              channel_id,
+              participants: Array.isArray(payload?.participants) ? payload.participants : [],
+            })
+          );
+        }
+        break;
+      }
+
+      case 'room_webrtc_offer':
+      case 'room.webrtc.offer': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        const sender_id = payload?.sender_id;
+        const sdp = payload?.sdp;
+        const stream_kind = parseStreamKind(payload?.stream_kind);
+        if (community_id && channel_id && sender_id && sdp) {
+          this.listeners.forEach((l) =>
+            l.onRoomWebrtcOffer?.({
+              community_id,
+              channel_id,
+              sender_id,
+              sdp,
+              ...(stream_kind ? { stream_kind } : {}),
+            })
+          );
+        }
+        break;
+      }
+
+      case 'room_webrtc_answer':
+      case 'room.webrtc.answer': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        const sender_id = payload?.sender_id;
+        const sdp = payload?.sdp;
+        const stream_kind = parseStreamKind(payload?.stream_kind);
+        if (community_id && channel_id && sender_id && sdp) {
+          this.listeners.forEach((l) =>
+            l.onRoomWebrtcAnswer?.({
+              community_id,
+              channel_id,
+              sender_id,
+              sdp,
+              ...(stream_kind ? { stream_kind } : {}),
+            })
+          );
+        }
+        break;
+      }
+
+      case 'room_webrtc_ice_candidate':
+      case 'room.webrtc.ice_candidate': {
+        const community_id = payload?.community_id;
+        const channel_id = payload?.channel_id;
+        const sender_id = payload?.sender_id;
+        const candidate = payload?.candidate;
+        const stream_kind = parseStreamKind(payload?.stream_kind);
+        if (community_id && channel_id && sender_id && candidate) {
+          this.listeners.forEach((l) =>
+            l.onRoomWebrtcIceCandidate?.({
+              community_id,
+              channel_id,
+              sender_id,
+              candidate,
+              ...(stream_kind ? { stream_kind } : {}),
+            })
+          );
+        }
+        break;
+      }
+
+      case 'room_error':
+      case 'room.error': {
+        if (payload?.message) {
+          this.listeners.forEach((l) =>
+            l.onRoomError?.({
+              community_id: payload?.community_id ?? null,
+              channel_id: payload?.channel_id ?? null,
+              message: payload.message,
+            })
+          );
+        }
+        break;
+      }
 
       case 'error':
         console.warn('[GatewayClient] Erro recebido do servidor:', payload?.message);
@@ -571,16 +1052,117 @@ export class GatewayClient {
     this.sendJson({ op: 'call.mute', call_id: callId, is_muted: isMuted });
   }
 
-  sendCallWebrtcOffer(callId: string, targetUserId: string, sdp: string): void {
-    this.sendJson({ op: 'call.webrtc.offer', call_id: callId, target_user_id: targetUserId, sdp });
+  sendCallWebrtcOffer(callId: string, targetUserId: string, sdp: string, streamKind?: StreamKind): void {
+    this.sendJson({
+      op: 'call.webrtc.offer',
+      call_id: callId,
+      target_user_id: targetUserId,
+      sdp,
+      ...(streamKind ? { stream_kind: streamKind } : {}),
+    });
   }
 
-  sendCallWebrtcAnswer(callId: string, targetUserId: string, sdp: string): void {
-    this.sendJson({ op: 'call.webrtc.answer', call_id: callId, target_user_id: targetUserId, sdp });
+  sendCallWebrtcAnswer(callId: string, targetUserId: string, sdp: string, streamKind?: StreamKind): void {
+    this.sendJson({
+      op: 'call.webrtc.answer',
+      call_id: callId,
+      target_user_id: targetUserId,
+      sdp,
+      ...(streamKind ? { stream_kind: streamKind } : {}),
+    });
   }
 
-  sendCallWebrtcIceCandidate(callId: string, targetUserId: string, candidate: any): void {
-    this.sendJson({ op: 'call.webrtc.ice_candidate', call_id: callId, target_user_id: targetUserId, candidate });
+  sendCallWebrtcIceCandidate(
+    callId: string,
+    targetUserId: string,
+    candidate: any,
+    streamKind?: StreamKind
+  ): void {
+    this.sendJson({
+      op: 'call.webrtc.ice_candidate',
+      call_id: callId,
+      target_user_id: targetUserId,
+      candidate,
+      ...(streamKind ? { stream_kind: streamKind } : {}),
+    });
+  }
+
+  // Phase B3.2: Multi-participant Voice Room Signaling Methods
+  sendRoomJoin(communityId: string, channelId: string): void {
+    this.sendJson({ op: 'room_join', community_id: communityId, channel_id: channelId });
+  }
+
+  sendRoomLeave(communityId: string, channelId: string): void {
+    this.sendJson({ op: 'room_leave', community_id: communityId, channel_id: channelId });
+  }
+
+  sendRoomStateUpdate(
+    communityId: string,
+    channelId: string,
+    state: {
+      is_muted?: boolean;
+      is_deafened?: boolean;
+      is_speaking?: boolean;
+      is_screen_sharing?: boolean;
+    }
+  ): void {
+    this.sendJson({
+      op: 'room_state_update',
+      community_id: communityId,
+      channel_id: channelId,
+      ...state,
+    });
+  }
+
+  sendRoomWebrtcOffer(
+    communityId: string,
+    channelId: string,
+    targetUserId: string,
+    sdp: string,
+    streamKind?: StreamKind
+  ): void {
+    this.sendJson({
+      op: 'room_webrtc_offer',
+      community_id: communityId,
+      channel_id: channelId,
+      target_user_id: targetUserId,
+      sdp,
+      ...(streamKind ? { stream_kind: streamKind } : {}),
+    });
+  }
+
+  sendRoomWebrtcAnswer(
+    communityId: string,
+    channelId: string,
+    targetUserId: string,
+    sdp: string,
+    streamKind?: StreamKind
+  ): void {
+    this.sendJson({
+      op: 'room_webrtc_answer',
+      community_id: communityId,
+      channel_id: channelId,
+      target_user_id: targetUserId,
+      sdp,
+      ...(streamKind ? { stream_kind: streamKind } : {}),
+    });
+  }
+
+  sendRoomWebrtcIceCandidate(
+    communityId: string,
+    channelId: string,
+    targetUserId: string,
+    candidate: any,
+    streamKind?: StreamKind
+  ): void {
+    this.sendJson({
+      op: 'room_webrtc_ice_candidate',
+      community_id: communityId,
+      channel_id: channelId,
+      target_user_id: targetUserId,
+      candidate,
+      ...(streamKind ? { stream_kind: streamKind } : {}),
+    });
   }
 
   private sendJson(data: any): void {

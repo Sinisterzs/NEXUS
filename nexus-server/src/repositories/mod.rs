@@ -2,6 +2,8 @@ pub mod friends;
 pub use friends::FriendRepository;
 pub mod dm;
 pub use dm::DmRepository;
+pub mod communities;
+pub use communities::CommunityRepository;
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};

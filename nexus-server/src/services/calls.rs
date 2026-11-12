@@ -504,6 +504,19 @@ impl CallService {
         Ok(())
     }
 
+    /// Valida o campo opcional `stream_kind` ("voice" | "screen").
+    fn validate_stream_kind(stream_kind: Option<&str>) -> Result<(), AppError> {
+        if let Some(kind) = stream_kind {
+            if kind != "voice" && kind != "screen" {
+                return Err(AppError::BadRequest(
+                    "stream_kind inválido. Valores permitidos: \"voice\" ou \"screen\"."
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Encaminha SDP (Offer ou Answer) para o peer correspondente
     pub async fn relay_sdp(
         &self,
@@ -513,6 +526,22 @@ impl CallService {
         sdp_type: &str, // "offer" ou "answer"
         sdp: String,
     ) -> Result<(), AppError> {
+        self.relay_sdp_with_stream_kind(user_id, call_id, target_user_id, sdp_type, sdp, None)
+            .await
+    }
+
+    /// Encaminha SDP (Offer ou Answer) para o peer correspondente com `stream_kind` opcional
+    pub async fn relay_sdp_with_stream_kind(
+        &self,
+        user_id: Uuid,
+        call_id: Uuid,
+        target_user_id: Uuid,
+        sdp_type: &str, // "offer" ou "answer"
+        sdp: String,
+        stream_kind: Option<String>,
+    ) -> Result<(), AppError> {
+        Self::validate_stream_kind(stream_kind.as_deref())?;
+
         // Validação de segurança: apenas participantes de uma chamada não encerrada podem trocar SDP
         {
             let state = self.state.read().await;
@@ -544,14 +573,15 @@ impl CallService {
         };
 
         let sdp_len = sdp.len();
-        let sdp_event = GatewayEvent::new(
-            event_name,
-            json!({
-                "call_id": call_id,
-                "sender_id": user_id,
-                "sdp": sdp,
-            }),
-        );
+        let mut payload = json!({
+            "call_id": call_id,
+            "sender_id": user_id,
+            "sdp": sdp,
+        });
+        if let Some(kind) = stream_kind {
+            payload["stream_kind"] = json!(kind);
+        }
+        let sdp_event = GatewayEvent::new(event_name, payload);
 
         self.presence_mgr
             .send_to_user(target_user_id, &sdp_event)
@@ -573,6 +603,21 @@ impl CallService {
         target_user_id: Uuid,
         candidate: serde_json::Value,
     ) -> Result<(), AppError> {
+        self.relay_ice_with_stream_kind(user_id, call_id, target_user_id, candidate, None)
+            .await
+    }
+
+    /// Encaminha ICE Candidate para o peer correspondente com `stream_kind` opcional
+    pub async fn relay_ice_with_stream_kind(
+        &self,
+        user_id: Uuid,
+        call_id: Uuid,
+        target_user_id: Uuid,
+        candidate: serde_json::Value,
+        stream_kind: Option<String>,
+    ) -> Result<(), AppError> {
+        Self::validate_stream_kind(stream_kind.as_deref())?;
+
         // Validação de segurança: apenas participantes de uma chamada não encerrada podem trocar ICE
         {
             let state = self.state.read().await;
@@ -597,14 +642,15 @@ impl CallService {
             }
         }
 
-        let ice_event = GatewayEvent::new(
-            "call.webrtc.ice_candidate",
-            json!({
-                "call_id": call_id,
-                "sender_id": user_id,
-                "candidate": candidate,
-            }),
-        );
+        let mut payload = json!({
+            "call_id": call_id,
+            "sender_id": user_id,
+            "candidate": candidate,
+        });
+        if let Some(kind) = stream_kind {
+            payload["stream_kind"] = json!(kind);
+        }
+        let ice_event = GatewayEvent::new("call.webrtc.ice_candidate", payload);
 
         self.presence_mgr
             .send_to_user(target_user_id, &ice_event)

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Home,
   MessageSquare,
@@ -13,11 +13,12 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 import { MainTab } from '../lib/types';
-import { mockCommunities, mockDirectMessages } from '../mocks';
+import { mockDirectMessages } from '../mocks';
 import { callService } from '../services/CallService';
 import { Badge } from '../components/Badge';
 import { Tooltip } from '../components/Tooltip';
 import { ActiveCallBar } from '../components/ActiveCallBar';
+import { CreateJoinCommunityModal } from '../features/communities/CreateJoinCommunityModal';
 
 export const Sidebar: React.FC = () => {
   const activeTab = useAppStore((state) => state.activeTab);
@@ -29,8 +30,11 @@ export const Sidebar: React.FC = () => {
   const isMicMuted = useAppStore((state) => state.isMicMuted);
   const isDeafened = useAppStore((state) => state.isDeafened);
   const activeCommunityId = useAppStore((state) => state.activeCommunityId);
-  const setActiveCommunity = useAppStore((state) => state.setActiveCommunity);
-  const conversations = useAppStore((state) => state.conversations);
+  const communities = useAppStore((state) => state.communities) ?? [];
+  const selectCommunity = useAppStore((state) => state.selectCommunity);
+  const conversations = useAppStore((state) => state.conversations) ?? [];
+
+  const [isCommunityModalOpen, setIsCommunityModalOpen] = useState(false);
 
   // ActiveCallBar owns the compact controls only outside the main call screen.
   const hasCompactCallControls =
@@ -41,8 +45,8 @@ export const Sidebar: React.FC = () => {
     ? conversations.reduce((acc, c) => acc + (c.unread_count || 0), 0)
     : mockDirectMessages.reduce((acc, dm) => acc + (dm.unreadCount || 0), 0);
 
-  const totalCommunityUnreads = mockCommunities.reduce(
-    (acc, c) => acc + (c.unreadCount || 0),
+  const totalCommunityUnreads = communities.reduce(
+    (acc, c) => acc + (c.unread_count || 0),
     0
   );
 
@@ -144,28 +148,28 @@ export const Sidebar: React.FC = () => {
               <span>Sua Biblioteca</span>
               <button
                 type="button"
-                onClick={() => setActiveTab('communities')}
-                title="Criar ou explorar comunidades"
+                onClick={() => setIsCommunityModalOpen(true)}
+                title="Criar ou entrar em comunidade"
                 className="w-4 h-4 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 border border-white/[0.06] flex items-center justify-center text-xs leading-none transition-colors cursor-pointer"
               >
                 +
               </button>
             </div>
 
-            {mockCommunities.length === 0 ? (
+            {communities.length === 0 ? (
               <div className="px-2 py-3 text-zinc-500">
                 <p className="text-xs text-zinc-500">Nenhuma comunidade</p>
               </div>
             ) : (
               <div className="space-y-1">
-                {mockCommunities.map((comm) => {
+                {communities.map((comm) => {
                   const isSelected = activeCommunityId === comm.id && activeTab === 'communities';
                   return (
                     <button
                       key={comm.id}
                       type="button"
                       onClick={() => {
-                        setActiveCommunity(comm.id);
+                        void selectCommunity(comm.id);
                         setActiveTab('communities');
                       }}
                       className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-xs transition-colors text-left cursor-pointer ${
@@ -174,15 +178,23 @@ export const Sidebar: React.FC = () => {
                           : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'
                       }`}
                     >
-                      <div
-                        className="w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold text-white shrink-0 shadow-xs"
-                        style={{ backgroundColor: comm.iconBg }}
-                      >
-                        {comm.initials}
-                      </div>
+                      {comm.icon_url ? (
+                        <img
+                          src={comm.icon_url}
+                          alt={comm.name}
+                          className="w-5 h-5 rounded-md object-cover shrink-0"
+                        />
+                      ) : (
+                        <div
+                          className="w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold text-white shrink-0 shadow-xs"
+                          style={{ backgroundColor: comm.icon_bg || '#4f46e5' }}
+                        >
+                          {comm.initials}
+                        </div>
+                      )}
                       <span className="truncate flex-1">{comm.name}</span>
-                      {comm.unreadCount && comm.unreadCount > 0 ? (
-                        <Badge count={comm.unreadCount} />
+                      {comm.unread_count > 0 ? (
+                        <Badge count={comm.unread_count} />
                       ) : null}
                     </button>
                   );
@@ -264,6 +276,13 @@ export const Sidebar: React.FC = () => {
         </div>
       </div>
       )}
+
+      <CreateJoinCommunityModal
+        isOpen={isCommunityModalOpen}
+        initialTab="create"
+        onClose={() => setIsCommunityModalOpen(false)}
+        onSuccess={() => setActiveTab('communities')}
+      />
     </aside>
   );
 };

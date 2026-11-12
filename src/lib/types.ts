@@ -108,7 +108,8 @@ export interface CallParticipant {
   role?: string;
 }
 
-export type ScreenShareQualityPreset = 'auto' | '720p30' | '1080p30' | '1080p60';
+export type ScreenShareQualityPreset = 'auto' | '720p30' | '720p60' | '1080p30' | '1080p60';
+export type StreamKind = 'voice' | 'screen';
 
 export interface AppSettings {
   profile: {
@@ -428,6 +429,638 @@ export interface VoiceActivityConfig {
   hysteresisOffset: number;
   softGateEnabled: boolean;
 }
+
+// ==========================================
+// Phase B1/B2: Communities, Channels, Roles, Moderation & Invites
+// ==========================================
+
+export type CommunityPrivacy = 'public' | 'invite_only' | 'private';
+export type CommunityChannelType = 'text' | 'voice';
+export type OverwriteTargetType = 'role' | 'user';
+
+export const COMMUNITY_PERMISSIONS = {
+  MANAGE_COMMUNITY: 1n << 0n,
+  MANAGE_CHANNELS: 1n << 1n,
+  MANAGE_ROLES: 1n << 2n,
+  CREATE_INVITES: 1n << 3n,
+  SEND_MESSAGES: 1n << 4n,
+  CONNECT_VOICE: 1n << 5n,
+  SPEAK: 1n << 6n,
+  SCREEN_SHARE: 1n << 7n,
+  MODERATE_MEMBERS: 1n << 8n,
+  VIEW_CHANNEL: 1n << 9n,
+  READ_MESSAGE_HISTORY: 1n << 10n,
+  MANAGE_MESSAGES: 1n << 11n,
+  MUTE_MEMBERS_VOICE: 1n << 12n,
+  VIEW_AUDIT_LOG: 1n << 13n,
+  ADMINISTRATOR: 1n << 62n,
+} as const;
+
+export type CommunityPermissionFlag = keyof typeof COMMUNITY_PERMISSIONS;
+
+export const ALL_COMMUNITY_PERMISSIONS: bigint = Object.values(COMMUNITY_PERMISSIONS).reduce(
+  (acc, bit) => acc | bit,
+  0n
+);
+
+export const DEFAULT_EVERYONE_PERMISSIONS: bigint =
+  COMMUNITY_PERMISSIONS.VIEW_CHANNEL |
+  COMMUNITY_PERMISSIONS.READ_MESSAGE_HISTORY |
+  COMMUNITY_PERMISSIONS.CREATE_INVITES |
+  COMMUNITY_PERMISSIONS.SEND_MESSAGES |
+  COMMUNITY_PERMISSIONS.CONNECT_VOICE |
+  COMMUNITY_PERMISSIONS.SPEAK |
+  COMMUNITY_PERMISSIONS.SCREEN_SHARE;
+
+export function parseCommunityBitmask(
+  bitmask: string | bigint | number | null | undefined
+): bigint {
+  if (typeof bitmask === 'bigint') {
+    return bitmask >= 0n ? bitmask : 0n;
+  }
+  if (typeof bitmask === 'number') {
+    if (!Number.isSafeInteger(bitmask) || bitmask < 0) return 0n;
+    return BigInt(bitmask);
+  }
+  if (typeof bitmask === 'string') {
+    const trimmed = bitmask.trim();
+    if (!/^\d+$/.test(trimmed)) return 0n;
+    try {
+      const parsed = BigInt(trimmed);
+      return parsed >= 0n ? parsed : 0n;
+    } catch {
+      return 0n;
+    }
+  }
+  return 0n;
+}
+
+export function hasCommunityPermission(
+  bitmask: string | bigint | null | undefined,
+  required: bigint | CommunityPermissionFlag
+): boolean {
+  const mask = parseCommunityBitmask(bitmask);
+  const reqBit = typeof required === 'string' ? COMMUNITY_PERMISSIONS[required] : required;
+  if (reqBit === undefined || reqBit < 0n) return false;
+  return (mask & reqBit) === reqBit;
+}
+
+export function flagsToBitmaskStr(flags: readonly (CommunityPermissionFlag | string)[]): string {
+  let mask = 0n;
+  for (const rawFlag of flags) {
+    const key = rawFlag.trim() as CommunityPermissionFlag;
+    const bit = COMMUNITY_PERMISSIONS[key];
+    if (bit !== undefined) {
+      mask |= bit;
+    }
+  }
+  return mask.toString();
+}
+
+export function bitmaskStrToFlags(
+  bitmask: string | bigint | null | undefined
+): CommunityPermissionFlag[] {
+  const mask = parseCommunityBitmask(bitmask);
+  if (mask <= 0n) return [];
+  const result: CommunityPermissionFlag[] = [];
+  for (const [flag, bit] of Object.entries(COMMUNITY_PERMISSIONS) as [
+    CommunityPermissionFlag,
+    bigint,
+  ][]) {
+    if ((mask & bit) === bit) {
+      result.push(flag);
+    }
+  }
+  return result;
+}
+
+export interface CommunityDto {
+  id: string;
+  owner_id: string;
+  name: string;
+  description?: string | null;
+  icon_url?: string | null;
+  initials: string;
+  icon_bg: string;
+  accent_color: string;
+  appearance_preset: string;
+  privacy: CommunityPrivacy | string;
+  effective_permissions: string;
+  effective_permissions_flags: CommunityPermissionFlag[];
+  unread_count: number;
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommunityCategoryDto {
+  id: string;
+  community_id: string;
+  name: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChannelPermissionOverwriteDto {
+  id: string;
+  channel_id: string;
+  target_type: OverwriteTargetType | string;
+  target_id: string;
+  allow_bitmask: string;
+  allow_flags: CommunityPermissionFlag[];
+  deny_bitmask: string;
+  deny_flags: CommunityPermissionFlag[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommunityChannelDto {
+  id: string;
+  community_id: string;
+  category_id?: string | null;
+  name: string;
+  channel_type: CommunityChannelType | string;
+  topic?: string | null;
+  position: number;
+  is_private: boolean;
+  is_read_only: boolean;
+  voice_bitrate_bps?: number | null;
+  voice_user_limit?: number | null;
+  effective_permissions: string;
+  effective_permissions_flags: CommunityPermissionFlag[];
+  unread_count: number;
+  overwrites: ChannelPermissionOverwriteDto[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommunityRoleDto {
+  id: string;
+  community_id: string;
+  name: string;
+  color?: string | null;
+  position: number;
+  permissions_bitmask: string;
+  permissions_flags: CommunityPermissionFlag[];
+  is_default: boolean;
+  is_hoisted: boolean;
+  is_mentionable: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommunityMemberRoleDto {
+  id: string;
+  name: string;
+  color?: string | null;
+  position: number;
+  is_hoisted: boolean;
+}
+
+export interface CommunityMemberDto {
+  community_id: string;
+  user_id: string;
+  username: string;
+  display_name: string;
+  avatar_url?: string | null;
+  status: string;
+  custom_status?: string | null;
+  nickname?: string | null;
+  is_owner: boolean;
+  roles: CommunityMemberRoleDto[];
+  highest_role_position: number;
+  joined_at: string;
+  text_muted_until?: string | null;
+  voice_muted_until?: string | null;
+  server_voice_muted: boolean;
+}
+
+export interface CommunityMemberMuteDto {
+  community_id: string;
+  user_id: string;
+  muted_by?: string | null;
+  reason?: string | null;
+  text_muted_until?: string | null;
+  voice_muted_until?: string | null;
+  server_voice_muted: boolean;
+  updated_at: string;
+}
+
+export interface CommunitySnapshotDto {
+  community: CommunityDto;
+  categories: CommunityCategoryDto[];
+  channels: CommunityChannelDto[];
+  roles: CommunityRoleDto[];
+  members: CommunityMemberDto[];
+  my_mute?: CommunityMemberMuteDto | null;
+}
+
+export interface ChannelMessageAuthorDto {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url?: string | null;
+  nickname?: string | null;
+  role_color?: string | null;
+}
+
+export interface ChannelMessageDto {
+  id: string;
+  channel_id: string;
+  community_id: string;
+  sender_id: string;
+  author?: ChannelMessageAuthorDto | null;
+  reply_to_message_id?: string | null;
+  content: string;
+  client_message_id?: string | null;
+  attachments: unknown[];
+  created_at: string;
+  edited_at?: string | null;
+  deleted_at?: string | null;
+  is_mine: boolean;
+  delivery_status?: DeliveryStatus;
+}
+
+export interface ChannelMessagesPageDto {
+  messages: ChannelMessageDto[];
+  has_more: boolean;
+  next_before?: string | null;
+}
+
+export interface ChannelReadStateDto {
+  channel_id: string;
+  user_id: string;
+  last_read_message_id?: string | null;
+  last_read_at: string;
+}
+
+export interface CommunityInviteDto {
+  id: string;
+  community_id: string;
+  channel_id?: string | null;
+  inviter_id: string;
+  code: string;
+  max_uses?: number | null;
+  uses_count: number;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  revoked_by?: string | null;
+  created_at: string;
+}
+
+export interface InvitePreviewDto {
+  code: string;
+  community_id: string;
+  community_name: string;
+  community_description?: string | null;
+  community_icon_url?: string | null;
+  community_initials: string;
+  community_icon_bg: string;
+  community_accent_color: string;
+  community_privacy: CommunityPrivacy | string;
+  channel_id?: string | null;
+  member_count: number;
+  expires_at?: string | null;
+  is_valid: boolean;
+}
+
+export interface AcceptInviteResponse {
+  community: CommunityDto;
+  channel_id?: string | null;
+  already_member: boolean;
+}
+
+export interface CommunityBanDto {
+  community_id: string;
+  user_id: string;
+  username?: string | null;
+  display_name?: string | null;
+  banned_by: string;
+  reason?: string | null;
+  expires_at?: string | null;
+  created_at: string;
+}
+
+export interface CommunityAuditLogDto {
+  id: string;
+  community_id: string;
+  actor_id: string;
+  actor_username?: string | null;
+  action: string;
+  target_type: string;
+  target_id?: string | null;
+  reason?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+// Request Payloads
+export interface CreateCommunityPayload {
+  name: string;
+  description?: string | null;
+  icon_url?: string | null;
+  initials?: string | null;
+  icon_bg?: string | null;
+  accent_color?: string | null;
+  appearance_preset?: string | null;
+  privacy?: CommunityPrivacy | string | null;
+}
+
+export interface UpdateCommunityPayload {
+  name?: string;
+  description?: string | null;
+  icon_url?: string | null;
+  initials?: string;
+  icon_bg?: string;
+  accent_color?: string;
+  appearance_preset?: string;
+  privacy?: CommunityPrivacy | string;
+}
+
+export interface DeleteCommunityPayload {
+  confirm_name: string;
+}
+
+export interface TransferOwnershipPayload {
+  target_user_id: string;
+  confirm_name: string;
+}
+
+export interface CreateCategoryPayload {
+  name: string;
+  position?: number | null;
+}
+
+export interface UpdateCategoryPayload {
+  name?: string;
+  position?: number;
+}
+
+export interface ReorderCategoryItem {
+  id: string;
+  position: number;
+}
+
+export interface CreateChannelPayload {
+  category_id?: string | null;
+  name: string;
+  channel_type: CommunityChannelType | string;
+  topic?: string | null;
+  position?: number | null;
+  is_private?: boolean;
+  is_read_only?: boolean;
+  voice_bitrate_bps?: number | null;
+  voice_user_limit?: number | null;
+}
+
+export interface UpdateChannelPayload {
+  category_id?: string | null;
+  name?: string;
+  topic?: string | null;
+  position?: number;
+  is_private?: boolean;
+  is_read_only?: boolean;
+  voice_bitrate_bps?: number | null;
+  voice_user_limit?: number | null;
+}
+
+export interface ReorderChannelItem {
+  id: string;
+  category_id?: string | null;
+  position: number;
+}
+
+export interface UpsertChannelOverwritePayload {
+  target_type: OverwriteTargetType | string;
+  target_id: string;
+  allow_bitmask?: string;
+  allow_flags?: CommunityPermissionFlag[];
+  deny_bitmask?: string;
+  deny_flags?: CommunityPermissionFlag[];
+}
+
+export interface SendChannelMessagePayload {
+  content: string;
+  client_message_id?: string;
+  reply_to_message_id?: string | null;
+  attachments?: unknown[];
+}
+
+export interface CreateRolePayload {
+  name: string;
+  color?: string | null;
+  position?: number | null;
+  permissions_bitmask?: string;
+  permissions_flags?: CommunityPermissionFlag[];
+  is_hoisted?: boolean;
+  is_mentionable?: boolean;
+}
+
+export interface UpdateRolePayload {
+  name?: string;
+  color?: string | null;
+  position?: number;
+  permissions_bitmask?: string;
+  permissions_flags?: CommunityPermissionFlag[];
+  is_hoisted?: boolean;
+  is_mentionable?: boolean;
+}
+
+export interface ReorderRoleItem {
+  id: string;
+  position: number;
+}
+
+export interface UpdateMemberPayload {
+  nickname?: string | null;
+  role_ids?: string[];
+}
+
+export interface KickMemberPayload {
+  reason?: string | null;
+}
+
+export interface BanMemberPayload {
+  reason?: string | null;
+  expires_at?: string | null;
+  delete_message_hours?: number | null;
+}
+
+export interface MuteMemberPayload {
+  reason?: string | null;
+  text_muted_until?: string | null;
+  voice_muted_until?: string | null;
+  server_voice_muted?: boolean;
+}
+
+export interface CreateInvitePayload {
+  channel_id?: string | null;
+  max_uses?: number | null;
+  expires_in_secs?: number | null;
+}
+
+export interface AuditLogsQueryPayload {
+  action?: string;
+  actor_id?: string;
+  before?: string;
+  limit?: number;
+}
+
+// Phase B3.2: Multi-participant Voice Rooms & P2P Mesh WebRTC
+export type VoiceRoomQualityPreset = ScreenShareQualityPreset | '720p60';
+
+export type VoiceRoomState = 'idle' | 'joining' | 'connected' | 'reconnecting' | 'error';
+
+export type VoiceRoomPeerStatus =
+  | 'new'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'disconnected'
+  | 'failed'
+  | 'closed';
+
+export interface RoomParticipantDto {
+  user_id: string;
+  username: string;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  is_muted: boolean;
+  is_deafened: boolean;
+  is_speaking: boolean;
+  is_screen_sharing: boolean;
+  can_speak?: boolean;
+  can_screen_share?: boolean;
+  joined_at?: string;
+}
+
+export interface VoiceRoomPeerMetrics {
+  peerUserId: string;
+  connectionState: VoiceRoomPeerStatus;
+  iceConnectionState: RTCIceConnectionState | 'closed';
+  rttMs: number | null;
+  uploadKbps: number;
+  downloadKbps: number;
+  candidateType: string | null;
+  packetsLost: number;
+  jitterMs: number | null;
+}
+
+export interface VoiceRoomMetricsSnapshot {
+  timestampMs: number;
+  peerCount: number;
+  avgRttMs: number | null;
+  totalUploadKbps: number;
+  totalDownloadKbps: number;
+  totalPacketsLost: number;
+  jsHeapUsedMb: number | null;
+  peers: Record<string, VoiceRoomPeerMetrics>;
+}
+
+// Phase C: Native Windows Capture (DXGI/WGC + Media Foundation + WASAPI + webrtc-rs)
+export type CaptureSourceKind = 'DxgiMonitor' | 'WgcMonitor' | 'WgcWindow';
+
+export interface CaptureSourceInfo {
+  id: string;
+  kind: CaptureSourceKind;
+  title: string;
+  process_name: string;
+  pid: number;
+  width: number;
+  height: number;
+  is_primary: boolean;
+  is_hdr: boolean;
+  is_minimized: boolean;
+  left: number;
+  top: number;
+  scale_factor: number;
+  device_name?: string | null;
+  adapter_index?: number | null;
+  output_index?: number | null;
+}
+
+export interface CaptureSources {
+  monitors: CaptureSourceInfo[];
+  windows: CaptureSourceInfo[];
+}
+
+export interface StartScreenShareOptions {
+  source_id: string;
+  preset?: VoiceRoomQualityPreset;
+  cursor_enabled?: boolean;
+  include_app_audio?: boolean;
+  force_software?: boolean;
+  ice_servers?: RTCIceServer[];
+}
+
+export interface NativeCaptureStatus {
+  active: boolean;
+  source_id: string;
+  backend_used: string;
+  encoder_name: string;
+  is_hardware: boolean;
+  d3d_zero_copy: boolean;
+  borderless_ok: boolean;
+  app_audio_active: boolean;
+  app_audio_mode: string;
+  width: number;
+  height: number;
+  fps: number;
+  bitrate_bps: number;
+  profile_level_id: string;
+}
+
+export interface NativeScreenOfferEvent {
+  peer_id: string;
+  sdp: string;
+  sdp_type: string;
+}
+
+export interface NativeScreenIceEvent {
+  peer_id: string;
+  candidate: string;
+  sdp_mid: string | null;
+  sdp_mline_index: number | null;
+}
+
+export interface NativeScreenStatsEvent {
+  encoder_name: string;
+  is_hardware: boolean;
+  d3d_zero_copy: boolean;
+  backend_used: string;
+  borderless_ok: boolean;
+  app_audio_active: boolean;
+  preset: string;
+  src_width: number;
+  src_height: number;
+  dst_width: number;
+  dst_height: number;
+  target_fps: number;
+  target_bitrate_bps: number;
+  send_fps: number;
+  send_bitrate_kbps: number;
+  frames_captured: number;
+  frames_encoded: number;
+  frames_sent: number;
+  idr_count: number;
+  pli_received: number;
+  peer_count: number;
+  bitrate_reinit_count: number;
+  encode_avg_ms: number;
+}
+
+export interface NativeScreenErrorEvent {
+  code: string;
+  message: string;
+  recoverable: boolean;
+}
+
+export interface NativeScreenEndedEvent {
+  reason: string;
+}
+
+
 
 
 

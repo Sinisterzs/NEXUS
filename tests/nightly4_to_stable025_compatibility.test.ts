@@ -24,7 +24,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
-const EXPECTED_NIGHTLY_VERSION = '0.3.0-nightly.5';
+const EXPECTED_NIGHTLY_VERSIONS = ['0.3.0-nightly.5', '0.4.0-nightly.1'] as const;
 const EXPECTED_STABLE_VERSION = '0.2.5';
 const OFFICIAL_MINISIGN_PUBKEY = 'RWSd5/ox8A8dk+NW9lqVAMuCKxJvH9kzKpUxCk1SmABC7b4+8zd5cfHf';
 const OFFICIAL_MINISIGN_KEY_ID = '931D0FF031FAE79D';
@@ -140,8 +140,9 @@ test('Release Metadata — All 6 version metadata files are synchronized (0.2.5 
   const cargoLockMatch = cargoLock.match(/\[\[package\]\]\r?\nname = "nexus"\r?\nversion = "([^"]+)"/);
 
   assert.ok(
-    pkg.version === EXPECTED_STABLE_VERSION || pkg.version === EXPECTED_NIGHTLY_VERSION,
-    `package.json version must be ${EXPECTED_STABLE_VERSION} or ${EXPECTED_NIGHTLY_VERSION}, got ${pkg.version}`
+    pkg.version === EXPECTED_STABLE_VERSION ||
+      (EXPECTED_NIGHTLY_VERSIONS as readonly string[]).includes(pkg.version),
+    `package.json version must be ${EXPECTED_STABLE_VERSION} or ${EXPECTED_NIGHTLY_VERSIONS.join(' / ')}, got ${pkg.version}`
   );
   const targetVer = pkg.version;
 
@@ -184,7 +185,7 @@ test('Release Metadata — All 6 version metadata files are synchronized (0.2.5 
     assert.equal(isPrereleaseVersion(APP_VERSION), true);
     assert.equal(isNightlyVersion(APP_VERSION), true);
     assert.equal(inferDefaultUpdateChannel(APP_VERSION), 'beta');
-    assert.equal(info.prereleaseTag, 'nightly.5');
+    assert.equal(info.prereleaseTag, targetVer.split('-')[1]);
     assert.equal(info.badgeLabel, 'VERSÃO NIGHTLY/BETA');
   }
 });

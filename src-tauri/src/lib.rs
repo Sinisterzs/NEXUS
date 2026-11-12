@@ -1,6 +1,8 @@
 pub mod lab;
 pub mod auth;
+pub mod capture;
 pub mod commands;
+pub mod communities;
 pub mod db;
 pub mod deeplink;
 pub mod dm;
@@ -174,6 +176,7 @@ pub fn run() {
         .setup(|app| {
             let db = DbState::init(app.handle()).expect("Failed to initialize SQLite database");
             app.manage(db);
+            app.manage(capture::NativeCaptureState::new());
 
             #[cfg(desktop)]
             {
@@ -285,7 +288,67 @@ pub fn run() {
             updater::updater_check_prelogin,
             updater::updater_download_and_install_prelogin,
             updater::updater_restart,
+            communities::community_list,
+            communities::community_create,
+            communities::community_get_snapshot,
+            communities::community_update,
+            communities::community_delete,
+            communities::community_transfer_ownership,
+            communities::community_leave,
+            communities::community_create_category,
+            communities::community_update_category,
+            communities::community_delete_category,
+            communities::community_reorder_categories,
+            communities::community_create_channel,
+            communities::community_update_channel,
+            communities::community_delete_channel,
+            communities::community_reorder_channels,
+            communities::community_list_channel_overwrites,
+            communities::community_upsert_channel_overwrite,
+            communities::community_delete_channel_overwrite,
+            communities::community_list_channel_messages,
+            communities::community_send_channel_message,
+            communities::community_edit_channel_message,
+            communities::community_delete_channel_message,
+            communities::community_mark_channel_read,
+            communities::community_list_roles,
+            communities::community_create_role,
+            communities::community_update_role,
+            communities::community_delete_role,
+            communities::community_reorder_roles,
+            communities::community_list_members,
+            communities::community_update_member,
+            communities::community_set_member_roles,
+            communities::community_add_member_role,
+            communities::community_remove_member_role,
+            communities::community_kick_member,
+            communities::community_ban_member,
+            communities::community_unban_member,
+            communities::community_list_bans,
+            communities::community_mute_member,
+            communities::community_list_audit_logs,
+            communities::community_create_invite,
+            communities::community_list_invites,
+            communities::community_revoke_invite,
+            communities::community_get_invite_preview,
+            communities::community_accept_invite,
+            capture::native_list_capture_sources,
+            capture::native_start_screen_share,
+            capture::native_stop_screen_share,
+            capture::native_set_screen_quality,
+            capture::native_set_adaptive_bitrate,
+            capture::native_add_screen_peer,
+            capture::native_remove_screen_peer,
+            capture::native_handle_screen_answer,
+            capture::native_handle_screen_ice,
         ])
-        .run(context)
-        .expect("error while running NEXUS desktop application");
+        .build(context)
+        .expect("error while building NEXUS desktop application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                app_handle
+                    .state::<capture::NativeCaptureState>()
+                    .shutdown_sync();
+            }
+        });
 }

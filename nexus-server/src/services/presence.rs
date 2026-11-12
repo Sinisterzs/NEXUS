@@ -515,14 +515,47 @@ impl PresenceManager {
 
     /// Broadcast event to a list of friend IDs
     pub async fn broadcast_to_friends(&self, friend_ids: &[Uuid], event: &GatewayEvent) {
+        self.broadcast_to_users(friend_ids, event).await;
+    }
+
+    /// Broadcast event to all active connections of a list of users
+    pub async fn broadcast_to_users(&self, user_ids: &[Uuid], event: &GatewayEvent) {
+        if user_ids.is_empty() {
+            return;
+        }
         let conns = self.connections.read().await;
-        for friend_id in friend_ids {
-            if let Some(user_conns) = conns.get(friend_id) {
+        for user_id in user_ids {
+            if let Some(user_conns) = conns.get(user_id) {
                 for conn in user_conns.values() {
-                    conn.try_enqueue(*friend_id, event.clone());
+                    conn.try_enqueue(*user_id, event.clone());
                 }
             }
         }
+    }
+
+    /// Send a critical event to all active connections of a specific user (no-op if offline)
+    pub async fn send_critical_event(&self, target_user_id: Uuid, event: &GatewayEvent) {
+        let conns = self.connections.read().await;
+        if let Some(user_conns) = conns.get(&target_user_id) {
+            for conn in user_conns.values() {
+                conn.try_enqueue(target_user_id, event.clone());
+            }
+        }
+    }
+
+    /// List all user IDs that currently have at least one active WebSocket connection
+    pub async fn list_connected_user_ids(&self) -> Vec<Uuid> {
+        let conns = self.connections.read().await;
+        conns.keys().copied().collect()
+    }
+
+    /// Check if a user's preferred presence status is currently "invisible"
+    pub async fn is_user_invisible(&self, user_id: Uuid) -> bool {
+        let presences = self.live_presence.read().await;
+        presences
+            .get(&user_id)
+            .map(|p| p.preferred_status == "invisible")
+            .unwrap_or(false)
     }
 
     /// Check if a user has any active connections

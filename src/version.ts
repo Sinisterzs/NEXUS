@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.2.5';
+export const APP_VERSION = '0.4.0-nightly.1';
 
 export type VersionType = 'stable' | 'prerelease';
 export type UpdateChannel = 'stable' | 'beta';

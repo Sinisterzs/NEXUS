@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,15 +12,17 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use sqlx::PgPool;
 use tokio::sync::{mpsc, Notify};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::models::{GatewayClientMessage, GatewayEvent};
 use crate::services::presence::{
-    ClientConnection, GATEWAY_CRITICAL_QUEUE_CAPACITY, GATEWAY_EPHEMERAL_QUEUE_CAPACITY,
+    ClientConnection, PresenceManager, GATEWAY_CRITICAL_QUEUE_CAPACITY,
+    GATEWAY_EPHEMERAL_QUEUE_CAPACITY,
 };
-use crate::services::{AuthService, CallService, DmService, FriendService};
+use crate::services::{AuthService, CallService, DmService, FriendService, RoomService};
 
 pub const GATEWAY_AUTH_TIMEOUT_SECS: u64 = 5;
 pub const GATEWAY_SEND_TIMEOUT_SECS: u64 = 10;
@@ -34,6 +37,7 @@ pub struct WsState {
     pub friend_service: FriendService,
     pub dm_service: DmService,
     pub call_service: CallService,
+    pub room_service: RoomService,
 }
 
 /// GET /v1/gateway (and /v1/ws) - Presence & Social Real-Time WebSocket Gateway
@@ -69,6 +73,7 @@ async fn handle_gateway_socket(
     let friend_service = state.friend_service.clone();
     let dm_service = state.dm_service.clone();
     let call_service = state.call_service.clone();
+    let room_service = state.room_service.clone();
     let presence_mgr = friend_service.presence_manager().clone();
 
     // 1. Initial Authentication Step:
@@ -236,7 +241,7 @@ async fn handle_gateway_socket(
         user_profile.username, user_id, connection_id
     );
 
-    // 3. If first connection and not invisible, broadcast presence.updated to friends
+    // 3. If first connection and not invisible, broadcast presence.updated to friends and shared community co-members
     if is_first_connection && effective_status != "offline" {
         let presence_event = GatewayEvent::new(
             "presence.updated",
@@ -248,9 +253,14 @@ async fn handle_gateway_socket(
                 "last_seen_at": chrono::Utc::now(),
             }),
         );
-        presence_mgr
-            .broadcast_to_friends(&friend_ids, &presence_event)
-            .await;
+        broadcast_presence_with_communities(
+            &presence_mgr,
+            auth_service.pool(),
+            user_id,
+            &friend_ids,
+            &presence_event,
+        )
+        .await;
     }
 
     // 4. Send connection.ready event with current friend list and presence
@@ -341,6 +351,7 @@ async fn handle_gateway_socket(
     let recv_friend_service = friend_service.clone();
     let recv_dm_service = dm_service.clone();
     let recv_call_service = call_service.clone();
+    let recv_room_service = room_service.clone();
     let recv_conn = client_conn.clone();
 
     let mut recv_task = tokio::spawn(async move {
@@ -407,6 +418,7 @@ async fn handle_gateway_socket(
                         if matches!(
                             client_msg,
                             GatewayClientMessage::CallWebrtcIceCandidate { .. }
+                                | GatewayClientMessage::RoomWebrtcIceCandidate { .. }
                         ) {
                             ice_msg_count += 1;
                             if ice_msg_count > MAX_ICE_CANDIDATES_PER_SEC {
@@ -440,7 +452,7 @@ async fn handle_gateway_socket(
                                 custom_status,
                                 activity,
                             } => {
-                                let _ = recv_friend_service
+                                if let Ok(updated_presence) = recv_friend_service
                                     .update_presence(
                                         user_id,
                                         Some(&status),
@@ -448,7 +460,47 @@ async fn handle_gateway_socket(
                                         activity.as_deref(),
                                         None,
                                     )
+                                    .await
+                                {
+                                    // FriendService already broadcasts to friends; fan out to non-friend community co-members.
+                                    let broadcast_status =
+                                        if updated_presence.preferred_status == "invisible" {
+                                            "offline"
+                                        } else {
+                                            updated_presence.preferred_status.as_str()
+                                        };
+                                    let presence_event = GatewayEvent::new(
+                                        "presence.updated",
+                                        json!({
+                                            "user_id": user_id,
+                                            "status": broadcast_status,
+                                            "custom_status": updated_presence.custom_status,
+                                            "activity": updated_presence.activity,
+                                            "last_seen_at": chrono::Utc::now(),
+                                        }),
+                                    );
+                                    let friend_id_set: HashSet<Uuid> = recv_friend_service
+                                        .get_friends(user_id)
+                                        .await
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(|f| f.id)
+                                        .collect();
+                                    let co_members = fetch_connected_community_co_members(
+                                        recv_friend_service.presence_manager(),
+                                        recv_auth_service.pool(),
+                                        user_id,
+                                    )
                                     .await;
+                                    let non_friend_co_members: Vec<Uuid> = co_members
+                                        .into_iter()
+                                        .filter(|id| !friend_id_set.contains(id))
+                                        .collect();
+                                    recv_friend_service
+                                        .presence_manager()
+                                        .broadcast_to_users(&non_friend_co_members, &presence_event)
+                                        .await;
+                                }
                             }
                             GatewayClientMessage::DmDeliveryAck { message_ids } => {
                                 let _ =
@@ -502,9 +554,17 @@ async fn handle_gateway_socket(
                                 call_id,
                                 target_user_id,
                                 sdp,
+                                stream_kind,
                             } => {
                                 if let Err(e) = recv_call_service
-                                    .relay_sdp(user_id, call_id, target_user_id, "offer", sdp)
+                                    .relay_sdp_with_stream_kind(
+                                        user_id,
+                                        call_id,
+                                        target_user_id,
+                                        "offer",
+                                        sdp,
+                                        stream_kind,
+                                    )
                                     .await
                                 {
                                     let err_event = GatewayEvent::new(
@@ -518,9 +578,17 @@ async fn handle_gateway_socket(
                                 call_id,
                                 target_user_id,
                                 sdp,
+                                stream_kind,
                             } => {
                                 if let Err(e) = recv_call_service
-                                    .relay_sdp(user_id, call_id, target_user_id, "answer", sdp)
+                                    .relay_sdp_with_stream_kind(
+                                        user_id,
+                                        call_id,
+                                        target_user_id,
+                                        "answer",
+                                        sdp,
+                                        stream_kind,
+                                    )
                                     .await
                                 {
                                     let err_event = GatewayEvent::new(
@@ -534,9 +602,151 @@ async fn handle_gateway_socket(
                                 call_id,
                                 target_user_id,
                                 candidate,
+                                stream_kind,
                             } => {
                                 let _ = recv_call_service
-                                    .relay_ice(user_id, call_id, target_user_id, candidate)
+                                    .relay_ice_with_stream_kind(
+                                        user_id,
+                                        call_id,
+                                        target_user_id,
+                                        candidate,
+                                        stream_kind,
+                                    )
+                                    .await;
+                            }
+                            GatewayClientMessage::RoomJoin {
+                                community_id,
+                                channel_id,
+                            } => {
+                                if let Err(e) = recv_room_service
+                                    .join_room(community_id, channel_id, user_id)
+                                    .await
+                                {
+                                    send_room_error(
+                                        &recv_conn,
+                                        user_id,
+                                        Some(community_id),
+                                        Some(channel_id),
+                                        e.to_string(),
+                                    );
+                                }
+                            }
+                            GatewayClientMessage::RoomLeave {
+                                community_id,
+                                channel_id,
+                            } => {
+                                if let Err(e) = recv_room_service
+                                    .leave_specific_room(community_id, channel_id, user_id)
+                                    .await
+                                {
+                                    send_room_error(
+                                        &recv_conn,
+                                        user_id,
+                                        Some(community_id),
+                                        Some(channel_id),
+                                        e.to_string(),
+                                    );
+                                }
+                            }
+                            GatewayClientMessage::RoomStateUpdate {
+                                community_id,
+                                channel_id,
+                                is_muted,
+                                is_deafened,
+                                is_speaking,
+                                is_screen_sharing,
+                            } => {
+                                if let Err(e) = recv_room_service
+                                    .update_participant_state(
+                                        community_id,
+                                        channel_id,
+                                        user_id,
+                                        is_muted,
+                                        is_deafened,
+                                        is_speaking,
+                                        is_screen_sharing,
+                                    )
+                                    .await
+                                {
+                                    send_room_error(
+                                        &recv_conn,
+                                        user_id,
+                                        Some(community_id),
+                                        Some(channel_id),
+                                        e.to_string(),
+                                    );
+                                }
+                            }
+                            GatewayClientMessage::RoomWebrtcOffer {
+                                community_id,
+                                channel_id,
+                                target_user_id,
+                                sdp,
+                                stream_kind,
+                            } => {
+                                if let Err(e) = recv_room_service
+                                    .relay_webrtc_offer(
+                                        community_id,
+                                        channel_id,
+                                        user_id,
+                                        target_user_id,
+                                        sdp,
+                                        stream_kind,
+                                    )
+                                    .await
+                                {
+                                    send_room_error(
+                                        &recv_conn,
+                                        user_id,
+                                        Some(community_id),
+                                        Some(channel_id),
+                                        e.to_string(),
+                                    );
+                                }
+                            }
+                            GatewayClientMessage::RoomWebrtcAnswer {
+                                community_id,
+                                channel_id,
+                                target_user_id,
+                                sdp,
+                                stream_kind,
+                            } => {
+                                if let Err(e) = recv_room_service
+                                    .relay_webrtc_answer(
+                                        community_id,
+                                        channel_id,
+                                        user_id,
+                                        target_user_id,
+                                        sdp,
+                                        stream_kind,
+                                    )
+                                    .await
+                                {
+                                    send_room_error(
+                                        &recv_conn,
+                                        user_id,
+                                        Some(community_id),
+                                        Some(channel_id),
+                                        e.to_string(),
+                                    );
+                                }
+                            }
+                            GatewayClientMessage::RoomWebrtcIceCandidate {
+                                community_id,
+                                channel_id,
+                                target_user_id,
+                                candidate,
+                                stream_kind,
+                            } => {
+                                let _ = recv_room_service
+                                    .relay_webrtc_ice_candidate(
+                                        community_id,
+                                        channel_id,
+                                        user_id,
+                                        target_user_id,
+                                        candidate,
+                                        stream_kind,
+                                    )
                                     .await;
                             }
                         }
@@ -584,8 +794,9 @@ async fn handle_gateway_socket(
 
     if is_now_offline {
         call_service.cleanup_user(user_id).await;
+        let _ = room_service.leave_room(user_id).await;
 
-        if !friend_ids.is_empty() {
+        if !presence_mgr.is_user_invisible(user_id).await {
             info!(
                 "[Gateway] Usuário {} desconectou (última conexão). Broadcast offline.",
                 user_id
@@ -600,9 +811,109 @@ async fn handle_gateway_socket(
                     "last_seen_at": chrono::Utc::now(),
                 }),
             );
-            presence_mgr
-                .broadcast_to_friends(&friend_ids, &offline_event)
-                .await;
+            broadcast_presence_with_communities(
+                &presence_mgr,
+                auth_service.pool(),
+                user_id,
+                &friend_ids,
+                &offline_event,
+            )
+            .await;
         }
     }
+}
+
+async fn fetch_connected_community_co_members(
+    presence_mgr: &PresenceManager,
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Vec<Uuid> {
+    let connected_ids = presence_mgr.list_connected_user_ids().await;
+    if connected_ids.is_empty() {
+        return Vec::new();
+    }
+
+    match sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT DISTINCT cm_other.user_id
+        FROM community_members cm_self
+        JOIN communities c
+          ON c.id = cm_self.community_id
+         AND c.deleted_at IS NULL
+        JOIN community_members cm_other
+          ON cm_other.community_id = cm_self.community_id
+         AND cm_other.user_id <> $1
+         AND cm_other.user_id = ANY($2)
+        WHERE cm_self.user_id = $1
+          AND NOT EXISTS (
+              SELECT 1 FROM community_bans b_self
+              WHERE b_self.community_id = c.id
+                AND b_self.user_id = $1
+                AND (b_self.expires_at IS NULL OR b_self.expires_at > NOW())
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM community_bans b_other
+              WHERE b_other.community_id = c.id
+                AND b_other.user_id = cm_other.user_id
+                AND (b_other.expires_at IS NULL OR b_other.expires_at > NOW())
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM user_blocks ub
+              WHERE (ub.blocker_id = $1 AND ub.blocked_id = cm_other.user_id)
+                 OR (ub.blocker_id = cm_other.user_id AND ub.blocked_id = $1)
+          )
+        "#,
+    )
+    .bind(user_id)
+    .bind(&connected_ids)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            warn!(
+                "[Gateway] Falha ao buscar co-membros de comunidades para broadcast de presença de {}: {}",
+                user_id, e
+            );
+            Vec::new()
+        }
+    }
+}
+
+async fn broadcast_presence_with_communities(
+    presence_mgr: &PresenceManager,
+    pool: &PgPool,
+    user_id: Uuid,
+    friend_ids: &[Uuid],
+    event: &GatewayEvent,
+) {
+    let co_members = fetch_connected_community_co_members(presence_mgr, pool, user_id).await;
+    let mut recipients: HashSet<Uuid> = friend_ids.iter().copied().collect();
+    recipients.extend(co_members);
+    recipients.remove(&user_id);
+
+    if recipients.is_empty() {
+        return;
+    }
+
+    let recipient_vec: Vec<Uuid> = recipients.into_iter().collect();
+    presence_mgr.broadcast_to_users(&recipient_vec, event).await;
+}
+
+fn send_room_error(
+    conn: &ClientConnection,
+    user_id: Uuid,
+    community_id: Option<Uuid>,
+    channel_id: Option<Uuid>,
+    message: String,
+) {
+    let err_event = GatewayEvent::new(
+        "room_error",
+        json!({
+            "community_id": community_id,
+            "channel_id": channel_id,
+            "message": message,
+        }),
+    );
+    conn.try_enqueue(user_id, err_event);
 }

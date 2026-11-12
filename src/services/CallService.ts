@@ -18,7 +18,11 @@ import { callHistoryRepository } from '../repositories/CallHistoryRepository';
 import { soundEffects } from '../lib/soundEffects';
 import { screenCaptureService } from './ScreenCaptureService';
 import { audioDeviceService } from './AudioDeviceService';
-import { ScreenShareQualityPreset } from '../lib/types';
+import {
+  NativeCaptureStatus,
+  ScreenShareQualityPreset,
+  StartScreenShareOptions,
+} from '../lib/types';
 
 export const DEFAULT_CALLING_TIMEOUT_MS = 47000;
 export const DEFAULT_CONNECTING_TIMEOUT_MS = 20000;
@@ -50,6 +54,8 @@ export class CallService {
   private pendingCancelBeforeRinging = false;
   private offerSentForCallId: string | null = null;
   private terminatedCallIds: Set<string> = new Set();
+  private nativeScreenActive = false;
+  private nativeScreenUnlisten: (() => void) | null = null;
 
   public configureTimeouts(options: {
     callingTimeoutMs?: number;
@@ -401,6 +407,32 @@ export class CallService {
             this.webRtc = this.createWebRtcInstance();
           }
 
+          if (data.stream_kind === 'screen') {
+            this.webRtc.setScreenReceiverIceCallback((cand) => {
+              const s = useAppStore.getState();
+              if (s.activeCallId === data.callId && s.activeCallPeer?.id) {
+                gatewayClient.sendCallWebrtcIceCandidate(
+                  data.callId,
+                  s.activeCallPeer.id,
+                  cand,
+                  'screen'
+                );
+              }
+            });
+            const screenAnswerSdp = await this.webRtc.handleRemoteScreenOffer(data.sdp);
+            if (!screenAnswerSdp) return;
+            const latestStore = useAppStore.getState();
+            if (
+              token !== this.callSessionToken ||
+              latestStore.activeCallId !== data.callId ||
+              this.isTerminatedCall(data.callId)
+            ) {
+              return;
+            }
+            gatewayClient.sendCallWebrtcAnswer(data.callId, data.senderId, screenAnswerSdp, 'screen');
+            return;
+          }
+
           const answerSdp = await this.webRtc.handleOffer(data.sdp);
           if (!answerSdp) {
             return;
@@ -450,6 +482,12 @@ export class CallService {
 
         const token = this.callSessionToken;
         try {
+          if (data.stream_kind === 'screen') {
+            if (this.nativeScreenActive) {
+              await screenCaptureService.handleNativeScreenAnswer(data.senderId, data.sdp);
+            }
+            return;
+          }
           if (this.webRtc) {
             await this.webRtc.handleAnswer(data.sdp);
           }
@@ -482,6 +520,23 @@ export class CallService {
           data.senderId &&
           store.activeCallPeer.id !== data.senderId
         ) {
+          return;
+        }
+
+        if (data.stream_kind === 'screen') {
+          if (this.nativeScreenActive && data.candidate?.candidate) {
+            screenCaptureService
+              .handleNativeScreenIce(
+                data.senderId,
+                data.candidate.candidate,
+                data.candidate.sdpMid ?? null,
+                data.candidate.sdpMLineIndex ?? null
+              )
+              .catch(() => {});
+          }
+          if (this.webRtc) {
+            await this.webRtc.addScreenReceiverIceCandidate(data.candidate);
+          }
           return;
         }
 
@@ -974,9 +1029,106 @@ export class CallService {
   async setScreenShareQuality(preset: ScreenShareQualityPreset): Promise<void> {
     const store = useAppStore.getState();
     store.updateAudioVideo({ screenShareQuality: preset });
+    if (this.nativeScreenActive) {
+      await screenCaptureService.setNativeScreenQuality(preset);
+      return;
+    }
     const res = await screenCaptureService.setQualityPreset(preset);
     if (this.webRtc) {
       await this.webRtc.applySenderQualityParameters(res.activePreset);
+    }
+  }
+
+  isNativeScreenShareActive(): boolean {
+    return this.nativeScreenActive;
+  }
+
+  async startNativeScreenShare(
+    options: StartScreenShareOptions
+  ): Promise<NativeCaptureStatus | null> {
+    const store = useAppStore.getState();
+    if (!store.activeCallId || !store.activeCallPeer?.id || store.voiceCallState !== 'connected') {
+      return null;
+    }
+
+    await this.stopScreenShare();
+    const callId = store.activeCallId;
+    const peerId = store.activeCallPeer.id;
+    const token = this.callSessionToken;
+
+    const iceServers =
+      options.ice_servers ?? (this.webRtc ? await this.webRtc.fetchIceServers() : undefined);
+
+    this.nativeScreenUnlisten = await screenCaptureService.subscribeNativeEvents({
+      onOffer: (ev) => {
+        const s = useAppStore.getState();
+        if (token !== this.callSessionToken || !this.nativeScreenActive || s.activeCallId !== callId) {
+          return;
+        }
+        gatewayClient.sendCallWebrtcOffer(callId, peerId, ev.sdp, 'screen');
+      },
+      onIce: (ev) => {
+        const s = useAppStore.getState();
+        if (token !== this.callSessionToken || !this.nativeScreenActive || s.activeCallId !== callId) {
+          return;
+        }
+        gatewayClient.sendCallWebrtcIceCandidate(
+          callId,
+          peerId,
+          {
+            candidate: ev.candidate,
+            sdpMid: ev.sdp_mid ?? undefined,
+            sdpMLineIndex: ev.sdp_mline_index ?? undefined,
+          },
+          'screen'
+        );
+      },
+      onStats: (ev) => {
+        if (token !== this.callSessionToken || !this.nativeScreenActive) return;
+        useAppStore.setState({ nativeScreenStats: ev });
+      },
+      onError: (ev) => {
+        if (token !== this.callSessionToken) return;
+        useAppStore.setState({ screenShareError: ev.message });
+        if (!ev.recoverable && this.nativeScreenActive) {
+          void this.stopScreenShare();
+        }
+      },
+      onEnded: () => {
+        if (!this.nativeScreenActive) return;
+        this.teardownNativeScreenState();
+        useAppStore.setState({
+          isScreenSharing: false,
+          nativeCaptureStatus: null,
+          nativeScreenStats: null,
+        });
+      },
+    });
+
+    try {
+      const status = await screenCaptureService.startNativeShare({
+        ...options,
+        preset: options.preset ?? store.settings.audioVideo.screenShareQuality ?? 'auto',
+        ...(iceServers ? { ice_servers: iceServers } : {}),
+      });
+      this.nativeScreenActive = true;
+      useAppStore.setState({
+        isScreenSharing: true,
+        nativeCaptureStatus: status,
+        screenShareError: null,
+      });
+
+      const offer = await screenCaptureService.addNativeScreenPeer(peerId, iceServers);
+      if (token === this.callSessionToken && this.nativeScreenActive && offer?.sdp) {
+        gatewayClient.sendCallWebrtcOffer(callId, peerId, offer.sdp, 'screen');
+      }
+      return status;
+    } catch (err: any) {
+      this.teardownNativeScreenState();
+      useAppStore.setState({
+        screenShareError: err?.message || 'Falha ao iniciar captura nativa de tela.',
+      });
+      return null;
     }
   }
 
@@ -1014,6 +1166,16 @@ export class CallService {
    * Interrompe compartilhamento de tela na chamada ativa e renegocia sem interromper o áudio
    */
   async stopScreenShare(): Promise<void> {
+    if (this.nativeScreenActive) {
+      this.teardownNativeScreenState();
+      await screenCaptureService.stopNativeShare().catch(() => {});
+      useAppStore.setState({
+        isScreenSharing: false,
+        nativeCaptureStatus: null,
+        nativeScreenStats: null,
+      });
+    }
+
     screenCaptureService.stopCapture();
 
     const store = useAppStore.getState();
@@ -1239,6 +1401,16 @@ export class CallService {
     }
   }
 
+  private teardownNativeScreenState(): void {
+    this.nativeScreenActive = false;
+    if (this.nativeScreenUnlisten) {
+      try {
+        this.nativeScreenUnlisten();
+      } catch {}
+      this.nativeScreenUnlisten = null;
+    }
+  }
+
   private cleanup(explicitOutcome?: 'rejected' | 'canceled'): void {
     if (this.isCleaningUp) return;
     this.isCleaningUp = true;
@@ -1289,9 +1461,16 @@ export class CallService {
         rtc.destroy(false);
       }
 
+      this.teardownNativeScreenState();
+      screenCaptureService.stopNativeShare().catch(() => {});
       screenCaptureService.stopCapture();
       store.setRemoteScreenStream(null, null);
       store.setRemoteScreenMuted(false);
+      useAppStore.setState({
+        nativeCaptureStatus: null,
+        nativeScreenStats: null,
+        screenPickerTarget: null,
+      });
 
       store.setVoiceCallState('idle');
       store.setActiveCall(null, null);

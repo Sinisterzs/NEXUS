@@ -39,6 +39,11 @@ import { Avatar } from '../../components/Avatar';
 import { Tooltip } from '../../components/Tooltip';
 import { EmptyState } from '../../components/EmptyState';
 import {
+  NativeScreenShareBanner,
+  ScreenSourcePickerModal,
+} from '../../components/ScreenSourcePickerModal';
+import { screenCaptureService } from '../../services/ScreenCaptureService';
+import {
   CallLayoutMode,
   CALL_LAYOUT_PRESETS,
 } from '../../lib/callsLayout';
@@ -120,6 +125,7 @@ const QUALITY_PRESET_OPTIONS: {
 }[] = [
   { id: 'auto', label: 'Automático (Adaptativo)', shortLabel: 'Auto', desc: 'Até 1080p / 30 FPS' },
   { id: '720p30', label: '720p • 30 FPS', shortLabel: '720p30', desc: 'Equilíbrio e baixo uso de CPU' },
+  { id: '720p60', label: '720p • 60 FPS', shortLabel: '720p60', desc: 'Fluidez para jogos com menor banda' },
   { id: '1080p30', label: '1080p • 30 FPS', shortLabel: '1080p30', desc: 'Alta nitidez para texto e código' },
   { id: '1080p60', label: '1080p • 60 FPS', shortLabel: '1080p60', desc: 'Alta fluidez para vídeos e jogos' },
 ];
@@ -166,6 +172,21 @@ export const CallsView: React.FC = () => {
   const toggleScreenShare = useAppStore((state) => state.toggleScreenShare);
   const stopScreenShare = useAppStore((state) => state.stopScreenShare);
   const clearScreenShareError = useAppStore((state) => state.clearScreenShareError);
+  const screenPickerTarget = useAppStore((state) => state.screenPickerTarget);
+  const nativeCaptureStatus = useAppStore((state) => state.nativeCaptureStatus);
+  const nativeScreenStats = useAppStore((state) => state.nativeScreenStats);
+  const openScreenSourcePicker = useAppStore((state) => state.openScreenSourcePicker);
+  const isNativeCaptureSupported = screenCaptureService.isNativeCaptureSupported();
+
+  const handleToggleScreenShare = () => {
+    if (isScreenSharing) {
+      toggleScreenShare();
+    } else if (isNativeCaptureSupported) {
+      void openScreenSourcePicker('call');
+    } else {
+      toggleScreenShare();
+    }
+  };
 
   // Remote Screen Share State (WebRTC)
   const isRemoteScreenSharing = useAppStore((state) => state.isRemoteScreenSharing);
@@ -924,9 +945,21 @@ export const CallsView: React.FC = () => {
         </div>
       )}
 
-      {/* Avisos de Fallback de Dispositivo / Qualidade / Erro de Captura */}
-      {(callDeviceNotice || screenQualityFallbackNotice || screenCaptureNotice || screenShareError) && (
+      {/* Avisos de Fallback de Dispositivo / Qualidade / Erro de Captura / Status Nativo */}
+      {(callDeviceNotice ||
+        screenQualityFallbackNotice ||
+        (screenCaptureNotice && !nativeCaptureStatus?.active && !isNativeCaptureSupported) ||
+        screenShareError ||
+        nativeCaptureStatus?.active) && (
         <div className="px-6 pt-3 space-y-2 shrink-0 z-10 max-w-5xl w-full mx-auto">
+          {nativeCaptureStatus?.active && (
+            <NativeScreenShareBanner
+              status={nativeCaptureStatus}
+              stats={nativeScreenStats}
+              onStop={stopScreenShare}
+            />
+          )}
+
           {callDeviceNotice && (
             <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300 font-mono">
               <div className="flex items-center gap-2">
@@ -943,7 +976,7 @@ export const CallsView: React.FC = () => {
             </div>
           )}
 
-          {screenCaptureNotice && (
+          {screenCaptureNotice && !nativeCaptureStatus?.active && !isNativeCaptureSupported && (
             <div role="status" className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200">
               {screenCaptureNotice}
             </div>
@@ -1296,11 +1329,17 @@ export const CallsView: React.FC = () => {
                   </Tooltip>
 
                   <Tooltip
-                    content={isScreenSharing ? 'Parar compartilhamento' : SCREEN_CAPTURE_SELECTION_NOTICE}
+                    content={
+                      isScreenSharing
+                        ? 'Parar compartilhamento'
+                        : isNativeCaptureSupported
+                        ? 'Compartilhar tela'
+                        : SCREEN_CAPTURE_SELECTION_NOTICE
+                    }
                     position="top"
                   >
                     <button
-                      onClick={toggleScreenShare}
+                      onClick={handleToggleScreenShare}
                       disabled={isStartingScreenShare}
                       className={`p-2 rounded-xl border transition-all cursor-pointer ${
                         isScreenSharing
@@ -1730,7 +1769,11 @@ export const CallsView: React.FC = () => {
 
           {activePopover === 'quality' && (
             <div className="space-y-2.5">
-              <p className="text-xs text-nexus-muted">{SCREEN_CAPTURE_SELECTION_NOTICE}</p>
+              <p className="text-xs text-nexus-muted">
+                {isNativeCaptureSupported
+                  ? 'Selecione a qualidade da transmissão de tela.'
+                  : SCREEN_CAPTURE_SELECTION_NOTICE}
+              </p>
               <div className="flex items-center justify-between border-b border-nexus-border pb-2">
                 <span className="text-xs font-bold text-nexus-text flex items-center gap-1.5">
                   <Monitor className="w-3.5 h-3.5 text-nexus-accent" />
@@ -1835,12 +1878,14 @@ export const CallsView: React.FC = () => {
                 ? 'Iniciando captura...'
                 : isScreenSharing
                 ? 'Parar compartilhamento'
+                : isNativeCaptureSupported
+                ? 'Compartilhar tela'
                 : SCREEN_CAPTURE_SELECTION_NOTICE
             }
             position="top"
           >
             <button
-              onClick={toggleScreenShare}
+              onClick={handleToggleScreenShare}
               disabled={isStartingScreenShare}
               aria-label={isScreenSharing ? 'Parar compartilhamento' : 'Compartilhar tela'}
               className={`p-3 rounded-xl border transition-all active:scale-95 cursor-pointer flex items-center justify-center ${
@@ -1900,6 +1945,8 @@ export const CallsView: React.FC = () => {
         </div>
       </div>
       )}
+
+      {screenPickerTarget === 'call' && <ScreenSourcePickerModal />}
     </div>
   );
 };
