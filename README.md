@@ -70,10 +70,10 @@ O NEXUS disponibiliza instaladores assinados digitalmente para Windows de 64 bit
 <!-- NEXUS:BETA_ROW:START -->
     <tr>
       <td align="left"><strong>Pré-lançamento (Beta)</strong></td>
-      <td align="center"><code>v0.3.0-nightly.5</code></td>
+      <td align="center"><code>v0.4.0-nightly.1</code></td>
       <td align="center">Homologação Ativa</td>
-      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.3.0-nightly.5/nexus_0.3.0-nightly.5_x64-setup.exe">nexus_0.3.0-nightly.5_x64-setup.exe</a></td>
-      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.3.0-nightly.5/latest-nightly.json"><code>latest-nightly.json</code></a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.4.0-nightly.1/nexus_0.4.0-nightly.1_x64-setup.exe">nexus_0.4.0-nightly.1_x64-setup.exe</a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.4.0-nightly.1/latest-nightly.json"><code>latest-nightly.json</code></a></td>
     </tr>
 <!-- NEXUS:BETA_ROW:END -->
   </tbody>
