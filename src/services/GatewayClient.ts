@@ -63,6 +63,7 @@ export type GatewayEventListener = {
   onCallCanceled?: (data: { callId: string }) => void;
   onCallEnded?: (data: { callId: string; reason: string }) => void;
   onCallParticipantMuted?: (data: { callId: string; userId: string; isMuted: boolean }) => void;
+  onCallScreenStopped?: (data: { callId: string; senderId: string; shareId: string }) => void;
   onCallWebrtcOffer?: (data: { callId: string; senderId: string; sdp: string; stream_kind?: StreamKind }) => void;
   onCallWebrtcAnswer?: (data: { callId: string; senderId: string; sdp: string; stream_kind?: StreamKind }) => void;
   onCallWebrtcIceCandidate?: (data: { callId: string; senderId: string; candidate: any; stream_kind?: StreamKind }) => void;
@@ -572,6 +573,15 @@ export class GatewayClient {
         break;
       }
 
+      case 'call.screen_stopped': {
+        if (payload?.call_id && payload?.sender_id && typeof payload.share_id === 'string' && /^[0-9]{1,64}$/.test(payload.share_id)) {
+          this.listeners.forEach((listener) => listener.onCallScreenStopped?.({
+            callId: payload.call_id, senderId: payload.sender_id, shareId: payload.share_id,
+          }));
+        }
+        break;
+      }
+
       case 'call.webrtc.offer': {
         const callId = payload?.call_id || payload?.callId;
         const senderId = payload?.sender_id || payload?.senderId;
@@ -1050,6 +1060,10 @@ export class GatewayClient {
 
   sendCallMute(callId: string, isMuted: boolean): void {
     this.sendJson({ op: 'call.mute', call_id: callId, is_muted: isMuted });
+  }
+
+  sendCallScreenStopped(callId: string, targetUserId: string, shareId: string): void {
+    this.sendJson({ op: 'call.screen_stopped', call_id: callId, target_user_id: targetUserId, share_id: shareId });
   }
 
   sendCallWebrtcOffer(callId: string, targetUserId: string, sdp: string, streamKind?: StreamKind): void {

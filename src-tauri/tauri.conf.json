@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "nexus",
-  "version": "0.4.0-nightly.3",
+  "version": "0.4.0-nightly.4",
   "identifier": "com.nexus.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' ipc: tauri: http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:* http://nexus-server:* https://nexus-server:* ws://nexus-server:* wss://nexus-server:* http://*.ts.net:* https://*.ts.net:* ws://*.ts.net:* wss://*.ts.net:* https://nexus-api.dynv6.net wss://nexus-api.dynv6.net; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self';"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost tauri: http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:* http://nexus-server:* https://nexus-server:* ws://nexus-server:* wss://nexus-server:* http://*.ts.net:* https://*.ts.net:* ws://*.ts.net:* wss://*.ts.net:* https://nexus-api.dynv6.net wss://nexus-api.dynv6.net; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self';"
     }
   },
   "bundle": {

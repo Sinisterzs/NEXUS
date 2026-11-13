@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use super::recovery::{Recovery, Step};
 use windows::core::{factory, Interface, Result};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
@@ -20,7 +21,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIDevice, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
-    IDXGIResource, IDXGISurface1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT,
+    IDXGIResource, IDXGISurface1, DXGI_ERROR_WAIT_TIMEOUT,
     DXGI_OUTDUPL_FRAME_INFO,
 };
 use windows::Win32::Graphics::Gdi::{
@@ -31,7 +32,7 @@ use windows::Win32::System::WinRT::Direct3D11::{
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, ICONINFO,
+    DrawIconEx, GetCursorInfo, GetIconInfo, GetWindowThreadProcessId, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, ICONINFO,
 };
 
 #[derive(Clone, Debug)]
@@ -107,6 +108,14 @@ pub fn create_d3d11_on_adapter(adapter_index: u32) -> Result<(ID3D11Device, ID3D
     }
 }
 
+fn capture_window_alive(target: Option<(isize, u32, u32)>) -> bool {
+    target.is_none_or(|(hwnd, pid, tid)| unsafe {
+        let mut current_pid = 0;
+        let current_tid = GetWindowThreadProcessId(HWND(hwnd as *mut std::ffi::c_void), Some(&mut current_pid));
+        current_tid != 0 && current_tid == tid && current_pid == pid
+    })
+}
+
 pub struct WgcCapturer {
     d3d_winrt_device: IDirect3DDevice,
     item: GraphicsCaptureItem,
@@ -116,6 +125,7 @@ pub struct WgcCapturer {
     closed_token: i64,
     signal: Arc<(Mutex<u64>, Condvar)>,
     closed_flag: Arc<AtomicBool>,
+    target_window: Option<(isize, u32, u32)>,
     pool_w: u32,
     pool_h: u32,
     pub src_w: u32,
@@ -140,6 +150,16 @@ impl WgcCapturer {
         let inspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device)? };
         let d3d_winrt_device: IDirect3DDevice = inspectable.cast()?;
         let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+
+        let target_window = match target {
+            CaptureTarget::WgcWindow { hwnd } => {
+                let mut pid = 0;
+                let tid = unsafe { GetWindowThreadProcessId(HWND(*hwnd as *mut std::ffi::c_void), Some(&mut pid)) };
+                if tid == 0 { return Err(windows::core::Error::new(windows::core::HRESULT(0x80004004u32 as i32), "Capture target unavailable")); }
+                Some((*hwnd, pid, tid))
+            }
+            _ => None,
+        };
 
         let item: GraphicsCaptureItem = unsafe {
             match target {
@@ -199,6 +219,13 @@ impl WgcCapturer {
         session.StartCapture()?;
         // Critical: Windows 11 requires SetIsBorderRequired(false) AFTER StartCapture()
         let border_after = session.SetIsBorderRequired(false).is_ok();
+        if !capture_window_alive(target_window) {
+            let _ = pool.RemoveFrameArrived(frame_token);
+            let _ = item.RemoveClosed(closed_token);
+            let _ = session.Close();
+            let _ = pool.Close();
+            return Err(windows::core::Error::new(windows::core::HRESULT(0x80004004u32 as i32), "Capture target closed during initialization"));
+        }
 
         Ok(Self {
             d3d_winrt_device,
@@ -209,6 +236,7 @@ impl WgcCapturer {
             closed_token,
             signal,
             closed_flag,
+            target_window,
             pool_w: sz.Width as u32,
             pool_h: sz.Height as u32,
             src_w: sz.Width as u32,
@@ -220,7 +248,10 @@ impl WgcCapturer {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.closed_flag.load(Ordering::Relaxed)
+        if self.closed_flag.load(Ordering::Relaxed) { return true; }
+        // GraphicsCaptureItem::Closed is not reliably delivered on all desktop/MTA
+        // configurations. Never keep replaying the cached texture of a dead window.
+        !capture_window_alive(self.target_window)
     }
 
     pub fn set_cursor_enabled(&mut self, enabled: bool) -> bool {
@@ -330,10 +361,16 @@ impl WgcCapturer {
 }
 
 pub struct DxgiCapturer {
-    adapter_index: u32,
     output_index: u32,
-    output1: IDXGIOutput1,
-    dupl: IDXGIOutputDuplication,
+    output1: Option<IDXGIOutput1>,
+    dupl: Option<IDXGIOutputDuplication>,
+    output_name: [u16;32],
+    recovery: Recovery,
+    generation: u64,
+    waiting_frame_since: Option<Instant>,
+    last_hresult: i32,
+    output_bounds: (u32,u32),
+    last_mode_check: Instant,
     monitor_left: i32,
     monitor_top: i32,
     pub src_w: u32,
@@ -376,10 +413,16 @@ impl DxgiCapturer {
             let output1: IDXGIOutput1 = output.cast()?;
             let dupl = output1.DuplicateOutput(device)?;
             Ok(Self {
-                adapter_index,
                 output_index,
-                output1,
-                dupl,
+                output1: Some(output1),
+                dupl: Some(dupl),
+                output_name: odesc.DeviceName,
+                recovery: Recovery::default(),
+                generation: 1,
+                waiting_frame_since: None,
+                last_hresult: 0,
+                output_bounds: (src_w,src_h),
+                last_mode_check: Instant::now(),
                 monitor_left: left,
                 monitor_top: top,
                 src_w,
@@ -396,24 +439,65 @@ impl DxgiCapturer {
         self.cursor_enabled = enabled;
     }
 
+    fn invalidate(&mut self, now: Instant, hresult: i32, stage: &str) {
+        self.last_hresult = hresult;
+        self.recovery.begin(now);
+        // Drop every old duplication-owned object BEFORE calling DuplicateOutput.
+        self.dupl = None;
+        self.output1 = None;
+        self.desktop_tex = None;
+        self.cursor_tex = None;
+        self.waiting_frame_since = None;
+        self.generation = self.generation.wrapping_add(1);
+        crate::capture::log_capture_diag(None, &format!("dxgi_recovery invalidated stage={} hresult=0x{:08X} generation={}",stage,hresult as u32,self.generation));
+    }
     fn recreate_duplication(&mut self, device: &ID3D11Device) -> Result<()> {
         unsafe {
-            let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
-            let adapter = factory.EnumAdapters1(self.adapter_index)?;
-            let output = adapter.EnumOutputs(self.output_index)?;
-            let odesc = output.GetDesc()?;
-            self.monitor_left = odesc.DesktopCoordinates.left;
-            self.monitor_top = odesc.DesktopCoordinates.top;
-            self.src_w = (odesc.DesktopCoordinates.right - self.monitor_left).max(1) as u32;
-            self.src_h = (odesc.DesktopCoordinates.bottom - self.monitor_top).max(1) as u32;
-            let output1: IDXGIOutput1 = output.cast()?;
-            let dupl = output1.DuplicateOutput(device)?;
-            self.output1 = output1;
-            self.dupl = dupl;
-            self.desktop_tex = None;
-            self.cursor_tex = None;
-            Ok(())
+            // Identify the originally selected output; never silently capture another monitor.
+            let dxgi: IDXGIDevice = device.cast()?;
+            let adapter = dxgi.GetAdapter()?;
+            let mut index=0;
+            loop {
+                let output = adapter.EnumOutputs(index)?;
+                let odesc = output.GetDesc()?;
+                if odesc.DeviceName == self.output_name {
+                    let output1:IDXGIOutput1=output.cast()?;
+                    let dupl=output1.DuplicateOutput(device)?;
+                    self.monitor_left=odesc.DesktopCoordinates.left;
+                    self.monitor_top=odesc.DesktopCoordinates.top;
+                    self.src_w=(odesc.DesktopCoordinates.right-self.monitor_left).max(1) as u32;
+                    self.src_h=(odesc.DesktopCoordinates.bottom-self.monitor_top).max(1) as u32;
+                    self.output_index=index;
+                    self.output_bounds=(self.src_w,self.src_h);
+                    self.last_mode_check=Instant::now();
+                    self.output1=Some(output1);self.dupl=Some(dupl);
+                    self.waiting_frame_since=Some(Instant::now());
+                    return Ok(());
+                }
+                index+=1;
+            }
         }
+    }
+    pub fn recovering(&self) -> bool { self.recovery.active() }
+    fn terminal_error(&self) -> windows::core::Error {
+        windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32), format!("DXGI recovery exhausted after {} attempts; last HRESULT 0x{:08X}",self.recovery.attempts(),self.last_hresult as u32))
+    }
+    fn recover_if_needed(&mut self, device:&ID3D11Device) -> Result<bool> {
+        if self.dupl.is_some() {return Ok(false);}
+        match self.recovery.step(Instant::now()) {
+            Step::Exhausted => return Err(self.terminal_error()),
+            Step::Wait => return Ok(true),
+            Step::Ready => { self.recovery.begin(Instant::now()); return Ok(true); },
+            Step::Retry => {}
+        }
+        match self.recreate_duplication(device) {
+            Ok(()) => crate::capture::log_capture_diag(None,&format!("dxgi_recovery duplicated attempt={} generation={} awaiting_fresh_frame=true",self.recovery.attempts(),self.generation)),
+            Err(e) => {
+                self.last_hresult=e.code().0;
+                crate::capture::log_capture_diag(None,&format!("dxgi_recovery duplicate_failed attempt={} hresult=0x{:08X}",self.recovery.attempts(),e.code().0 as u32));
+            }
+        }
+        Ok(true)
     }
 
     fn ensure_textures(
@@ -428,11 +512,13 @@ impl DxgiCapturer {
                 unsafe {
                     c.GetDesc(&mut cd);
                 }
-                cd.Width != src_desc.Width || cd.Height != src_desc.Height
+                cd.Width != src_desc.Width || cd.Height != src_desc.Height || cd.Format != src_desc.Format || cd.SampleDesc.Count != src_desc.SampleDesc.Count
             }
         };
 
         if need_realloc {
+            self.generation = self.generation.wrapping_add(1);
+            crate::capture::log_capture_diag(None,&format!("dxgi_texture generation={} width={} height={} format={}",self.generation,src_desc.Width,src_desc.Height,src_desc.Format.0));
             let mut d = *src_desc;
             d.Usage = D3D11_USAGE_DEFAULT;
             d.BindFlags = (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32;
@@ -514,54 +600,73 @@ impl DxgiCapturer {
     }
 
     pub fn acquire_into_texture(
-        &mut self,
-        device: &ID3D11Device,
-        context: &ID3D11DeviceContext,
-        wait_ms: u32,
-    ) -> Result<(Option<ID3D11Texture2D>, bool)> {
+        &mut self, device:&ID3D11Device, context:&ID3D11DeviceContext, wait_ms:u32,
+    ) -> Result<(Option<ID3D11Texture2D>,bool)> {
+        if self.recovery.step_check_exhausted(Instant::now()) {return Err(self.terminal_error());}
+        if self.recover_if_needed(device)? {return Ok((None,false));}
+        if self.waiting_frame_since.is_some_and(|t|t.elapsed()>=Duration::from_secs(1)) {
+            self.invalidate(Instant::now(),self.last_hresult,"first_frame_timeout");
+            return Ok((None,false));
+        }
         unsafe {
-            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
-            let mut res_opt: Option<IDXGIResource> = None;
-            match self.dupl.AcquireNextFrame(wait_ms, &mut info, &mut res_opt) {
+            let dupl=self.dupl.as_ref().unwrap().clone();
+            let mut info=DXGI_OUTDUPL_FRAME_INFO::default();let mut resource:Option<IDXGIResource>=None;
+            let acquisition=dupl.AcquireNextFrame(wait_ms,&mut info,&mut resource);
+            match acquisition {
                 Ok(()) => {
-                    let mut got_new = false;
-                    if let Some(res) = res_opt {
-                        let tex: ID3D11Texture2D = res.cast()?;
-                        let mut desc = D3D11_TEXTURE2D_DESC::default();
-                        tex.GetDesc(&mut desc);
-                        self.ensure_textures(device, &desc)?;
-                        if let Some(ref dt) = self.desktop_tex {
-                            context.CopyResource(dt, &tex);
-                            got_new = true;
+                    let copied=super::recovery::acquired_frame(|| -> Result<bool> {
+                        if let Some(resource)=resource {
+                            let texture:ID3D11Texture2D=resource.cast()?;
+                            let mut desc=D3D11_TEXTURE2D_DESC::default();texture.GetDesc(&mut desc);
+                            self.ensure_textures(device,&desc)?;
+                            if let Some(ref desktop)=self.desktop_tex {context.CopyResource(desktop,&texture);return Ok(true);}
+                        }
+                        Ok(false)
+                    },||dupl.ReleaseFrame());
+                    drop(dupl);
+                    match copied {
+                        Ok(fresh) => {
+                            if fresh {
+                                if self.recovery.active() {
+                                    self.access_lost_recoveries+=1;
+                                    crate::capture::log_capture_diag(None,&format!("dxgi_recovery resumed generation={} width={} height={} attempts={}",self.generation,self.src_w,self.src_h,self.recovery.attempts()));
+                                }
+                                self.recovery.frame_restored();self.waiting_frame_since=None;
+                            }
+                            let texture=if self.cursor_enabled {self.draw_cursor_on_texture(context).or_else(||self.desktop_tex.clone())}else{self.desktop_tex.clone()};
+                            Ok((texture,fresh))
+                        }
+                        Err(e) if super::recovery::retryable_hresult(e.code().0) => {self.invalidate(Instant::now(),e.code().0,"copy_or_release");Ok((None,false))}
+                        Err(e)=>{self.recovery.fail();Err(e)},
+                    }
+                }
+                Err(e) if e.code()==DXGI_ERROR_WAIT_TIMEOUT => {
+                    if self.last_mode_check.elapsed()>=Duration::from_secs(1) {
+                        self.last_mode_check=Instant::now();
+                        if let Err(e)=device.GetDeviceRemovedReason() {self.recovery.fail();return Err(e);}
+                        if let Some(output)=&self.output1 {
+                            match output.GetDesc() {
+                                Ok(desc) => {
+                                    let bounds=((desc.DesktopCoordinates.right-desc.DesktopCoordinates.left).max(1) as u32,(desc.DesktopCoordinates.bottom-desc.DesktopCoordinates.top).max(1) as u32);
+                                    if bounds!=self.output_bounds || !desc.AttachedToDesktop.as_bool() {
+                                        drop(dupl);self.invalidate(Instant::now(),0x887A0026u32 as i32,"output_mode_changed");return Ok((None,false));
+                                    }
+                                }
+                                Err(e) => {drop(dupl);self.invalidate(Instant::now(),e.code().0,"output_desc_failed");return Ok((None,false));}
+                            }
                         }
                     }
-                    let _ = self.dupl.ReleaseFrame();
-                    let out_tex = if self.cursor_enabled {
-                        self.draw_cursor_on_texture(context)
-                            .or_else(|| self.desktop_tex.clone())
-                    } else {
-                        self.desktop_tex.clone()
-                    };
-                    Ok((out_tex, got_new))
+                    let texture=if self.cursor_enabled {self.draw_cursor_on_texture(context).or_else(||self.desktop_tex.clone())}else{self.desktop_tex.clone()};
+                    Ok((texture,false))
                 }
-                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                    let out_tex = if self.cursor_enabled {
-                        self.draw_cursor_on_texture(context)
-                            .or_else(|| self.desktop_tex.clone())
-                    } else {
-                        self.desktop_tex.clone()
-                    };
-                    Ok((out_tex, false))
+                Err(e) if super::recovery::retryable_hresult(e.code().0) => {
+                    drop(dupl);self.invalidate(Instant::now(),e.code().0,"acquire");Ok((None,false))
                 }
-                Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
-                    self.access_lost_recoveries += 1;
-                    self.recreate_duplication(device)?;
-                    Ok((None, false))
-                }
-                Err(e) => Err(e),
+                Err(e)=>{self.recovery.fail();Err(e)},
             }
         }
     }
+
 }
 
 pub enum HybridCapturer {
@@ -637,6 +742,13 @@ impl HybridCapturer {
         }
     }
 
+    pub fn recovering(&self) -> bool { matches!(self, Self::Dxgi(d) if d.recovering()) }
+    pub fn recovery_failed(&self) -> bool { matches!(self, Self::Dxgi(d) if d.recovery.failed()) }
+    pub fn recover_monitor_stall(&mut self) -> bool {
+        if let Self::Dxgi(d)=self { d.invalidate(Instant::now(),0,"watchdog_no_texture");return true; } false
+    }
+    pub fn texture_generation(&self) -> u64 { match self {Self::Dxgi(d)=>d.generation,_=>0} }
+    pub fn is_monitor(&self) -> bool { !matches!(self,Self::Wgc(_,"WgcWindow")) }
     pub fn is_closed(&self) -> bool {
         match self {
             Self::Dxgi(_) => false,
@@ -670,5 +782,40 @@ impl HybridCapturer {
             Self::Dxgi(d) => drop(d),
             Self::Wgc(w, _) => w.close(),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod recovery_smoke {
+    use super::*;
+    #[test]
+    #[ignore="explicit local DXGI lifecycle check; no image readback or display change"]
+    fn hardware_duplication_releases_before_reopening_and_resumes() {
+        let monitors=super::super::selector::enumerate_monitors().expect("monitor metadata");
+        let source=monitors.iter().find(|s|s.kind==super::super::CaptureSourceKind::DxgiMonitor).expect("DXGI monitor");
+        let (_,handle)=super::super::selector::parse_source_handle(&source.id).unwrap();
+        let adapter=source.adapter_index.unwrap();let output=source.output_index.unwrap();
+        let(device,context)=create_d3d11_on_adapter(adapter).expect("D3D11");
+        let mut capture=DxgiCapturer::new(&device,adapter,output,handle,false).expect("DXGI init");
+        let mut generations=Vec::new();
+        for cycle in 0..4 {
+            if cycle>0 {
+                capture.invalidate(Instant::now(),0x887A0026u32 as i32,"synthetic_access_lost");
+                assert!(capture.dupl.is_none());assert!(capture.output1.is_none());
+                assert!(capture.desktop_tex.is_none());assert!(capture.cursor_tex.is_none());
+            }
+            let deadline=Instant::now()+Duration::from_secs(4);
+            loop {
+                let (texture,fresh)=capture.acquire_into_texture(&device,&context,30).expect("recovery acquisition");
+                if fresh {assert!(texture.is_some());break;}
+                assert!(Instant::now()<deadline,"fresh frame timeout");std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!capture.recovering());assert!(capture.dupl.is_some());generations.push(capture.generation);
+        }
+        assert!(generations.windows(2).all(|g|g[1]>g[0]));
+        capture.invalidate(Instant::now(),0x887A0026u32 as i32,"synthetic_cleanup");
+        assert!(capture.dupl.is_none());assert!(capture.desktop_tex.is_none());
+        println!("DXGI_LIFECYCLE cycles=4 resumed=4 old_resources_released=true images_read_back=0");
     }
 }

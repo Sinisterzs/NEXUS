@@ -24,7 +24,7 @@ function snakeToCamel(name: string): string {
 function parseRustCommandArgs(): Map<string, string[]> {
   const src = fs.readFileSync(path.join(rootDir, 'src-tauri', 'src', 'capture', 'mod.rs'), 'utf8');
   const result = new Map<string, string[]>();
-  const re = /#\[tauri::command\]\s*pub\s+(?:async\s+)?fn\s+(native_[a-z_]+)\s*\(([\s\S]*?)\)\s*->/g;
+  const re = /#\[tauri::command\]\s*pub\s+(?:async\s+)?fn\s+(native_[a-z_]+)\s*\(([\s\S]*?)\)\s*(?:->|\{)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src))) {
     const params = m[2]
@@ -66,6 +66,7 @@ async function withMockedTauri(
 
 test('Rust command signatures are discovered for the native capture commands', () => {
   const commands = parseRustCommandArgs();
+  assert.deepEqual(commands.get('native_log_screen_receiver'), ['snapshot'], 'commands returning unit must not consume the next command signature');
   for (const name of [
     'native_start_screen_share',
     'native_add_screen_peer',
@@ -82,6 +83,7 @@ test('Rust command signatures are discovered for the native capture commands', (
     'candidate',
     'sdpMid',
     'sdpMlineIndex',
+    'screenSessionId',
   ]);
   assert.deepEqual(commands.get('native_set_adaptive_bitrate'), ['bitrateBps']);
 });
@@ -102,7 +104,7 @@ test('native_handle_screen_ice sends camelCase peerId/candidate/sdpMid/sdpMlineI
   await withMockedTauri(async (calls) => {
     const svc = new ScreenCaptureService();
     await svc.handleNativeScreenIce('user-1', 'candidate:1 1 udp 1 1.1.1.1 1 typ host', '0', 0);
-    await svc.handleNativeScreenIce('user-1', 'candidate:2', undefined, undefined);
+    await svc.handleNativeScreenIce('user-1', 'candidate:2 1 udp 1 192.0.2.1 9 typ host', undefined, undefined);
     assert.equal(calls[0].cmd, 'native_handle_screen_ice');
     assert.deepEqual(Object.keys(calls[0].args).sort(), [
       'candidate',
@@ -175,7 +177,7 @@ test('every payload sent by the service matches the camelCase args declared in R
     await svc.addNativeScreenPeer('p', [{ urls: 'stun:x' }]);
     await svc.removeNativeScreenPeer('p');
     await svc.handleNativeScreenAnswer('p', 'sdp');
-    await svc.handleNativeScreenIce('p', 'c', '0', 0);
+    await svc.handleNativeScreenIce('p', 'candidate:3 1 udp 1 192.0.2.1 9 typ host', '0', 0);
     for (const { cmd, args } of calls) {
       const declared = rustArgs.get(cmd);
       assert.ok(declared, `${cmd} must exist as a Rust #[tauri::command]`);
@@ -183,7 +185,7 @@ test('every payload sent by the service matches the camelCase args declared in R
         assert.ok(!key.includes('_'), `${cmd}: key "${key}" must be camelCase`);
         assert.ok(declared.includes(key), `${cmd}: key "${key}" is not a Rust argument (${declared.join(', ')})`);
       }
-      for (const required of declared.filter((d) => !/^iceServers$|^sdpMid$|^sdpMlineIndex$/.test(d))) {
+      for (const required of declared.filter((d) => !/^iceServers$|^sdpMid$|^sdpMlineIndex$|^screenSessionId$/.test(d))) {
         assert.ok(required in args, `${cmd}: missing required argument "${required}"`);
       }
     }
@@ -198,4 +200,28 @@ test('native error strings from Tauri are surfaced, never replaced by a generic 
     const src = fs.readFileSync(path.join(rootDir, file), 'utf8');
     assert.match(src, /typeof err === 'string'/, `${file} must handle Tauri string rejections`);
   }
+});
+
+
+test('temporary bitrate experiment uses its own command and never edits official presets', async () => {
+  await withMockedTauri(async calls => {
+    const service = new ScreenCaptureService();
+    await service.setNativeBitrateExperiment('b6');
+    await service.setNativeBitrateExperiment('official');
+    assert.deepEqual(calls.map(call => [call.cmd,call.args]), [
+      ['native_set_screen_bitrate_experiment',{profile:'b6'}],
+      ['native_set_screen_bitrate_experiment',{profile:'official'}],
+    ]);
+  });
+});
+
+
+test('native signaling carries the expected screen session across IPC', async () => {
+  await withMockedTauri(async calls => {
+    const svc=new ScreenCaptureService();
+    await svc.handleNativeScreenAnswer('peer','v=0','123');
+    await svc.handleNativeScreenIce('peer','candidate:1 1 udp 1 192.0.2.1 9 typ host','0',0,'123');
+    assert.equal(calls[0].args.screenSessionId,'123');
+    assert.equal(calls[1].args.screenSessionId,'123');
+  });
 });

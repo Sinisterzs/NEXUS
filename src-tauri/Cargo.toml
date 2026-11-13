@@ -1,6 +1,6 @@
 [package]
 name = "nexus"
-version = "0.4.0-nightly.3"
+version = "0.4.0-nightly.4"
 description = "NEXUS - High-performance desktop communication"
 authors = ["NEXUS Team"]
 edition = "2021"
@@ -40,6 +40,7 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 bytes = "1"
+async-trait = "0.1"
 opus-codec = "0.2"
 webrtc = "0.17"
 windows-core = "0.62"

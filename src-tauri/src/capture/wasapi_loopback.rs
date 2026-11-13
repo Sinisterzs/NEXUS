@@ -302,6 +302,7 @@ mod win_impl {
     }
 
     pub fn spawn_app_audio_thread(
+        app: tauri::AppHandle,
         mode: LoopbackMode,
         audio_track: Arc<TrackLocalStaticSample>,
         stop_flag: Arc<AtomicBool>,
@@ -396,14 +397,22 @@ mod win_impl {
                         return;
                     }
 
+                    crate::capture::log_capture_diag(Some(&app), &format!("screen_audio active=true device=process_loopback_virtual mode={} sample_rate={} channels={} format=f32", mode.as_label(), OPUS_SAMPLE_RATE, OPUS_CHANNELS));
                     let _ = ready_tx.send(Ok(()));
 
                     let mut pcm_accum: Vec<f32> =
                         Vec::with_capacity(OPUS_FRAME_SAMPLES_TOTAL * 4);
                     let frame_dur = Duration::from_millis(OPUS_FRAME_DURATION_MS);
                     let mut frame_index: u64 = 0;
+                    let (mut pcm_frames, mut silent_frames, mut opus_frames, mut opus_bytes, mut sample_writes, mut sample_bytes, mut read_errors, mut encode_errors, mut write_errors) = (0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64);
+                    let mut last_diag = std::time::Instant::now();
+                    let mut last_hresult = 0i32;
 
                     while !stop_flag_thread.load(Ordering::Relaxed) {
+                        if last_diag.elapsed() >= Duration::from_secs(5) {
+                            crate::capture::log_capture_diag(Some(&app), &format!("screen_audio active=true pcm_frames={} silent_frames={} opus_frames={} opus_bytes={} sample_writes_ok={} sample_bytes_ok={} read_errors={} encode_errors={} write_errors={} last_hresult=0x{:08X}", pcm_frames, silent_frames, opus_frames, opus_bytes, sample_writes, sample_bytes, read_errors, encode_errors, write_errors, last_hresult as u32));
+                            last_diag = std::time::Instant::now();
+                        }
                         let _ = WaitForSingleObject(h_event, 20);
                         let _ = ResetEvent(h_event);
 
@@ -412,8 +421,9 @@ mod win_impl {
                         }
 
                         loop {
-                            let Ok(pkt_size) = capture_client.GetNextPacketSize() else {
-                                break;
+                            let pkt_size = match capture_client.GetNextPacketSize() {
+                                Ok(size) => size,
+                                Err(e) => { read_errors += 1; last_hresult = e.code().0; break; }
                             };
                             if pkt_size == 0 {
                                 break;
@@ -421,7 +431,7 @@ mod win_impl {
                             let mut data_ptr: *mut u8 = std::ptr::null_mut();
                             let mut num_frames: u32 = 0;
                             let mut flags_out: u32 = 0;
-                            if capture_client
+                            if let Err(e) = capture_client
                                 .GetBuffer(
                                     &mut data_ptr,
                                     &mut num_frames,
@@ -429,12 +439,14 @@ mod win_impl {
                                     None,
                                     None,
                                 )
-                                .is_err()
                             {
+                                read_errors += 1; last_hresult = e.code().0;
                                 break;
                             }
 
                             let is_silent = (flags_out & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+                            pcm_frames += num_frames as u64;
+                            if is_silent { silent_frames += num_frames as u64; }
                             let total_samples = (num_frames as usize) * (OPUS_CHANNELS as usize);
                             if !is_silent && !data_ptr.is_null() && num_frames > 0 {
                                 let floats = std::slice::from_raw_parts(
@@ -446,7 +458,7 @@ mod win_impl {
                                 pcm_accum.resize(pcm_accum.len() + total_samples, 0.0);
                             }
 
-                            let _ = capture_client.ReleaseBuffer(num_frames);
+                            if let Err(e) = capture_client.ReleaseBuffer(num_frames) { read_errors += 1; last_hresult = e.code().0; }
                         }
 
                         while pcm_accum.len() >= OPUS_FRAME_SAMPLES_TOTAL {
@@ -456,6 +468,9 @@ mod win_impl {
                             let chunk: Vec<f32> =
                                 pcm_accum.drain(..OPUS_FRAME_SAMPLES_TOTAL).collect();
                             if let Ok(pkt) = opus_enc.encode_frame_f32(&chunk) {
+                                opus_frames += 1;
+                                let packet_len = pkt.len() as u64;
+                                opus_bytes += packet_len;
                                 let sample_ts = stream_epoch
                                     + Duration::from_millis(frame_index * OPUS_FRAME_DURATION_MS);
                                 let sample = Sample {
@@ -465,13 +480,16 @@ mod win_impl {
                                     ..Default::default()
                                 };
                                 let track_ref = Arc::clone(&audio_track);
-                                let _ = rt_handle
-                                    .block_on(async move { track_ref.write_sample(&sample).await });
+                                match rt_handle.block_on(async move { track_ref.write_sample(&sample).await }) {
+                                    Ok(()) => { sample_writes += 1; sample_bytes += packet_len; }
+                                    Err(_) => write_errors += 1,
+                                }
                                 frame_index += 1;
-                            }
+                            } else { encode_errors += 1; }
                         }
                     }
 
+                    crate::capture::log_capture_diag(Some(&app), &format!("screen_audio active=false pcm_frames={} silent_frames={} opus_frames={} opus_bytes={} sample_writes_ok={} sample_bytes_ok={} read_errors={} encode_errors={} write_errors={}", pcm_frames, silent_frames, opus_frames, opus_bytes, sample_writes, sample_bytes, read_errors, encode_errors, write_errors));
                     let _ = audio_client.Stop();
                     drop(capture_client);
                     drop(audio_client);

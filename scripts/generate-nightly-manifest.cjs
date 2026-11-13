@@ -64,7 +64,11 @@ const manifest = {
   },
 };
 
-const manifestPath = path.join(rootDir, 'latest-nightly.json');
+const manifestPath = process.argv[4] ? path.resolve(rootDir, process.argv[4]) : path.join(rootDir, 'latest-nightly.json');
+if (path.basename(manifestPath) !== 'latest-nightly.json') {
+  console.error('[ERRO] O manifesto Nightly deve se chamar latest-nightly.json.'); process.exit(1);
+}
+fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
 
 console.log(`[OK] Manifesto Nightly gerado em: ${manifestPath}`);

@@ -25,7 +25,7 @@ test('Release metadata (Stable or Nightly) is consistent across frontend, npm, T
   const notesPath = `scripts/release-notes-v${version}.md`;
   const notes = await readFile(notesPath, 'utf8');
   assert.ok(notes.trim().length > 100, `${notesPath} must exist and be non-empty`);
-  if (/^\d+\.\d+\.\d+$/.test(version)) {
+  if (/^\d+\.\d+\.\d+(-nightly\.\d+)?$/.test(version)) {
     assert.ok(
       notes.includes('### ✨ Novidades') || notes.includes('### 🚀 Melhorias') || notes.includes('### 🛠️ Correções'),
       `${notesPath} must follow the NEXUS Release Notes standard sections`
@@ -89,6 +89,15 @@ test('version and manifest scripts reject Stable, align locks and select only th
     assert.equal(await readFile(path.join(root, 'latest.json'), 'utf8'), '{"version":"0.2.1","fixture":"keep-stable"}');
     await writeFile(path.join(root, 'src-tauri/target/release/nexus.exe'), 'inert-native-fixture');
     assert.equal(run('audit-nightly-artifacts.cjs').status, 0);
+    const previousManifest = await readFile(path.join(root, 'latest-nightly.json'), 'utf8');
+    const customManifest = path.join(root, 'staged', 'latest-nightly.json');
+    assert.equal(run('generate-nightly-manifest.cjs', nightlyFixtureVersion, 'Private staging fixture', customManifest).status, 0);
+    assert.equal(await readFile(path.join(root, 'latest-nightly.json'), 'utf8'), previousManifest, 'staging must not modify the root manifest');
+    assert.equal(run('audit-nightly-artifacts.cjs', customManifest).status, 0);
+    const customJson = JSON.parse(await readFile(customManifest, 'utf8'));
+    customJson.notes = 'BEGIN PRIVATE KEY - SYNTHETIC MARKER ONLY';
+    await writeFile(customManifest, JSON.stringify(customJson));
+    assert.notEqual(run('audit-nightly-artifacts.cjs', customManifest).status, 0, 'custom manifests must be inspected for private markers');
     await writeFile(path.join(directory, '.env.fixture'), 'not-a-real-secret');
     assert.notEqual(run('audit-nightly-artifacts.cjs').status, 0, 'private filenames must fail the artifact audit');
     // This test proves pairing/metadata only; no real signature is created or verified.
@@ -101,6 +110,8 @@ test('Nightly workflow is valid YAML and preserves prerelease/Stable boundaries'
   const workflow = yaml.load(await readFile('.github/workflows/nightly.yml', 'utf8'));
   const steps = workflow.jobs['build-and-publish-nightly'].steps;
   const publish = steps.find(step => step.uses === 'softprops/action-gh-release@v2');
+  assert.equal(workflow.on.workflow_dispatch.inputs.publish_release.default, false);
+  assert.equal(publish.if, '${{ inputs.publish_release }}');
   assert.equal(publish.with.prerelease, true);
   assert.equal(publish.with.make_latest, 'false');
   assert.equal(publish.with.draft, false);
@@ -108,6 +119,8 @@ test('Nightly workflow is valid YAML and preserves prerelease/Stable boundaries'
   assert.ok(!publish.with.files.split('\n').some(file => file.trim() === 'latest.json'));
   assert.ok(!publish.with.files.includes('*-setup.exe'), 'upload must use exact versioned filenames');
   assert.ok(steps.some(step => step.run?.includes('npm test')));
+  assert.ok(!steps.some(step => /git push|git checkout main|git reset --hard/.test(step.run ?? '')), 'Nightly must not mutate main');
+  assert.ok(steps.some(step => step.uses === 'actions/upload-artifact@v4'));
   for (const step of steps) {
     assert.ok(!step.run?.includes('${{ github.event.inputs.'), 'dispatch input must be passed through env, not injected as shell code');
     assert.ok(!step.run?.includes('--features test-lab'));

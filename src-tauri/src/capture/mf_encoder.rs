@@ -32,6 +32,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE,
     MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
     CODECAPI_AVEncCommonLowLatency, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonQuality, CODECAPI_AVEncVideoEncodeQP,
     CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
     MFVideoInterlace_Progressive,
@@ -197,12 +198,15 @@ impl GpuBgraToNv12 {
                 right: desc.Width as i32,
                 bottom: desc.Height as i32,
             };
-            let dst_rect = RECT {
-                left: 0,
-                top: 0,
-                right: self.dst_w as i32,
-                bottom: self.dst_h as i32,
+            let (left,top,right,bottom)=super::recovery::fit_destination(desc.Width,desc.Height,self.dst_w,self.dst_h);
+            let dst_rect = RECT {left,top,right,bottom};
+            let output_rect=RECT {left:0,top:0,right:self.dst_w as i32,bottom:self.dst_h as i32};
+            let black=windows::Win32::Graphics::Direct3D11::D3D11_VIDEO_COLOR {
+                Anonymous:windows::Win32::Graphics::Direct3D11::D3D11_VIDEO_COLOR_0 {
+                    RGBA:windows::Win32::Graphics::Direct3D11::D3D11_VIDEO_COLOR_RGBA {R:0.0,G:0.0,B:0.0,A:1.0}
+                }
             };
+            self.video_context.VideoProcessorSetOutputBackgroundColor(&self.processor,false,&black);
             self.video_context.VideoProcessorSetStreamSourceRect(
                 &self.processor,
                 0,
@@ -216,7 +220,7 @@ impl GpuBgraToNv12 {
                 Some(&dst_rect),
             );
             self.video_context
-                .VideoProcessorSetOutputTargetRect(&self.processor, true, Some(&dst_rect));
+                .VideoProcessorSetOutputTargetRect(&self.processor, true, Some(&output_rect));
 
             let mut stream = D3D11_VIDEO_PROCESSOR_STREAM {
                 Enable: true.into(),
@@ -314,6 +318,7 @@ pub struct MfH264Encoder {
     pub height: u32,
     pub fps: u32,
     pub current_bitrate_bps: u32,
+    pub property_readback: serde_json::Value,
     force_software: bool,
     supports_live_bitrate: bool,
     last_reinit_at: Instant,
@@ -336,6 +341,9 @@ impl MfH264Encoder {
         bitrate_bps: u32,
         force_software: bool,
     ) -> Result<Self> {
+        if super::health::validate_encoder_dimensions(width, height).is_err() {
+            return Err(windows::core::Error::from_hresult(windows::Win32::Media::MediaFoundation::MF_E_INVALIDMEDIATYPE));
+        }
         unsafe {
             let out_type = MFT_REGISTER_TYPE_INFO {
                 guidMajorType: MFMediaType_Video,
@@ -473,26 +481,31 @@ impl MfH264Encoder {
         }
 
         let codec_api = mft.cast::<ICodecAPI>().ok();
+        let mut set_results = serde_json::Map::new();
         if let Some(ref api) = codec_api {
-            let _ = set_codec_u32(
-                api,
-                &CODECAPI_AVEncCommonRateControlMode,
-                eAVEncCommonRateControlMode_CBR.0 as u32,
-            );
-            let _ = set_codec_u32(api, &CODECAPI_AVEncCommonMeanBitRate, bitrate_bps);
-            let _ = set_codec_bool(api, &CODECAPI_AVEncCommonLowLatency, true);
-            let _ = set_codec_bool(api, &CODECAPI_AVLowLatencyMode, true);
-            let _ = set_codec_u32(api, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
-            let _ = set_codec_u32(api, &CODECAPI_AVEncMPVGOPSize, fps.max(1) * 2);
+            for (name,key,value) in [
+                ("rate_control", CODECAPI_AVEncCommonRateControlMode, VARIANT::from(eAVEncCommonRateControlMode_CBR.0 as u32)),
+                ("mean_bitrate", CODECAPI_AVEncCommonMeanBitRate, VARIANT::from(bitrate_bps)),
+                ("low_latency", CODECAPI_AVEncCommonLowLatency, VARIANT::from(true)),
+                ("low_latency_mode", CODECAPI_AVLowLatencyMode, VARIANT::from(true)),
+                ("b_frames", CODECAPI_AVEncMPVDefaultBPictureCount, VARIANT::from(0u32)),
+                ("gop", CODECAPI_AVEncMPVGOPSize, VARIANT::from(fps.max(1)*2)),
+            ] {
+                let hr=(Interface::vtable(api).SetValue)(Interface::as_raw(api), &key, &value);
+                set_results.insert(name.into(), serde_json::json!({"hresult":hr.0,"accepted":hr.0==0}));
+            }
         }
 
         let mut chosen_profile = H264_PROFILE_BASE;
         let out_mt_base = build_h264_out_mt(width, height, fps, bitrate_bps, H264_PROFILE_BASE)?;
-        if mft.SetOutputType(0, &out_mt_base, 0).is_err() {
+        if let Err(e) = mft.SetOutputType(0, &out_mt_base, 0) {
+            crate::capture::log_capture_diag(None, &format!("screen_encoder stage=SetOutputType profile=baseline width={} height={} hresult=0x{:08X}", width, height, e.code().0 as u32));
             chosen_profile = H264_PROFILE_MAIN;
             let out_mt_main =
                 build_h264_out_mt(width, height, fps, bitrate_bps, H264_PROFILE_MAIN)?;
-            mft.SetOutputType(0, &out_mt_main, 0)?;
+            mft.SetOutputType(0, &out_mt_main, 0).map_err(|e| {
+                crate::capture::log_capture_diag(None, &format!("screen_encoder stage=SetOutputType profile=main width={} height={} hresult=0x{:08X}", width, height, e.code().0 as u32)); e
+            })?;
         }
 
         let in_mt = MFCreateMediaType()?;
@@ -502,8 +515,14 @@ impl MfH264Encoder {
         in_mt.SetUINT64(&MF_MT_FRAME_RATE, pack_u32_pair(fps, 1))?;
         in_mt.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
         in_mt.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_u32_pair(1, 1))?;
-        mft.SetInputType(0, &in_mt, 0)?;
+        mft.SetInputType(0, &in_mt, 0).map_err(|e| {
+            crate::capture::log_capture_diag(None, &format!("screen_encoder stage=SetInputType format=NV12 width={} height={} hresult=0x{:08X}", width, height, e.code().0 as u32)); e
+        })?;
+        crate::capture::log_capture_diag(None, &format!("screen_encoder configured target_bps={} fps={} gop_requested={} rate_control_requested=CBR max_bitrate_configured=false qp_configured=false", bitrate_bps, fps, fps.max(1) * 2));
 
+        let mut property_readback = codec_snapshot(codec_api.as_ref(), bitrate_bps, fps);
+        property_readback["set_results"] = serde_json::Value::Object(set_results);
+        crate::capture::log_capture_diag(None, &format!("screen_encoder properties={}", property_readback));
         let output_stream_info = mft.GetOutputStreamInfo(0)?;
         let _ = mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
         let _ = mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
@@ -520,7 +539,7 @@ impl MfH264Encoder {
         let supports_live_bitrate = if is_amd_mft {
             false
         } else if let Some(ref api) = codec_api {
-            api.IsModifiable(&CODECAPI_AVEncCommonMeanBitRate).is_ok()
+            codec_flag(api, &CODECAPI_AVEncCommonMeanBitRate, true)
         } else {
             false
         };
@@ -560,6 +579,7 @@ impl MfH264Encoder {
             height,
             fps,
             current_bitrate_bps: bitrate_bps,
+            property_readback,
             force_software,
             supports_live_bitrate,
             last_reinit_at: Instant::now(),
@@ -599,8 +619,19 @@ impl MfH264Encoder {
             if let Some(ref api) = self.codec_api {
                 if unsafe { set_codec_u32(api, &CODECAPI_AVEncCommonMeanBitRate, bitrate_bps) }.is_ok()
                 {
-                    self.current_bitrate_bps = bitrate_bps;
-                    return Ok(BitrateUpdateOutcome::AppliedLive);
+                    self.property_readback = unsafe { codec_snapshot(Some(api), bitrate_bps, self.fps) };
+                    let readback = unsafe { read_codec_u32(api, &CODECAPI_AVEncCommonMeanBitRate) };
+                    crate::capture::log_capture_diag(None, &format!("screen_encoder live_requested_bps={} live_readback_bps={:?}", bitrate_bps, readback));
+                    if readback == Some(bitrate_bps) {
+                        self.current_bitrate_bps = bitrate_bps;
+                        return Ok(BitrateUpdateOutcome::AppliedLive);
+                    }
+                    // Reconcile a write with unknown/mismatching readback immediately.
+                    // Do not let the normal 12% cooldown leave the MFT in an unknown state.
+                    self.supports_live_bitrate = false;
+                    self.reconfigure(device,self.width,self.height,self.fps,bitrate_bps,self.force_software)?;
+                    return Ok(BitrateUpdateOutcome::Reinitialized);
+
                 }
             }
             self.supports_live_bitrate = false;
@@ -989,15 +1020,49 @@ unsafe fn get_act_string(act: &IMFActivate, key: &GUID) -> Option<String> {
     }
 }
 
+// IsSupported/IsModifiable return S_FALSE as a successful HRESULT. Require S_OK.
+unsafe fn codec_flag(api: &ICodecAPI, key: &GUID, modifiable: bool) -> bool {
+    let result = if modifiable { (Interface::vtable(api).IsModifiable)(Interface::as_raw(api), key) }
+        else { (Interface::vtable(api).IsSupported)(Interface::as_raw(api), key) };
+    result.0 == 0
+}
+unsafe fn read_codec_u32(api: &ICodecAPI, key: &GUID) -> Option<u32> {
+    api.GetValue(key).ok().and_then(|value| u32::try_from(&value).ok())
+}
+unsafe fn codec_snapshot(api: Option<&ICodecAPI>, bitrate: u32, fps: u32) -> serde_json::Value {
+    let mut values = serde_json::Map::new();
+    for (name, key, requested) in [
+        ("rate_control", CODECAPI_AVEncCommonRateControlMode, Some(0)),
+        ("mean_bitrate", CODECAPI_AVEncCommonMeanBitRate, Some(bitrate)),
+        ("max_bitrate", CODECAPI_AVEncCommonMaxBitRate, None),
+        ("gop", CODECAPI_AVEncMPVGOPSize, Some(fps.max(1)*2)),
+        ("b_frames", CODECAPI_AVEncMPVDefaultBPictureCount, Some(0)),
+        ("quality", CODECAPI_AVEncCommonQuality, None),
+        ("qp", CODECAPI_AVEncVideoEncodeQP, None),
+    ] {
+        let readback = api.and_then(|a| a.GetValue(&key).ok()).and_then(|v| u64::try_from(&v).ok());
+        values.insert(name.into(), serde_json::json!({"supported": api.is_some_and(|a| codec_flag(a,&key,false)), "modifiable":api.is_some_and(|a| codec_flag(a,&key,true)), "requested":requested, "readback":readback, "matches_requested":requested.zip(readback).map(|(a,b)| a as u64==b)}));
+    }
+    let advertised_modes = api.and_then(|a| {
+        let mut ptr: *mut VARIANT = std::ptr::null_mut(); let mut count=0u32;
+        if a.GetParameterValues(&CODECAPI_AVEncCommonRateControlMode,&mut ptr,&mut count).is_err() || ptr.is_null() {return None;}
+        let mut modes=Vec::new();
+        for i in 0..count {
+            let value=&mut *ptr.add(i as usize);
+            if let Ok(mode)=u32::try_from(&*value) {modes.push(mode);}
+            let _=windows::Win32::System::Variant::VariantClear(value);
+        }
+        CoTaskMemFree(Some(ptr.cast())); Some(modes)
+    });
+    values.insert("advertised_rate_control_modes".into(),serde_json::json!(advertised_modes));
+    serde_json::Value::Object(values)
+}
+
 unsafe fn set_codec_u32(api: &ICodecAPI, key: &GUID, val: u32) -> Result<()> {
     let var = VARIANT::from(val);
     api.SetValue(key, &var)
 }
 
-unsafe fn set_codec_bool(api: &ICodecAPI, key: &GUID, val: bool) -> Result<()> {
-    let var = VARIANT::from(val);
-    api.SetValue(key, &var)
-}
 
 #[cfg(test)]
 mod tests {

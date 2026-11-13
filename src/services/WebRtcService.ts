@@ -1,3 +1,4 @@
+import { screenIceServers, assertScreenCandidate, assertScreenSdp, assertVoiceOnlySdp, guardScreenP2P, SCREEN_P2P_ERROR, SCREEN_DEDICATED_REQUIRED } from './ScreenP2PPolicy.ts';
 /**
  * NEXUS - WebRTC 1:1 Voice & Screen Call Engine (Calls & Streaming 2.0)
  * Gerencia captura de microfone com consentimento explícito, seleção e fallback
@@ -9,6 +10,8 @@
 import { audioDeviceService } from './AudioDeviceService.ts';
 import { processAnalyserFrame, type VoiceActivityDetector } from '../lib/voiceActivity.ts';
 import { screenCaptureService, applyTrackContentHint } from './ScreenCaptureService.ts';
+import { startScreenReceiveDiagnostics } from './ScreenReceiveDiagnostics.ts';
+import { releaseScreenStream, screenSessionId } from './screenReceiverLifecycle.ts';
 import type {
   ScreenShareQualityPreset,
   WebRtcTransportDiagnostics,
@@ -74,6 +77,7 @@ export type WebRtcCallbacks = {
   onRemoteVideoTrack?: (track: MediaStreamTrack, stream: MediaStream) => void;
   onRemoteVideoMuteChange?: (isMuted: boolean) => void;
   onRemoteVideoEnded?: () => void;
+  onScreenReceiveWarning?: (message: string) => void;
   onDeviceFallback?: (kind: 'input' | 'output', reason: string) => void;
 };
 
@@ -567,6 +571,12 @@ export class WebRtcService {
   private screenVideoSender: RTCRtpSender | null = null;
   private remoteVideoStream: MediaStream | null = null;
   private screenReceiverPc: RTCPeerConnection | null = null;
+  private screenReceiverStream: MediaStream | null = null;
+  private screenReceiverGeneration = 0;
+  private remoteScreenSessionId: string | null = null;
+  private screenReceiverStopped = false;
+  private stopScreenDiagnostics: (() => void) | null = null;
+  private stopScreenP2P: (() => void) | null = null;
   private screenReceiverCandidateQueue: RTCIceCandidateInit[] = [];
   private onScreenReceiverIceCallback: ((candidate: RTCIceCandidateInit) => void) | null = null;
   private isMuted = false;
@@ -1162,44 +1172,11 @@ export class WebRtcService {
    * Vincula a track de vídeo de tela local à conexão WebRTC existente e retorna o novo SDP Offer
    */
   async attachScreenTrack(
-    track: MediaStreamTrack,
-    stream: MediaStream,
-    preset?: ScreenShareQualityPreset
+    _track: MediaStreamTrack,
+    _stream: MediaStream,
+    _preset?: ScreenShareQualityPreset
   ): Promise<string> {
-    return this.enqueueSignaling(async () => {
-      if (this.isDestroyed) {
-        throw new Error('Sessão WebRTC já encerrada.');
-      }
-      const pc = this.peerConnection || this.createPeerConnection();
-      this.screenVideoTrack = track;
-      this.activeScreenPreset =
-        preset || screenCaptureService.getQualityPreset() || 'auto';
-
-      const existingSender = pc.getSenders().find(
-        (s) => s.track?.kind === 'video' || (s.track === null && (s as any).kind === 'video')
-      );
-
-      if (existingSender) {
-        this.screenVideoSender = existingSender;
-        await existingSender.replaceTrack(track);
-        console.log('[WebRtcService] Track de vídeo substituído no sender existente via replaceTrack.');
-      } else {
-        this.screenVideoSender = pc.addTrack(track, stream);
-        console.log('[WebRtcService] Nova faixa de vídeo anexada via addTrack.');
-      }
-
-      this.applyPreferredVideoCodecs(pc);
-      // Keep warmup throughout negotiation, including delayed answers.
-      this.clearBitrateRampTimers();
-      this.screenRampPendingNegotiation = true;
-      await this.applySenderQualityParameters(this.activeScreenPreset, 'warmup');
-
-      this.hasAppliedRemoteAnswer = false;
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      console.log('[WebRtcService] SDP Offer de renegociação (vídeo adicionado) criada com sucesso.');
-      return offer.sdp || '';
-    });
+    throw new Error(SCREEN_DEDICATED_REQUIRED);
   }
 
   /**
@@ -1351,6 +1328,7 @@ export class WebRtcService {
           '[WebRtcService] Conexão já em have-remote-offer, gerando answer sem re-executar setRemoteDescription.'
         );
       } else {
+        assertVoiceOnlySdp(sdp);
         await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
       }
 
@@ -1401,6 +1379,7 @@ export class WebRtcService {
         return;
       }
 
+      assertVoiceOnlySdp(sdp);
       await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
       if (this.isDestroyed || this.peerConnection !== pc) return;
 
@@ -2203,19 +2182,33 @@ export class WebRtcService {
   }
 
   public async handleRemoteScreenOffer(sdp: string): Promise<string | null> {
+    try { assertScreenSdp(sdp); } catch {
+      this.closeScreenReceiver(); (this.callbacks.onScreenReceiveWarning ?? this.callbacks.onError)(SCREEN_P2P_ERROR); throw new Error(SCREEN_P2P_ERROR);
+    }
+    const id = screenSessionId(sdp);
+    if (id && this.remoteScreenSessionId && id !== this.remoteScreenSessionId) this.closeScreenReceiver();
+    this.remoteScreenSessionId = id;
+    this.screenReceiverStopped = false;
+    const generation = this.screenReceiverGeneration;
     return this.enqueueScreenReceiverSignaling(async () => {
-      if (this.isDestroyed) return null;
+      const alive = () => !this.isDestroyed && generation === this.screenReceiverGeneration;
+      if (!alive()) return null;
       if (!this.screenReceiverPc) {
         const iceServers = this.cachedIceServers ?? (await this.fetchIceServers());
-        if (this.isDestroyed) return null;
+        if (!alive()) return null;
         const pc = new RTCPeerConnection({
-          iceServers,
+          iceServers: screenIceServers(iceServers),
+          iceTransportPolicy: 'all',
           bundlePolicy: 'max-bundle',
           rtcpMuxPolicy: 'require',
           iceCandidatePoolSize: 2,
         });
         const stream = new MediaStream();
         this.screenReceiverPc = pc;
+        this.screenReceiverStream = stream;
+        this.stopScreenDiagnostics = startScreenReceiveDiagnostics(pc, stream, () => {
+          if (alive()) this.callbacks.onScreenReceiveWarning?.('A transmissão conectou, mas ainda não recebeu vídeo. Tente reiniciar o compartilhamento.');
+        });
 
         pc.onicecandidate = (event) => {
           if (this.isDestroyed || this.screenReceiverPc !== pc || !event.candidate) return;
@@ -2230,20 +2223,30 @@ export class WebRtcService {
           this.onScreenReceiverIceCallback?.(init);
         };
 
+        let p2pReady = false;
+        const publish = () => {
+          const track = stream.getVideoTracks()[0];
+          if (!p2pReady || !track || this.screenReceiverPc !== pc) return;
+          this.remoteVideoStream = stream;
+          this.callbacks.onRemoteVideoTrack?.(track, stream);
+        };
+        this.stopScreenP2P = guardScreenP2P(pc, ready => {
+          p2pReady = ready; stream.getTracks().forEach(track => { track.enabled = ready; });
+          if (ready) publish();
+        }, message => {
+          if (this.screenReceiverPc === pc) { this.closeScreenReceiver(); (this.callbacks.onScreenReceiveWarning ?? this.callbacks.onError)(message); }
+        });
         pc.ontrack = (event) => {
           if (this.isDestroyed || this.screenReceiverPc !== pc) return;
           const track = event.track;
+          track.enabled = p2pReady;
           if (!stream.getTracks().some((t) => t.id === track.id)) {
             stream.addTrack(track);
           }
           if (track.kind === 'video') {
-            this.remoteVideoStream = stream;
-            this.callbacks.onRemoteVideoTrack?.(track, stream);
+            publish();
             track.onended = () => {
-              if (this.remoteVideoStream === stream) {
-                this.remoteVideoStream = null;
-                this.callbacks.onRemoteVideoEnded?.();
-              }
+              if (this.screenReceiverPc === pc) this.closeScreenReceiver();
             };
           }
         };
@@ -2251,31 +2254,43 @@ export class WebRtcService {
         pc.onconnectionstatechange = () => {
           if (this.isDestroyed || this.screenReceiverPc !== pc) return;
           if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
-            if (this.remoteVideoStream === stream) {
-              this.remoteVideoStream = null;
-              this.callbacks.onRemoteVideoEnded?.();
-            }
+            this.closeScreenReceiver();
           }
         };
       }
 
       const pc = this.screenReceiverPc;
+      try {
       await pc.setRemoteDescription({ type: 'offer', sdp });
+      if (!alive()) return null;
       while (this.screenReceiverCandidateQueue.length > 0) {
         const cand = this.screenReceiverCandidateQueue.shift();
         if (cand) {
+          assertScreenCandidate(cand);
           await pc.addIceCandidate(cand).catch(() => {});
+          if (!alive()) return null;
         }
       }
       const answer = await pc.createAnswer();
+      if (!alive()) return null;
       await pc.setLocalDescription(answer);
+      if (!alive()) return null;
       return pc.localDescription?.sdp ?? null;
+      } catch (error) {
+        if (!alive()) return null;
+        this.closeScreenReceiver();
+        throw error;
+      }
     });
   }
 
   public async addScreenReceiverIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+    try { assertScreenCandidate(candidate); } catch {
+      this.closeScreenReceiver(); (this.callbacks.onScreenReceiveWarning ?? this.callbacks.onError)(SCREEN_P2P_ERROR); throw new Error(SCREEN_P2P_ERROR);
+    }
+    const generation = this.screenReceiverGeneration;
     return this.enqueueScreenReceiverSignaling(async () => {
-      if (this.isDestroyed) return;
+      if (this.isDestroyed || this.screenReceiverStopped || generation !== this.screenReceiverGeneration) return;
       if (!this.screenReceiverPc || !this.screenReceiverPc.remoteDescription) {
         if (this.screenReceiverCandidateQueue.length < 256) {
           this.screenReceiverCandidateQueue.push(candidate);
@@ -2286,8 +2301,15 @@ export class WebRtcService {
     });
   }
 
-  public closeScreenReceiver(): void {
-    this.screenReceiverSignalingChain = Promise.resolve();
+  public closeScreenReceiver(expectedSessionId?: string): void {
+    if (expectedSessionId && expectedSessionId !== this.remoteScreenSessionId) return;
+    this.screenReceiverGeneration++;
+    this.screenReceiverStopped = true;
+    this.remoteScreenSessionId = null;
+    this.stopScreenP2P?.(); this.stopScreenP2P = null;
+    this.stopScreenDiagnostics?.();
+    this.stopScreenDiagnostics = null;
+    // Keep serialization intact; generation checks cancel work already awaiting IPC/SDP.
     if (this.screenReceiverPc) {
       try {
         this.screenReceiverPc.onicecandidate = null;
@@ -2298,5 +2320,12 @@ export class WebRtcService {
       this.screenReceiverPc = null;
     }
     this.screenReceiverCandidateQueue = [];
+    const stream = this.screenReceiverStream;
+    this.screenReceiverStream = null;
+    releaseScreenStream(stream);
+    if (stream && this.remoteVideoStream === stream) {
+      this.remoteVideoStream = null;
+      this.callbacks.onRemoteVideoEnded?.();
+    }
   }
 }

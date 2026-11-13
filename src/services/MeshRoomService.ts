@@ -1,3 +1,4 @@
+import { screenIceServers, assertScreenCandidate, assertScreenSdp, assertVoiceOnlySdp, guardScreenP2P, SCREEN_P2P_ERROR, SCREEN_DEDICATED_REQUIRED } from './ScreenP2PPolicy.ts';
 /**
  * NEXUS - WebRTC P2P Mesh Voice & Screen Room Engine (Phase B3.2)
  *
@@ -8,9 +9,11 @@
  * multiplos streamers simultaneos e telemetria real via getStats().
  */
 
-import { audioDeviceService } from './AudioDeviceService';
-import { screenCaptureService, applyTrackContentHint } from './ScreenCaptureService';
-import { processAnalyserFrame, type VoiceActivityDetector } from '../lib/voiceActivity';
+import { audioDeviceService } from './AudioDeviceService.ts';
+import { startScreenReceiveDiagnostics, screenReceiverContext } from './ScreenReceiveDiagnostics.ts';
+import { detachScreenElements, releaseScreenStream, screenSessionId, screenCandidateSessionId, tagScreenCandidate, screenAnswerSessionId, tagScreenAnswer, screenCandidateInit } from './screenReceiverLifecycle.ts';
+import { screenCaptureService, applyTrackContentHint } from './ScreenCaptureService.ts';
+import { processAnalyserFrame, type VoiceActivityDetector } from '../lib/voiceActivity.ts';
 import type {
   NativeCaptureStatus,
   NativeScreenStatsEvent,
@@ -76,6 +79,8 @@ const VOICE_ROOM_QUALITY_PRESETS: Record<VoiceRoomQualityPreset, VideoEncodingPr
   },
 };
 
+export type ScreenReceiverState = 'connecting' | 'waiting_video' | 'failed' | 'closed';
+
 export interface MeshRoomCallbacks {
   onSendOffer: (peerUserId: string, sdp: string, streamKind?: StreamKind) => void;
   onSendAnswer: (peerUserId: string, sdp: string, streamKind?: StreamKind) => void;
@@ -83,15 +88,22 @@ export interface MeshRoomCallbacks {
   onPeerStatusChange?: (peerUserId: string, status: VoiceRoomPeerStatus) => void;
   onLocalSpeaking?: (isSpeaking: boolean) => void;
   onPeerSpeaking?: (peerUserId: string, isSpeaking: boolean) => void;
+  onScreenReceiverState?: (peerUserId: string, state: ScreenReceiverState) => void;
   onRemoteVideoStreamsChange?: (streams: Map<string, MediaStream>) => void;
   onMetricsUpdate?: (snapshot: VoiceRoomMetricsSnapshot) => void;
   onNativeStatusChange?: (status: NativeCaptureStatus | null) => void;
   onNativeStats?: (stats: NativeScreenStatsEvent | null) => void;
   onNativeScreenEnded?: (reason: string) => void;
+  onScreenSharingChange?: (sharing: boolean) => void;
   onError?: (message: string) => void;
 }
 
 interface ScreenReceiverSession {
+  offerSessionId: string | null;
+  lastOfferSdp?: string;
+  answerSdp?: string;
+  diagnostics: Record<string, number>;
+  stopDiagnostics: () => void;
   peerUserId: string;
   pc: RTCPeerConnection;
   stream: MediaStream;
@@ -184,6 +196,15 @@ export class MeshRoomService {
 
   private peers = new Map<string, PeerSession>();
   private screenReceiverPeers = new Map<string, ScreenReceiverSession>();
+  private screenReceiverCreations = new Map<string, Promise<ScreenReceiverSession | null>>();
+  private screenReceiverVersions = new Map<string, number>();
+  private screenReceiverOfferIds = new Map<string, string>();
+  private earlyScreenCandidates = new Map<string, RTCIceCandidateInit[]>();
+  private stoppedScreenPeers = new Set<string>();
+  private departedPeers = new Set<string>();
+  private roomGeneration = 0;
+  private nativeScreenGeneration = 0;
+  private nativeStartRequest = 0;
   private remoteVideoStreams = new Map<string, MediaStream>();
   private peerVolumes = new Map<string, number>();
 
@@ -195,6 +216,15 @@ export class MeshRoomService {
 
   private screenVideoTrack: MediaStreamTrack | null = null;
   private nativeScreenActive = false;
+  private nativeScreenStarting = false;
+  private nativeScreenReadyPeers = new Set<string>();
+  private screenRetryOffers = new Map<string, string>();
+  private screenRetryLimits = new Map<string, { at: number; count: number }>();
+  private screenRetryPending = new Map<string, ReturnType<typeof setTimeout>>();
+  private nativeScreenRetryLimits = new Map<string, { at: number; count: number }>();
+  private nativeScreenOfferIds = new Map<string, string>();
+  private nativeScreenPendingIce = new Map<string, RTCIceCandidateInit[]>();
+  private nativeScreenPeerVersions = new Map<string, number>();
   private nativeUnlisten: (() => void) | null = null;
   private adaptiveBitrateBps = 2_500_000;
   private lastAdaptiveUpdateMs = 0;
@@ -338,6 +368,7 @@ export class MeshRoomService {
   public async addParticipant(participant: RoomParticipantDto): Promise<void> {
     if (!this.isActive || !this.selfUserId) return;
     if (participant.user_id === this.selfUserId) return;
+    this.departedPeers.delete(participant.user_id);
     if (this.sessionInitPromise) {
       await this.sessionInitPromise;
       if (!this.isActive || !this.selfUserId) return;
@@ -350,6 +381,12 @@ export class MeshRoomService {
   }
 
   public removeParticipant(peerUserId: string): void {
+    this.nativeScreenPeerVersions.set(peerUserId, (this.nativeScreenPeerVersions.get(peerUserId) ?? 0) + 1);
+    this.nativeScreenReadyPeers.delete(peerUserId);
+    this.nativeScreenPendingIce.delete(peerUserId);
+    this.nativeScreenOfferIds.delete(peerUserId);
+    this.departedPeers.add(peerUserId);
+    this.closeRemoteScreen(peerUserId);
     const peer = this.peers.get(peerUserId);
     if (peer) {
       this.cleanupPeer(peer);
@@ -377,6 +414,15 @@ export class MeshRoomService {
 
   public async leaveRoom(): Promise<void> {
     this.isActive = false;
+    this.roomGeneration++;
+    this.screenReceiverCreations.clear();
+    this.earlyScreenCandidates.clear();
+    this.stoppedScreenPeers.clear();
+    this.departedPeers.clear();
+    this.screenReceiverVersions.clear();
+    this.screenReceiverOfferIds.clear();
+    this.screenRetryOffers.clear(); this.screenRetryLimits.clear();
+    this.screenRetryPending.forEach(clearTimeout); this.screenRetryPending.clear();
     this.sessionInitPromise = null;
 
     if (this.vadInterval) {
@@ -404,6 +450,7 @@ export class MeshRoomService {
     }
 
     await this.stopScreenShare();
+
     this.teardownLocalAudio();
 
     this.selfUserId = null;
@@ -497,7 +544,12 @@ export class MeshRoomService {
     options: StartScreenShareOptions
   ): Promise<NativeCaptureStatus | null> {
     if (!this.isActive) return null;
-    await this.stopScreenShare();
+    const request = ++this.nativeStartRequest;
+    const room = this.roomGeneration;
+    await this.stopScreenShare(false);
+    if (request !== this.nativeStartRequest || room !== this.roomGeneration) return null;
+    const generation = this.nativeScreenGeneration;
+    const alive = () => this.isActive && request === this.nativeStartRequest && room === this.roomGeneration && generation === this.nativeScreenGeneration;
 
     const preset = options.preset ?? this.activeQuality ?? 'auto';
     this.activeQuality = preset;
@@ -508,90 +560,88 @@ export class MeshRoomService {
 
     const iceServers =
       options.ice_servers ?? this.cachedIceServers ?? (await this.fetchIceServers());
+    if (!alive()) return null;
 
-    this.nativeUnlisten = await screenCaptureService.subscribeNativeEvents({
+    const unlisten = await screenCaptureService.subscribeNativeEvents({
       onIce: (ev) => {
-        if (!this.isActive || !this.nativeScreenActive) return;
-        this.callbacks?.onSendIceCandidate(
-          ev.peer_id,
-          {
-            candidate: ev.candidate,
-            sdpMid: ev.sdp_mid ?? undefined,
-            sdpMLineIndex: ev.sdp_mline_index ?? undefined,
-          },
-          'screen'
-        );
+        if (!alive() || !this.nativeScreenActive || this.departedPeers.has(ev.peer_id)) return;
+        const candidate = tagScreenCandidate({ candidate: ev.candidate, sdpMid: ev.sdp_mid ?? undefined, sdpMLineIndex: ev.sdp_mline_index ?? undefined }, ev.sdp_session_id ?? null);
+        if (!this.nativeScreenReadyPeers.has(ev.peer_id)) {
+          const queue = this.nativeScreenPendingIce.get(ev.peer_id) ?? [];
+          if (queue.length < MAX_CANDIDATE_QUEUE_SIZE) queue.push(candidate);
+          this.nativeScreenPendingIce.set(ev.peer_id, queue);
+          return;
+        }
+        const id = this.nativeScreenOfferIds.get(ev.peer_id);
+        if (screenCandidateSessionId(candidate) && screenCandidateSessionId(candidate) !== id) return;
+        this.callbacks?.onSendIceCandidate(ev.peer_id, tagScreenCandidate(candidate, id ?? null), 'screen');
       },
       onStats: (ev) => {
-        if (!this.isActive || !this.nativeScreenActive) return;
+        if (!alive() || !this.nativeScreenActive) return;
         this.callbacks?.onNativeStats?.(ev);
       },
       onError: (ev) => {
-        if (!this.isActive) return;
+        if (!alive()) return;
         this.callbacks?.onError?.(ev.message);
-        if (!ev.recoverable && this.nativeScreenActive) {
+        if (!ev.recoverable && (this.nativeScreenActive || this.nativeScreenStarting)) {
+          this.callbacks?.onNativeScreenEnded?.('capture_failed');
           void this.stopScreenShare();
         }
       },
       onEnded: (ev) => {
-        if (!this.nativeScreenActive) return;
-        this.teardownNativeScreenState();
+        if (!alive() || (!this.nativeScreenActive && !this.nativeScreenStarting)) return;
+        if (this.nativeScreenStarting && !this.nativeScreenActive && ev.reason === 'user_stopped') return;
         this.callbacks?.onNativeScreenEnded?.(ev.reason);
+        void this.stopScreenShare();
       },
     });
 
+    if (!alive()) { unlisten(); return null; }
+    this.nativeUnlisten = unlisten;
+
     try {
+      this.nativeScreenStarting = true;
       const status = await screenCaptureService.startNativeShare({
         ...options,
         preset,
         ice_servers: iceServers,
       });
+      if (!alive()) return null;
+      this.nativeScreenStarting = false;
       this.nativeScreenActive = true;
       this.adaptiveBitrateBps = status.bitrate_bps || cfg.maxBitrate;
       this.callbacks?.onNativeStatusChange?.(status);
+      this.callbacks?.onScreenSharingChange?.(true);
 
       for (const peerUserId of this.peers.keys()) {
-        await this.addNativeScreenPeer(peerUserId, iceServers);
+        try { await this.addNativeScreenPeer(peerUserId, iceServers); }
+        catch {
+          if (alive()) this.callbacks?.onError?.('Não foi possível conectar a tela a um participante. Os outros espectadores continuam conectados.');
+        }
+        if (!alive()) return null;
       }
-      return status;
+      return alive() ? status : null;
     } catch (err) {
-      this.teardownNativeScreenState();
+      if (!alive()) return null;
+      await this.stopScreenShare();
       throw err;
     }
   }
 
-  public async startScreenShare(preset: VoiceRoomQualityPreset = 'auto'): Promise<boolean> {
-    if (!this.isActive) return false;
-    await this.stopScreenShare();
-    this.activeQuality = preset;
-    const cfg = VOICE_ROOM_QUALITY_PRESETS[preset] ?? VOICE_ROOM_QUALITY_PRESETS.auto;
-
-    const stream = await screenCaptureService.startCapture(cfg.capturePreset);
-    if (!stream) return false;
-
-    const videoTrack = stream.getVideoTracks()[0];
-    if (!videoTrack) return false;
-
-    this.screenVideoTrack = videoTrack;
-    applyTrackContentHint(videoTrack, cfg.contentHint);
-
-    videoTrack.onended = () => {
-      this.stopScreenShare().catch(() => {});
-    };
-
-    for (const peer of this.peers.values()) {
-      await this.attachVideoTrackToPeer(peer, videoTrack, stream, cfg);
-    }
-
-    return true;
+  public async startScreenShare(_preset: VoiceRoomQualityPreset = 'auto'): Promise<boolean> {
+    this.callbacks?.onError?.(SCREEN_DEDICATED_REQUIRED);
+    return false;
   }
 
-  public async stopScreenShare(): Promise<void> {
-    if (this.nativeScreenActive) {
+  public async stopScreenShare(cancelPendingStart = true): Promise<void> {
+    if (cancelPendingStart) this.nativeStartRequest++;
+    this.nativeScreenGeneration++;
+    if (this.nativeScreenActive || this.nativeScreenStarting || this.screenVideoTrack) this.callbacks?.onScreenSharingChange?.(false);
+    if (this.nativeScreenActive || this.nativeScreenStarting) {
       this.teardownNativeScreenState();
-      await screenCaptureService.stopNativeShare().catch(() => {});
       this.callbacks?.onNativeStatusChange?.(null);
       this.callbacks?.onNativeStats?.(null);
+      await screenCaptureService.stopNativeShare().catch(() => {});
     }
 
     const track = this.screenVideoTrack;
@@ -667,6 +717,7 @@ export class MeshRoomService {
         return;
       }
 
+      assertVoiceOnlySdp(sdp);
       await peer.pc.setRemoteDescription({ type: 'offer', sdp });
       await this.flushPendingCandidates(peer);
       await peer.pc.setLocalDescription();
@@ -685,9 +736,11 @@ export class MeshRoomService {
     if (!this.isActive) return;
 
     if (streamKind === 'screen') {
+      const answerSession = screenAnswerSessionId(sdp);
+      if (answerSession && answerSession !== this.nativeScreenOfferIds.get(peerUserId)) return;
       if (this.nativeScreenActive) {
-        await screenCaptureService.handleNativeScreenAnswer(peerUserId, sdp).catch((err) => {
-          console.warn(`[MeshRoomService] Erro ao encaminhar screen answer de ${peerUserId}:`, err);
+        await screenCaptureService.handleNativeScreenAnswer(peerUserId, sdp, this.nativeScreenOfferIds.get(peerUserId)).catch((err) => {
+          console.warn('[ScreenP2P] answer_rejected'); this.callbacks?.onError?.(SCREEN_P2P_ERROR); void err;
         });
       }
       return;
@@ -699,6 +752,7 @@ export class MeshRoomService {
     return this.enqueuePeerSignaling(peer, async () => {
       peer.isSettingRemoteAnswerPending = true;
       try {
+        assertVoiceOnlySdp(sdp);
         await peer.pc.setRemoteDescription({ type: 'answer', sdp });
         await this.flushPendingCandidates(peer);
       } finally {
@@ -1119,17 +1173,9 @@ export class MeshRoomService {
   }
 
   private async attachVideoTrackToPeer(
-    peer: PeerSession,
-    track: MediaStreamTrack,
-    stream: MediaStream,
-    cfg: VideoEncodingPreset
+    _peer: PeerSession, _track: MediaStreamTrack, _stream: MediaStream, _cfg: VideoEncodingPreset
   ): Promise<void> {
-    if (peer.videoSender) {
-      await peer.videoSender.replaceTrack(track);
-    } else {
-      peer.videoSender = peer.pc.addTrack(track, stream);
-    }
-    await this.applyVideoSenderParameters(peer.videoSender, cfg);
+    throw new Error(SCREEN_DEDICATED_REQUIRED);
   }
 
   private async applyVideoSenderParameters(
@@ -1407,7 +1453,14 @@ export class MeshRoomService {
   }
 
   private teardownNativeScreenState(): void {
+    this.nativeScreenGeneration++;
+    this.nativeScreenStarting = false;
     this.nativeScreenActive = false;
+    this.nativeScreenReadyPeers.clear();
+    this.nativeScreenPendingIce.clear();
+    this.nativeScreenOfferIds.clear();
+    this.nativeScreenRetryLimits.clear();
+    this.nativeScreenPeerVersions.clear();
     if (this.nativeUnlisten) {
       try {
         this.nativeUnlisten();
@@ -1423,33 +1476,118 @@ export class MeshRoomService {
     iceServers?: RTCIceServer[]
   ): Promise<void> {
     if (!this.isActive || !this.nativeScreenActive) return;
-    const offer = await screenCaptureService.addNativeScreenPeer(peerUserId, iceServers);
-    if (this.isActive && this.nativeScreenActive && offer?.sdp) {
+    const generation = this.nativeScreenGeneration;
+    const peerVersion = (this.nativeScreenPeerVersions.get(peerUserId) ?? 0) + 1;
+    this.nativeScreenPeerVersions.set(peerUserId, peerVersion);
+    this.nativeScreenReadyPeers.delete(peerUserId);
+    this.nativeScreenPendingIce.delete(peerUserId);
+    const alive = () => this.isActive && this.nativeScreenActive && generation === this.nativeScreenGeneration &&
+      peerVersion === this.nativeScreenPeerVersions.get(peerUserId) && !this.departedPeers.has(peerUserId);
+    let offer;
+    try { offer = await screenCaptureService.addNativeScreenPeer(peerUserId, iceServers); }
+    catch (error) {
+      if (!alive()) return;
+      throw error;
+    }
+    if (alive() && offer?.sdp) {
+      const id = screenSessionId(offer.sdp);
+      if (id) this.nativeScreenOfferIds.set(peerUserId, id);
       this.callbacks?.onSendOffer(offer.peer_id || peerUserId, offer.sdp, 'screen');
+      this.nativeScreenReadyPeers.add(peerUserId);
+      for (const candidate of this.nativeScreenPendingIce.get(peerUserId) ?? []) {
+        if (screenCandidateSessionId(candidate) && screenCandidateSessionId(candidate) !== id) continue;
+        this.callbacks?.onSendIceCandidate(peerUserId, tagScreenCandidate(candidate, id), 'screen');
+      }
+      this.nativeScreenPendingIce.delete(peerUserId);
     }
   }
 
-  private async ensureScreenReceiverPeer(peerUserId: string): Promise<ScreenReceiverSession> {
+  // A retry asks the existing transmitter for one fresh dedicated PC, not a new capture.
+  public retryRemoteScreen(peerUserId: string): boolean {
+    const id = this.screenRetryOffers.get(peerUserId);
+    if (!id || !this.isActive || this.departedPeers.has(peerUserId) || this.screenRetryPending.has(peerUserId)) return false;
+    const limit = this.screenRetryLimits.get(peerUserId);
+    if (limit && (Date.now() - limit.at < 10000 || limit.count >= 3)) return false;
+    this.screenRetryLimits.set(peerUserId, { at: Date.now(), count: (limit?.count ?? 0) + 1 });
+    this.callbacks?.onScreenReceiverState?.(peerUserId, 'connecting');
+    const timer = setTimeout(() => {
+      this.screenRetryPending.delete(peerUserId);
+      if (this.isActive && this.screenRetryOffers.get(peerUserId) === id) {
+        this.callbacks?.onScreenReceiverState?.(peerUserId, 'failed');
+        this.callbacks?.onError?.('A nova tentativa não recebeu resposta. Peça ao transmissor para reiniciar a tela ou atualizar o NEXUS.');
+      }
+    }, 30000);
+    this.screenRetryPending.set(peerUserId, timer);
+    this.callbacks?.onSendIceCandidate(peerUserId,
+      { candidate: '', nexusScreenSessionId: id, nexusScreenAction: 'retry' } as RTCIceCandidateInit, 'screen');
+    return true;
+  }
+
+  private failRemoteScreen(peerUserId: string, message: string): void {
+    const id = this.screenReceiverOfferIds.get(peerUserId);
+    const limit = this.screenRetryLimits.get(peerUserId);
+    this.closeRemoteScreen(peerUserId);
+    if (id) this.screenRetryOffers.set(peerUserId, id);
+    if (limit) this.screenRetryLimits.set(peerUserId, limit);
+    this.callbacks?.onScreenReceiverState?.(peerUserId, 'failed');
+    this.callbacks?.onError?.(message);
+  }
+
+  public closeRemoteScreen(peerUserId: string): void {
+    clearTimeout(this.screenRetryPending.get(peerUserId)); this.screenRetryPending.delete(peerUserId);
+    this.screenRetryOffers.delete(peerUserId); this.screenRetryLimits.delete(peerUserId);
+    this.callbacks?.onScreenReceiverState?.(peerUserId, 'closed');
+    this.screenReceiverVersions.set(peerUserId, (this.screenReceiverVersions.get(peerUserId) ?? 0) + 1);
+    this.stoppedScreenPeers.add(peerUserId);
+    this.earlyScreenCandidates.delete(peerUserId);
+    this.screenReceiverCreations.delete(peerUserId);
+    this.screenReceiverOfferIds.delete(peerUserId);
+    const session = this.screenReceiverPeers.get(peerUserId);
+    this.screenReceiverPeers.delete(peerUserId);
+    if (session) this.cleanupScreenReceiver(session);
+    // The fallback stream can share transceivers with voice; only detach its player.
+    else detachScreenElements(this.remoteVideoStreams.get(peerUserId) ?? null);
+    if (this.remoteVideoStreams.delete(peerUserId)) {
+      this.callbacks?.onRemoteVideoStreamsChange?.(new Map(this.remoteVideoStreams));
+    }
+  }
+
+  private async ensureScreenReceiverPeer(peerUserId: string): Promise<ScreenReceiverSession | null> {
     const existing = this.screenReceiverPeers.get(peerUserId);
     if (existing) return existing;
-
+    const pending = this.screenReceiverCreations.get(peerUserId);
+    if (pending) return pending;
+    const version = this.screenReceiverVersions.get(peerUserId) ?? 0;
+    const room = this.roomGeneration;
+    const creation = (async () => {
     const iceServers = this.cachedIceServers ?? (await this.fetchIceServers());
+    if (!this.isActive || this.departedPeers.has(peerUserId) || room !== this.roomGeneration ||
+      version !== (this.screenReceiverVersions.get(peerUserId) ?? 0)) return null;
     const pc = new RTCPeerConnection({
-      iceServers,
-      iceTransportPolicy: this.iceTransportPolicy,
+      iceServers: screenIceServers(iceServers),
+      iceTransportPolicy: 'all',
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
       iceCandidatePoolSize: 2,
     });
 
     const session: ScreenReceiverSession = {
+      offerSessionId: null,
+      diagnostics: { offersApplied: 0, answersSent: 0, iceQueued: 0, iceApplied: 0, iceRejected: 0, iceStale: 0 },
+      stopDiagnostics: () => {},
       peerUserId,
       pc,
       stream: new MediaStream(),
-      pendingCandidates: [],
+      pendingCandidates: this.earlyScreenCandidates.get(peerUserId) ?? [],
       signalingChain: Promise.resolve(),
     };
     this.screenReceiverPeers.set(peerUserId, session);
+    this.callbacks?.onScreenReceiverState?.(peerUserId, 'connecting');
+    this.earlyScreenCandidates.delete(peerUserId);
+    session.stopDiagnostics = startScreenReceiveDiagnostics(pc, session.stream, () => {
+      if (this.screenReceiverPeers.get(peerUserId) === session) this.failRemoteScreen(peerUserId, 'A transmissão conectou, mas não recebeu vídeo. Tente conectar novamente a esta tela.');
+    }, screenReceiverContext(peerUserId, this.selfUserId ?? '', this.screenReceiverOfferIds.get(peerUserId) ?? null,
+      version, room), () => ({ ...session.diagnostics }));
 
     pc.onicecandidate = (event) => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
@@ -1462,43 +1600,54 @@ export class MeshRoomService {
                 sdpMid: event.candidate.sdpMid,
                 sdpMLineIndex: event.candidate.sdpMLineIndex,
               };
-        this.callbacks?.onSendIceCandidate(peerUserId, init, 'screen');
+        this.callbacks?.onSendIceCandidate(peerUserId, tagScreenCandidate(init, session.offerSessionId), 'screen');
       }
     };
 
+    let p2pReady = false;
+    const publish = () => {
+      if (!p2pReady || !session.stream.getVideoTracks().length || this.screenReceiverPeers.get(peerUserId) !== session) return;
+      this.remoteVideoStreams.set(peerUserId, session.stream);
+      this.callbacks?.onRemoteVideoStreamsChange?.(new Map(this.remoteVideoStreams));
+    };
+    const stopDiagnostics = session.stopDiagnostics;
+    const stopGuard = guardScreenP2P(pc, ready => {
+      p2pReady = ready; session.stream.getTracks().forEach(track => { track.enabled = ready; });
+      if (ready) { this.callbacks?.onScreenReceiverState?.(peerUserId, 'waiting_video'); publish(); }
+    }, message => {
+      if (this.screenReceiverPeers.get(peerUserId) === session) this.failRemoteScreen(peerUserId, message);
+    });
+    session.stopDiagnostics = () => { stopGuard(); stopDiagnostics(); };
     pc.ontrack = (event) => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
       const track = event.track;
+      track.enabled = p2pReady;
       if (!session.stream.getTracks().some((t) => t.id === track.id)) {
         session.stream.addTrack(track);
       }
 
-      if (track.kind === 'video' || session.stream.getVideoTracks().length > 0) {
-        this.remoteVideoStreams.set(peerUserId, session.stream);
-        this.callbacks?.onRemoteVideoStreamsChange?.(new Map(this.remoteVideoStreams));
-      }
+      publish();
 
       if (track.kind === 'video') {
         track.onended = () => {
-          if (this.remoteVideoStreams.get(peerUserId) === session.stream) {
-            this.remoteVideoStreams.delete(peerUserId);
-            this.callbacks?.onRemoteVideoStreamsChange?.(new Map(this.remoteVideoStreams));
-          }
+          if (this.screenReceiverPeers.get(peerUserId) === session) this.closeRemoteScreen(peerUserId);
         };
       }
     };
 
     pc.onconnectionstatechange = () => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
-      if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
-        if (this.remoteVideoStreams.get(peerUserId) === session.stream) {
-          this.remoteVideoStreams.delete(peerUserId);
-          this.callbacks?.onRemoteVideoStreamsChange?.(new Map(this.remoteVideoStreams));
-        }
-      }
+      if (pc.connectionState === 'failed') this.failRemoteScreen(peerUserId, 'Não foi possível estabelecer a conexão direta para esta tela. Tente novamente.');
+      else if (pc.connectionState === 'closed') this.closeRemoteScreen(peerUserId);
     };
 
     return session;
+    })();
+    this.screenReceiverCreations.set(peerUserId, creation);
+    try { return await creation; }
+    finally {
+      if (this.screenReceiverCreations.get(peerUserId) === creation) this.screenReceiverCreations.delete(peerUserId);
+    }
   }
 
   private enqueueScreenReceiverSignaling(
@@ -1510,18 +1659,54 @@ export class MeshRoomService {
   }
 
   private async handleScreenReceiverOffer(peerUserId: string, sdp: string): Promise<void> {
+    try { assertScreenSdp(sdp); } catch {
+      this.closeRemoteScreen(peerUserId); this.callbacks?.onError?.(SCREEN_P2P_ERROR); throw new Error(SCREEN_P2P_ERROR);
+    }
+    if (this.departedPeers.has(peerUserId)) return;
+    clearTimeout(this.screenRetryPending.get(peerUserId)); this.screenRetryPending.delete(peerUserId);
+    this.screenRetryOffers.delete(peerUserId);
+    const id = screenSessionId(sdp);
+    const previous = this.screenReceiverPeers.get(peerUserId);
+    const previousId = previous?.offerSessionId ?? this.screenReceiverOfferIds.get(peerUserId);
+    if (id && previousId && id !== previousId) this.closeRemoteScreen(peerUserId);
+    if (id) this.screenReceiverOfferIds.set(peerUserId, id);
+    this.stoppedScreenPeers.delete(peerUserId);
     const session = await this.ensureScreenReceiverPeer(peerUserId);
+    if (!session || this.screenReceiverPeers.get(peerUserId) !== session) return;
+    session.offerSessionId = id;
     return this.enqueueScreenReceiverSignaling(session, async () => {
+      const alive = () => this.isActive && this.screenReceiverPeers.get(peerUserId) === session;
+      if (!alive()) return;
+      try {
+      if (session.lastOfferSdp === sdp && session.answerSdp) {
+        this.callbacks?.onSendAnswer(peerUserId, session.answerSdp, 'screen');
+        return;
+      }
       await session.pc.setRemoteDescription({ type: 'offer', sdp });
+      session.diagnostics.offersApplied++;
+      if (!alive()) return;
       while (session.pendingCandidates.length > 0) {
         const cand = session.pendingCandidates.shift();
         if (cand) {
-          await session.pc.addIceCandidate(cand).catch(() => {});
+          if (screenCandidateSessionId(cand) && screenCandidateSessionId(cand) !== session.offerSessionId) { session.diagnostics.iceStale++; continue; }
+          assertScreenCandidate(cand);
+          try { await session.pc.addIceCandidate(screenCandidateInit(cand)); session.diagnostics.iceApplied++; }
+          catch { session.diagnostics.iceRejected++; console.warn('[ScreenReceiver] queued_ice_rejected'); }
+          if (!alive()) return;
         }
       }
       await session.pc.setLocalDescription();
+      if (!alive()) return;
       if (session.pc.localDescription?.sdp) {
-        this.callbacks?.onSendAnswer(peerUserId, session.pc.localDescription.sdp, 'screen');
+        session.lastOfferSdp = sdp;
+        session.answerSdp = tagScreenAnswer(session.pc.localDescription.sdp, session.offerSessionId);
+        session.diagnostics.answersSent++;
+        this.callbacks?.onSendAnswer(peerUserId, session.answerSdp, 'screen');
+      }
+      } catch (error) {
+        if (!alive()) return;
+        this.closeRemoteScreen(peerUserId);
+        throw error;
       }
     });
   }
@@ -1530,32 +1715,68 @@ export class MeshRoomService {
     peerUserId: string,
     candidate: RTCIceCandidateInit
   ): Promise<void> {
-    if (this.nativeScreenActive && candidate.candidate) {
-      screenCaptureService
-        .handleNativeScreenIce(
-          peerUserId,
-          candidate.candidate,
-          candidate.sdpMid ?? null,
-          candidate.sdpMLineIndex ?? null
-        )
-        .catch(() => {});
+    if (this.departedPeers.has(peerUserId)) return;
+    const id = screenCandidateSessionId(candidate);
+    if ((candidate as RTCIceCandidateInit & { nexusScreenAction?: unknown }).nexusScreenAction === 'retry') {
+      if (candidate.candidate || !id || !this.nativeScreenActive || !this.peers.has(peerUserId) ||
+        id !== this.nativeScreenOfferIds.get(peerUserId)) return;
+      const limit = this.nativeScreenRetryLimits.get(peerUserId);
+      if (limit && (Date.now() - limit.at < 10000 || limit.count >= 3)) return;
+      this.nativeScreenRetryLimits.set(peerUserId, { at: Date.now(), count: (limit?.count ?? 0) + 1 });
+      try { await this.addNativeScreenPeer(peerUserId, this.cachedIceServers ?? undefined); }
+      catch { this.callbacks?.onError?.('Não foi possível reconectar a tela a um participante.'); }
+      return;
+    }
+    const outgoing = this.nativeScreenActive && this.nativeScreenOfferIds.has(peerUserId);
+    const incoming = this.screenReceiverOfferIds.get(peerUserId);
+    // Never copy a candidate between dedicated PCs, even when both users share.
+    // Legacy candidates are usable only when their destination is unambiguous.
+    const toSender = id ? id === this.nativeScreenOfferIds.get(peerUserId) : outgoing && !incoming;
+    const toReceiver = id ? id === incoming : !outgoing;
+    if (!toSender && !toReceiver && (!id || incoming)) {
+      console.warn('[ScreenReceiver] stale_or_ambiguous_ice_ignored'); return;
+    }
+    try { assertScreenCandidate(candidate); } catch {
+      if (toSender) await screenCaptureService.removeNativeScreenPeer(peerUserId).catch(() => {});
+      if (toReceiver) this.closeRemoteScreen(peerUserId);
+      this.callbacks?.onError?.(SCREEN_P2P_ERROR); throw new Error(SCREEN_P2P_ERROR);
+    }
+    if (toSender) {
+      if (candidate.candidate) await screenCaptureService.handleNativeScreenIce(peerUserId,
+        candidate.candidate, candidate.sdpMid ?? null, candidate.sdpMLineIndex ?? null, this.nativeScreenOfferIds.get(peerUserId))
+        .catch(() => { console.warn('[ScreenSender] remote_ice_apply_failed'); });
+      return;
     }
 
-    if (this.screenReceiverPeers.has(peerUserId) || !this.nativeScreenActive) {
-      const session = await this.ensureScreenReceiverPeer(peerUserId);
+    if (this.departedPeers.has(peerUserId) || this.stoppedScreenPeers.has(peerUserId)) return;
+    const session = this.screenReceiverPeers.get(peerUserId);
+    if (!session) {
+      const queue = this.earlyScreenCandidates.get(peerUserId) ?? [];
+      if (queue.length < MAX_CANDIDATE_QUEUE_SIZE && this.earlyScreenCandidates.size < DEFAULT_MAX_PARTICIPANTS) {
+        queue.push(candidate);
+        this.earlyScreenCandidates.set(peerUserId, queue);
+      }
+      return;
+    }
+    {
       await this.enqueueScreenReceiverSignaling(session, async () => {
+        if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
         if (!session.pc.remoteDescription) {
           if (session.pendingCandidates.length < MAX_CANDIDATE_QUEUE_SIZE) {
             session.pendingCandidates.push(candidate);
+            session.diagnostics.iceQueued++;
           }
           return;
         }
-        await session.pc.addIceCandidate(candidate).catch(() => {});
+        try { await session.pc.addIceCandidate(screenCandidateInit(candidate)); session.diagnostics.iceApplied++; }
+        catch { session.diagnostics.iceRejected++; console.warn('[ScreenReceiver] remote_ice_apply_failed'); }
       });
     }
   }
 
   private cleanupScreenReceiver(session: ScreenReceiverSession): void {
+    session.stopDiagnostics();
+    session.pendingCandidates = [];
     try {
       session.pc.onicecandidate = null;
       session.pc.ontrack = null;
@@ -1564,6 +1785,7 @@ export class MeshRoomService {
     } catch {
       // Ignore close errors
     }
+    releaseScreenStream(session.stream);
   }
 
   private evaluateAdaptiveBitrate(snapshot: VoiceRoomMetricsSnapshot): void {

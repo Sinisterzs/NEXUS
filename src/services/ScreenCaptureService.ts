@@ -1,3 +1,4 @@
+import { screenIceServers, assertScreenCandidate, assertScreenSdp } from './ScreenP2PPolicy.ts';
 /**
  * NEXUS - Screen Capture Service 2.0 (Calls & Streaming 2.0)
  *
@@ -203,6 +204,13 @@ export function buildDisplayMediaVideoConstraints(
 }
 
 export class ScreenCaptureService {
+  private nativeCaptureChain: Promise<void> = Promise.resolve();
+
+  private enqueueNativeCapture<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.nativeCaptureChain.then(operation, operation);
+    this.nativeCaptureChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
   private stream: MediaStream | null = null;
   private isStarting = false;
   private isCapturing = false;
@@ -654,19 +662,43 @@ export class ScreenCaptureService {
     return isTauriWindowsEnvironment();
   }
 
+  private previewVisibilityChain: Promise<unknown> = Promise.resolve();
+  private previewGenerations = new Map<number, number>();
+  public setNativePreviewVisible(sessionId: number, enabled: boolean): Promise<number> {
+    const change = this.previewVisibilityChain.catch(() => {}).then(async () => {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const generation = await invoke<number>('native_set_screen_preview_visibility', { sessionId, enabled });
+      if (enabled) this.previewGenerations.set(sessionId, generation);
+      else this.previewGenerations.delete(sessionId);
+      return generation;
+    });
+    this.previewVisibilityChain = change;
+    return change;
+  }
+  public async takeNativePreview(sessionId: number, profile = { width: 480, height: 270, fps: 15 }): Promise<ArrayBuffer> {
+    const generation = this.previewGenerations.get(sessionId);
+    if (!generation) return new ArrayBuffer(0);
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<ArrayBuffer>('native_take_screen_preview', { sessionId, generation, ...profile });
+  }
+
   public async listNativeSources(): Promise<CaptureSources> {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<CaptureSources>('native_list_capture_sources');
   }
 
   public async startNativeShare(options: StartScreenShareOptions): Promise<NativeCaptureStatus> {
+    return this.enqueueNativeCapture(async () => {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<NativeCaptureStatus>('native_start_screen_share', { options: toNativeStartOptionsPayload(options) });
+    });
   }
 
   public async stopNativeShare(): Promise<void> {
+    return this.enqueueNativeCapture(async () => {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('native_stop_screen_share');
+    });
   }
 
   public async setNativeScreenQuality(preset: VoiceRoomQualityPreset): Promise<void> {
@@ -680,6 +712,11 @@ export class ScreenCaptureService {
     await invoke('native_set_adaptive_bitrate', { bitrateBps: val });
   }
 
+  public async setNativeBitrateExperiment(profile: string): Promise<number> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<number>('native_set_screen_bitrate_experiment', {profile});
+  }
+
   public async addNativeScreenPeer(
     peerId: string,
     iceServers?: RTCIceServer[]
@@ -687,7 +724,7 @@ export class ScreenCaptureService {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<NativeScreenOfferEvent>('native_add_screen_peer', {
       peerId,
-      ...(iceServers ? { iceServers } : {}),
+      ...(iceServers ? { iceServers: screenIceServers(iceServers) } : {}),
     });
   }
 
@@ -696,23 +733,27 @@ export class ScreenCaptureService {
     await invoke('native_remove_screen_peer', { peerId });
   }
 
-  public async handleNativeScreenAnswer(peerId: string, sdp: string): Promise<void> {
+  public async handleNativeScreenAnswer(peerId: string, sdp: string, screenSessionId?: string): Promise<void> {
+    try { assertScreenSdp(sdp); } catch (error) { await this.removeNativeScreenPeer(peerId).catch(() => {}); throw error; }
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('native_handle_screen_answer', { peerId, sdp });
+    await invoke('native_handle_screen_answer', { peerId, sdp, ...(screenSessionId ? { screenSessionId } : {}) });
   }
 
   public async handleNativeScreenIce(
     peerId: string,
     candidate: string,
     sdpMid?: string | null,
-    sdpMlineIndex?: number | null
+    sdpMlineIndex?: number | null,
+    screenSessionId?: string
   ): Promise<void> {
+    try { assertScreenCandidate(candidate); } catch (error) { await this.removeNativeScreenPeer(peerId).catch(() => {}); throw error; }
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('native_handle_screen_ice', {
       peerId,
       candidate,
       sdpMid: sdpMid ?? null,
       sdpMlineIndex: sdpMlineIndex ?? null,
+      ...(screenSessionId ? { screenSessionId } : {}),
     });
   }
 

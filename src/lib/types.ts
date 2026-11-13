@@ -995,6 +995,7 @@ export interface StartScreenShareOptions {
 }
 
 export interface NativeCaptureStatus {
+  preview_session_id?: number;
   active: boolean;
   source_id: string;
   backend_used: string;
@@ -1018,6 +1019,7 @@ export interface NativeScreenOfferEvent {
 }
 
 export interface NativeScreenIceEvent {
+  sdp_session_id?: string | null;
   peer_id: string;
   candidate: string;
   sdp_mid: string | null;
@@ -1037,6 +1039,9 @@ export interface NativeScreenStatsEvent {
   dst_width: number;
   dst_height: number;
   target_fps: number;
+  requested_bitrate_bps?: number;
+  encoder_readback_bitrate_bps?: number | null;
+  encoded_payload_bitrate_kbps?: number;
   target_bitrate_bps: number;
   send_fps: number;
   send_bitrate_kbps: number;
@@ -1046,6 +1051,7 @@ export interface NativeScreenStatsEvent {
   idr_count: number;
   pli_received: number;
   peer_count: number;
+  bitrate_experiment_bps?: number;
   bitrate_reinit_count: number;
   encode_avg_ms: number;
 }

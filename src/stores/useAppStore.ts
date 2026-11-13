@@ -71,7 +71,7 @@ import { messageRepository } from '../repositories/MessageRepository';
 import { callHistoryRepository } from '../repositories/CallHistoryRepository';
 import { gatewayClient } from '../services/GatewayClient';
 import { callService } from '../services/CallService';
-import { meshRoomService } from '../services/MeshRoomService';
+import { meshRoomService, type ScreenReceiverState } from '../services/MeshRoomService';
 import { screenCaptureService } from '../services/ScreenCaptureService';
 import { networkManager, DEFAULT_NETWORK_STATUS } from '../services/NetworkManager';
 import { updateService } from '../services/UpdateService';
@@ -451,6 +451,8 @@ interface AppState {
   voiceRoomRemoteStreams: Record<string, MediaStream>;
   voiceRoomParticipantVolumes: Record<string, number>;
   voiceRoomMetrics: VoiceRoomMetricsSnapshot | null;
+  voiceRoomScreenReceivers: Record<string, ScreenReceiverState>;
+  retryVoiceRoomScreen: (peerUserId: string) => boolean;
   voiceRoomError: string | null;
   communityVoiceRooms: Record<string, Record<string, RoomParticipantDto[]>>;
 
@@ -893,6 +895,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   voiceRoomRemoteStreams: {},
   voiceRoomParticipantVolumes: {},
   voiceRoomMetrics: null,
+  voiceRoomScreenReceivers: {},
   voiceRoomError: null,
   communityVoiceRooms: {},
 
@@ -1403,6 +1406,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   voiceRoomRemoteStreams: {},
   voiceRoomParticipantVolumes: {},
   voiceRoomMetrics: null,
+  voiceRoomScreenReceivers: {},
   voiceRoomError: null,
   communityVoiceRooms: {},
       isAuthModalOpen: false,
@@ -1461,6 +1465,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   voiceRoomRemoteStreams: {},
   voiceRoomParticipantVolumes: {},
   voiceRoomMetrics: null,
+  voiceRoomScreenReceivers: {},
   voiceRoomError: null,
   communityVoiceRooms: {},
       authError: null,
@@ -2281,6 +2286,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           voiceRoomMuted: initialMuted,
           voiceRoomDeafened: false,
           voiceRoomScreenSharing: false,
+          voiceRoomScreenReceivers: {},
           voiceRoomError: null,
           communityVoiceRooms: {
             ...state.communityVoiceRooms,
@@ -2399,6 +2405,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
       },
       onRoomParticipantUpdated: (data) => {
+        const current = get();
+        if (current.activeVoiceCommunityId === data.community_id && current.activeVoiceChannelId === data.channel_id &&
+          data.participant.user_id !== current.onlineUser?.id &&
+          data.participant.is_screen_sharing === false) {
+          meshRoomService.closeRemoteScreen(data.participant.user_id);
+        }
         set((state) => {
           const isCurrentRoom =
             state.activeVoiceCommunityId === data.community_id &&
@@ -2421,7 +2433,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
       },
       onCommunityVoiceStateUpdated: (data) => {
+        const current = get();
+        const isCurrentRoom = current.activeVoiceCommunityId === data.community_id && current.activeVoiceChannelId === data.channel_id;
+        if (isCurrentRoom) {
+          for (const participant of current.voiceRoomParticipants) {
+            const next = data.participants.find((p) => p.user_id === participant.user_id);
+            if (!next) meshRoomService.removeParticipant(participant.user_id);
+            else if (participant.user_id !== current.onlineUser?.id && !next.is_screen_sharing) meshRoomService.closeRemoteScreen(participant.user_id);
+          }
+        }
         set((state) => ({
+          ...(isCurrentRoom ? { voiceRoomParticipants: data.participants } : {}),
           communityVoiceRooms: {
             ...state.communityVoiceRooms,
             [data.community_id]: {
@@ -3964,6 +3986,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       voiceRoomState: 'joining',
       activeVoiceCommunityId: communityId,
       activeVoiceChannelId: channelId,
+      voiceRoomScreenReceivers: {},
       voiceRoomError: null,
       voiceRoomPeerStatuses: {},
       voiceRoomRemoteStreams: {},
@@ -3990,6 +4013,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       voiceRoomPeerStatuses: {},
       voiceRoomRemoteStreams: {},
       voiceRoomMetrics: null,
+      voiceRoomScreenReceivers: {},
       voiceRoomError: null,
     });
   },
@@ -4053,26 +4077,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     const ok = await meshRoomService.startScreenShare(chosenPreset);
     if (ok) {
       set({ voiceRoomScreenSharing: true, voiceRoomQuality: chosenPreset, voiceRoomError: null });
-      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
-        is_screen_sharing: true,
-      });
     }
     return ok;
   },
 
   stopVoiceRoomScreenShare: async () => {
-    const { activeVoiceCommunityId, activeVoiceChannelId } = get();
-    await meshRoomService.stopScreenShare();
     set({
       voiceRoomScreenSharing: false,
       nativeCaptureStatus: null,
       nativeScreenStats: null,
     });
-    if (activeVoiceCommunityId && activeVoiceChannelId) {
-      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
-        is_screen_sharing: false,
-      });
-    }
+    await meshRoomService.stopScreenShare();
   },
 
   setVoiceRoomQuality: async (preset) => {
@@ -4080,6 +4095,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     await meshRoomService.setScreenShareQuality(preset);
   },
 
+  retryVoiceRoomScreen: (peerUserId) => meshRoomService.retryRemoteScreen(peerUserId),
   clearVoiceRoomError: () => set({ voiceRoomError: null }),
 
   setActiveTab: (tab) => {
@@ -4215,9 +4231,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         voiceRoomError: null,
         screenPickerTarget: null,
         nativeCaptureStatus: status,
-      });
-      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
-        is_screen_sharing: true,
       });
       return true;
     } catch (err: any) {
@@ -4543,16 +4556,17 @@ meshRoomService.setCallbacks({
     useAppStore.setState({ nativeScreenStats: stats });
   },
   onNativeScreenEnded: () => {
-    const { activeVoiceCommunityId, activeVoiceChannelId } = useAppStore.getState();
     useAppStore.setState({
       voiceRoomScreenSharing: false,
       nativeCaptureStatus: null,
       nativeScreenStats: null,
     });
+  },
+  onScreenSharingChange: (sharing) => {
+    const { activeVoiceCommunityId, activeVoiceChannelId } = useAppStore.getState();
+    useAppStore.setState({ voiceRoomScreenSharing: sharing });
     if (activeVoiceCommunityId && activeVoiceChannelId) {
-      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, {
-        is_screen_sharing: false,
-      });
+      gatewayClient.sendRoomStateUpdate(activeVoiceCommunityId, activeVoiceChannelId, { is_screen_sharing: sharing });
     }
   },
   onPeerStatusChange: (peerUserId, status) => {
@@ -4582,6 +4596,13 @@ meshRoomService.setCallbacks({
         p.user_id === peerUserId ? { ...p, is_speaking: isSpeaking } : p
       ),
     }));
+  },
+  onScreenReceiverState: (peerUserId, status) => {
+    useAppStore.setState(prev => {
+      const receivers = { ...prev.voiceRoomScreenReceivers };
+      if (status === 'closed') delete receivers[peerUserId]; else receivers[peerUserId] = status;
+      return { voiceRoomScreenReceivers: receivers };
+    });
   },
   onRemoteVideoStreamsChange: (streams) => {
     const record: Record<string, MediaStream> = {};

@@ -21,6 +21,8 @@ import {
   ScreenShareQualityPreset,
 } from '../lib/types';
 import { cn } from '../lib/utils';
+import { LocalScreenPreview } from './LocalScreenPreview';
+import { screenCaptureService } from '../services/ScreenCaptureService';
 
 const FREE_QUALITY_PRESETS: Array<{
   value: ScreenShareQualityPreset;
@@ -60,6 +62,8 @@ export const NativeScreenShareBanner: React.FC<NativeScreenShareBannerProps> = (
   onStop,
   className,
 }) => {
+  const [experimentOpen, setExperimentOpen] = useState(false);
+  const [experimentError, setExperimentError] = useState<string | null>(null);
   if (!status.active) return null;
 
   const backend = stats?.backend_used || status.backend_used;
@@ -94,6 +98,7 @@ export const NativeScreenShareBanner: React.FC<NativeScreenShareBannerProps> = (
             <Monitor className="w-3 h-3 text-emerald-400" />
           )}
           <span>{formatBackendLabel(backend)}</span>
+          <span title="Compartilhamento sem retransmissão TURN">· Somente P2P</span>
         </span>
 
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-nexus-panel border border-nexus-border text-nexus-muted font-mono text-[11px]">
@@ -135,6 +140,23 @@ export const NativeScreenShareBanner: React.FC<NativeScreenShareBannerProps> = (
         </span>
       </div>
 
+      <div className="flex flex-col items-end gap-1 text-[11px]">
+        <button type="button" onClick={() => setExperimentOpen(!experimentOpen)} className="text-nexus-muted underline">Comparar bitrate local</button>
+        {experimentOpen && <label>Perfil temporário (não altera presets)
+          <select aria-label="Perfil temporário de bitrate" value={String(stats?.bitrate_experiment_bps || 0)}
+            onChange={event => { const profiles: Record<string,string> = {'0':'official','3500000':'a35','4235000':'a4235','6000000':'b6','8000000':'c8','10000000':'d10'}; setExperimentError(null);
+              void screenCaptureService.setNativeBitrateExperiment(profiles[event.target.value]).catch(error => setExperimentError(String(error))); }}
+            className="ml-2 bg-nexus-panel border border-nexus-border rounded px-1 py-1">
+            <option value="0">Oficial</option><option value="3500000">A · 3,5 Mbps fixos</option><option value="4235000">A2 · 4,235 Mbps fixos</option>
+            <option value="6000000">B · 6 Mbps</option><option value="8000000">C · 8 Mbps</option><option value="10000000">D · 10 Mbps (exige margem)</option>
+          </select></label>}
+        {experimentOpen && <span className="text-nexus-muted">
+          Solicitado: {((stats?.requested_bitrate_bps || stats?.target_bitrate_bps || status.bitrate_bps)/1e6).toFixed(2)} Mbps ·
+          MFT: {stats?.encoder_readback_bitrate_bps == null ? 'não confirmado' : `${(stats.encoder_readback_bitrate_bps/1e6).toFixed(2)} Mbps`} ·
+          Codificado: {stats?.encoded_payload_bitrate_kbps == null ? 'aguardando' : `${(stats.encoded_payload_bitrate_kbps/1000).toFixed(2)} Mbps`}
+        </span>}
+        {experimentError && <span role="alert" className="text-amber-300 max-w-md">{experimentError}</span>}
+      </div>
       {onStop && (
         <button
           type="button"
@@ -146,6 +168,18 @@ export const NativeScreenShareBanner: React.FC<NativeScreenShareBannerProps> = (
       )}
     </div>
   );
+};
+
+/** Content panel, deliberately separate from the compact status banner. */
+export const NativeLocalScreenPreview: React.FC<{ status: NativeCaptureStatus }> = ({ status }) => {
+  const sources = useAppStore((s) => s.nativeCaptureSources);
+  const stats = useAppStore((s) => s.nativeScreenStats);
+  const targetFps = stats?.target_fps;
+  const source = [...(sources?.monitors ?? []), ...(sources?.windows ?? [])].find((item) => item.id === status.source_id);
+  if (!status.active || !status.preview_session_id) return null;
+  return <LocalScreenPreview key={status.preview_session_id} sessionId={status.preview_session_id}
+    sourceName={source?.title || source?.device_name || (status.backend_used === 'WgcWindow' ? 'Janela compartilhada' : 'Monitor compartilhado')}
+    isWindow={status.backend_used === 'WgcWindow'} targetFps={targetFps || status.fps} sourceWidth={stats?.src_width || status.width} sourceHeight={stats?.src_height || status.height} />;
 };
 
 export const ScreenSourcePickerModal: React.FC = () => {

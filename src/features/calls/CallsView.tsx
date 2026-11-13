@@ -1,3 +1,4 @@
+import { bindScreenPlayback } from '../../services/ScreenPlayback';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mic,
@@ -40,6 +41,7 @@ import { Tooltip } from '../../components/Tooltip';
 import { EmptyState } from '../../components/EmptyState';
 import {
   NativeScreenShareBanner,
+  NativeLocalScreenPreview,
   ScreenSourcePickerModal,
 } from '../../components/ScreenSourcePickerModal';
 import { screenCaptureService } from '../../services/ScreenCaptureService';
@@ -288,16 +290,8 @@ export const CallsView: React.FC = () => {
 
   // Atualiza elemento HTML5 video com a faixa remota de vídeo
   useEffect(() => {
-    if (remoteVideoRef.current) {
-      if (remoteScreenStream) {
-        remoteVideoRef.current.srcObject = remoteScreenStream;
-        remoteVideoRef.current.play().catch((err) => {
-          console.warn('[CallsView] Falha ao reproduzir elemento de vídeo remoto:', err);
-        });
-      } else {
-        remoteVideoRef.current.srcObject = null;
-      }
-    }
+    const element = remoteVideoRef.current;
+    if (element && remoteScreenStream) return bindScreenPlayback(element, remoteScreenStream);
   }, [remoteScreenStream, activeStageSource, isFullscreen]);
 
   // Atualiza elemento HTML5 video com a faixa da prévia local
@@ -1012,12 +1006,15 @@ export const CallsView: React.FC = () => {
       {/* Main Call Stage — Redimensionável quando há transmissão ativa */}
       <div
         ref={stageAreaRef}
-        className={`flex-1 flex flex-col items-center justify-center min-h-0 overflow-y-auto ${
+        className={`flex-1 flex flex-col items-center ${nativeCaptureStatus?.active ? 'justify-start' : 'justify-center'} min-h-0 overflow-y-auto ${
           callLayoutMode === 'cinema' && hasAnyScreenStage && !isFullscreen
             ? 'p-1 sm:p-2 pb-2'
             : 'p-4 sm:p-6 pb-24'
         }`}
       >
+        {nativeCaptureStatus?.active && <div className="w-full max-w-5xl shrink-0 mb-4">
+          <NativeLocalScreenPreview status={nativeCaptureStatus} />
+        </div>}
         {hasAnyScreenStage && (
           <div
             ref={fullscreenContainerRef}

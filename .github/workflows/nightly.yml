@@ -6,8 +6,13 @@ on:
       version:
         description: 'Versão SemVer Prerelease (ex: 0.1.9-nightly.1)'
         required: true
-        default: '0.3.0-nightly.2'
+        default: '0.4.0-nightly.4'
         type: string
+      publish_release:
+        description: 'Publicar a Nightly após autorização explícita (desmarcado: somente artefatos)'
+        required: true
+        default: false
+        type: boolean
       release_notes:
         description: 'Notas de atualização da versão Nightly'
         required: false
@@ -68,7 +73,21 @@ jobs:
         run: |
           npm test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:screen-lifecycle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test --test-concurrency=1 tests/nightly_distribution_signature.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npx tsc --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate Screen Transport and Updater (Rust)
+        shell: pwsh
+        run: |
+          foreach ($filter in @('capture::recovery::', 'capture::quality::', 'capture::health::', 'capture::p2p::tests', 'capture::webrtc_sender::tests', 'capture::wasapi_loopback::tests', 'test_screen_receiver_log_rejects_sensitive_or_invalid_fields')) {
+            cargo test --manifest-path src-tauri/Cargo.toml --locked --lib $filter -- --test-threads=1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib updater::tests -- --test-threads=1 --skip test_resolve_channel_endpoints --skip test_nightly_manifest_and_minisign_signature
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Frontend
@@ -126,7 +145,28 @@ jobs:
             Set-Content -Path "release-notes-body.md" -Value $defaultBody -Encoding utf8
           }
 
+      - name: Verify Minisign and Updater Manifest
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force nightly-distribution | Out-Null
+          Copy-Item src-tauri/target/release/nexus.exe nightly-distribution/nexus.exe
+          Copy-Item "src-tauri/target/release/bundle/nsis/nexus_$env:RELEASE_VERSION`_x64-setup.exe" nightly-distribution/
+          Copy-Item "src-tauri/target/release/bundle/nsis/nexus_$env:RELEASE_VERSION`_x64-setup.exe.sig" nightly-distribution/
+          Copy-Item latest-nightly.json nightly-distribution/latest-nightly.json
+          node scripts/verify-nightly-distribution.cjs nightly-distribution
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preserve Reviewed Distribution Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-v${{ inputs.version }}-windows-x64
+          path: nightly-distribution/
+          if-no-files-found: error
+
       - name: Publish GitHub Pre-Release (Nightly Channel)
+        if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.event.inputs.version }}
@@ -143,26 +183,3 @@ jobs:
             latest-nightly.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Synchronize README Beta Channel
-        if: success()
-        continue-on-error: true
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git reset --hard HEAD
-          git clean -fd
-          git fetch origin main:main
-          git checkout main
-          node scripts/sync-readme-release.cjs --channel beta --version "$env:RELEASE_VERSION"
-          $diff = git status --porcelain README.md
-          if ($diff) {
-            git add README.md
-            git commit -m "docs: sync README with Beta v$env:RELEASE_VERSION [skip ci]"
-            git push origin main
-          } else {
-            Write-Host "[INFO] README.md já estava atualizado para a versão Beta."
-          }

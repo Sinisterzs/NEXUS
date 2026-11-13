@@ -335,12 +335,16 @@ pub fn run() {
             capture::native_list_capture_sources,
             capture::native_start_screen_share,
             capture::native_stop_screen_share,
+            capture::native_take_screen_preview,
+            capture::native_set_screen_preview_visibility,
             capture::native_set_screen_quality,
             capture::native_set_adaptive_bitrate,
+            capture::native_set_screen_bitrate_experiment,
             capture::native_add_screen_peer,
             capture::native_remove_screen_peer,
             capture::native_handle_screen_answer,
             capture::native_handle_screen_ice,
+            capture::native_log_screen_receiver,
         ])
         .build(context)
         .expect("error while building NEXUS desktop application")

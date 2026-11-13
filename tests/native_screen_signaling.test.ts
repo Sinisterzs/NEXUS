@@ -130,7 +130,7 @@ test('WebRtcService serializes concurrent screen offers and ICE candidates witho
 
     // Queue an ICE candidate before the first offer finishes fetchIceServers()
     const pOffer1 = svc.handleRemoteScreenOffer('offer-1');
-    const pIceEarly = svc.addScreenReceiverIceCandidate({ candidate: 'cand-early' });
+    const pIceEarly = svc.addScreenReceiverIceCandidate({ candidate: 'candidate:early 1 udp 1 192.0.2.1 9 typ host' });
     const pOffer2 = svc.handleRemoteScreenOffer('offer-2');
 
     const [ans1, , ans2] = await Promise.all([pOffer1, pIceEarly, pOffer2]);
@@ -142,7 +142,7 @@ test('WebRtcService serializes concurrent screen offers and ICE candidates witho
       'setRemote:offer-1',
       'createAnswer',
       'setLocal:ans-2',
-      'addIce:cand-early',
+      'addIce:candidate:early 1 udp 1 192.0.2.1 9 typ host',
       'setRemote:offer-2',
       'createAnswer',
       'setLocal:ans-6',

@@ -1,7 +1,17 @@
 #[cfg(target_os = "windows")]
 pub mod dxgi_wgc;
+pub mod health;
+pub mod recovery;
+#[cfg(target_os = "windows")]
+pub mod p2p;
+#[cfg(target_os = "windows")]
+pub mod quality;
+#[cfg(all(test, target_os = "windows"))]
+mod encoder_experiment;
 #[cfg(target_os = "windows")]
 pub mod mf_encoder;
+#[cfg(target_os = "windows")]
+pub mod preview;
 #[cfg(target_os = "windows")]
 pub mod selector;
 #[cfg(target_os = "windows")]
@@ -186,6 +196,7 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeCaptureStatus {
+    pub preview_session_id: u32,
     pub active: bool,
     pub source_id: String,
     pub backend_used: String,
@@ -216,6 +227,9 @@ pub struct NativeScreenStats {
     pub dst_width: u32,
     pub dst_height: u32,
     pub target_fps: u32,
+    pub requested_bitrate_bps: u32,
+    pub encoder_readback_bitrate_bps: Option<u32>,
+    pub encoded_payload_bitrate_kbps: f64,
     pub target_bitrate_bps: u32,
     pub send_fps: f64,
     pub send_bitrate_kbps: f64,
@@ -225,6 +239,7 @@ pub struct NativeScreenStats {
     pub idr_count: u64,
     pub pli_received: u64,
     pub peer_count: usize,
+    pub bitrate_experiment_bps: u32,
     pub bitrate_reinit_count: u64,
     pub encode_avg_ms: f64,
 }
@@ -238,6 +253,7 @@ pub struct NativeScreenOfferEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeScreenIceEvent {
+    pub sdp_session_id: Option<String>,
     pub peer_id: String,
     pub candidate: String,
     pub sdp_mid: Option<String>,
@@ -406,6 +422,53 @@ pub async fn native_start_screen_share(
 }
 
 #[tauri::command]
+pub fn native_set_screen_preview_visibility(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, NativeCaptureState>,
+    session_id: u32,
+    enabled: bool,
+) -> Result<u32, String> {
+    let url = window.url().map_err(|_| "Preview unavailable")?;
+    let local = url.scheme() == "tauri" && url.host_str() == Some("localhost")
+        || url.scheme() == "http" && url.host_str() == Some("tauri.localhost")
+        || cfg!(debug_assertions) && url.scheme() == "http" && url.host_str() == Some("localhost") && url.port() == Some(1420);
+    if window.label() != "main" || !local { return Err("Preview unavailable".into()); }
+    #[cfg(target_os = "windows")]
+    { Ok(state.inner.preview_visibility(session_id, enabled)) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (state, session_id, enabled); Ok(0) }
+}
+
+/// Pull at most one reduced frame. No JSON/base64, files, broadcast or HTTP endpoint.
+#[tauri::command]
+pub async fn native_take_screen_preview(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, NativeCaptureState>,
+    session_id: u32,
+    generation: Option<u32>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<u32>,
+) -> Result<tauri::ipc::Response, String> {
+    let url = window.url().map_err(|_| "Preview unavailable")?;
+    let local = url.scheme() == "tauri" && url.host_str() == Some("localhost")
+        || url.scheme() == "http" && url.host_str() == Some("tauri.localhost")
+        || cfg!(debug_assertions) && url.scheme() == "http" && url.host_str() == Some("localhost") && url.port() == Some(1420);
+    if window.label() != "main" || !local { return Err("Preview unavailable".into()); }
+    let started = std::time::Instant::now();
+    #[cfg(target_os = "windows")]
+    let mut bytes = state.inner.take_preview(session_id, preview::PreviewConfig::bounded(width.unwrap_or(480), height.unwrap_or(270), fps.unwrap_or(30)), generation.unwrap_or(0)).await;
+    #[cfg(not(target_os = "windows"))]
+    let mut bytes = { let _ = (state, session_id, generation, width, height, fps); Vec::<u8>::new() };
+    if bytes.len() >= 32 {
+        bytes[16..20].copy_from_slice(&(started.elapsed().as_micros().min(u32::MAX as u128) as u32).to_le_bytes());
+        let emitted = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros() as u64;
+        bytes[24..32].copy_from_slice(&emitted.to_le_bytes());
+    }
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
 pub async fn native_stop_screen_share(
     app: tauri::AppHandle,
     state: tauri::State<'_, NativeCaptureState>,
@@ -453,6 +516,12 @@ pub async fn native_set_adaptive_bitrate(
         let _ = (state, bitrate_bps);
         Err("Native Windows capture is only supported on Windows".to_string())
     }
+}
+
+#[tauri::command]
+pub async fn native_set_screen_bitrate_experiment(state: tauri::State<'_, NativeCaptureState>, profile: String) -> Result<u32, String> {
+    #[cfg(target_os = "windows")] { state.inner.set_bitrate_experiment(&profile).await }
+    #[cfg(not(target_os = "windows"))] { let _ = (state, profile); Err("Windows only".into()) }
 }
 
 #[tauri::command]
@@ -505,16 +574,77 @@ pub async fn native_handle_screen_answer(
     state: tauri::State<'_, NativeCaptureState>,
     peer_id: String,
     sdp: String,
+    screen_session_id: Option<String>,
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        state.inner.handle_answer(&peer_id, sdp).await
+        state.inner.handle_answer(&peer_id, sdp, screen_session_id).await
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (state, peer_id, sdp);
+        let _ = (state, peer_id, sdp, screen_session_id);
         Err("Native Windows capture is only supported on Windows".to_string())
     }
+}
+
+// Only whitelisted counters/states may cross from the WebView into capture.log.
+// Never accept arbitrary diagnostic messages, SDP, addresses or credentials.
+fn safe_receiver_snapshot(snapshot: &serde_json::Value) -> serde_json::Value {
+    let mut safe = serde_json::Map::new();
+    for key in ["packetsReceived", "bytesReceived", "framesReceived", "framesDecoded",
+        "keyFramesDecoded", "framesDropped", "playerReadyState", "playerWidth",
+        "playerHeight", "playerCurrentTime", "local_host", "local_srflx", "local_relay",
+        "remote_host", "remote_srflx", "remote_relay", "receiverId",
+        "icePairs", "icePairsWaiting", "icePairsInProgress", "icePairsSucceeded", "icePairsFailed",
+        "iceRequestsSentTotal", "iceRequestsReceivedTotal", "iceResponsesSentTotal", "iceResponsesReceivedTotal", "iceConsentRequestsSentTotal",
+        "pairRequestsSent", "pairRequestsReceived", "pairResponsesSent", "pairResponsesReceived", "pairConsentRequestsSent", "pairBytesSent", "pairBytesReceived", "iceConnectedObservedMs", "dtlsConnectingObservedMs",
+        "receiverGeneration", "roomGeneration", "offersApplied", "answersSent", "iceQueued", "iceApplied", "iceRejected", "iceStale",
+        "roundTripTime", "availableIncomingBitrate", "packetsLost", "jitter", "nackCount", "pliCount", "firCount", "qpSum", "totalDecodeTime",
+        "audioPacketsReceived", "audioBytesReceived", "audioPacketsLost", "audioJitter", "audioTotalSamplesReceived", "audioConcealedSamples", "audioTrackCount", "playerVolume"] {
+        if let Some(value) = snapshot.get(key) {
+            if value.is_null() || value.as_f64().map(|n| n.is_finite() && n >= 0.0).unwrap_or(false) {
+                safe.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    for key in ["diagnosticRun", "senderToken", "peerToken", "transportToken", "offerToken"] {
+        if let Some(value) = snapshot.get(key).and_then(|v| v.as_str()) {
+            let expected = if key == "diagnosticRun" { 32 } else { 64 };
+            if value.len() == expected && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+                safe.insert(key.to_string(), serde_json::Value::String(value.to_owned()));
+            }
+        }
+    }
+    for key in ["pairNominated", "setupCompatible", "localSdpPresent", "remoteSdpPresent", "localIceCredentialsPresent", "remoteIceCredentialsPresent", "localFingerprintPresent", "remoteFingerprintPresent", "localFingerprintMatchesCertificate", "remoteFingerprintMatchesCertificate", "trackMuted", "playerBound", "playerPaused", "playerMuted", "audioTrackMuted"] {
+        if let Some(value) = snapshot.get(key) {
+            if value.is_null() || value.is_boolean() { safe.insert(key.to_string(), value.clone()); }
+        }
+    }
+    for (key, allowed) in [
+        ("connectionState", & ["new", "connecting", "connected", "disconnected", "failed", "closed"][..]),
+        ("iceConnectionState", & ["new", "checking", "connected", "completed", "disconnected", "failed", "closed"][..]),
+        ("signalingState", & ["stable", "have-local-offer", "have-remote-offer", "have-local-pranswer", "have-remote-pranswer", "closed"][..]),
+        ("localSetup", & ["active", "passive", "actpass"][..]),
+        ("remoteSetup", & ["active", "passive", "actpass"][..]),
+        ("pairState", & ["frozen", "waiting", "in-progress", "failed", "succeeded"][..]),
+        ("dtlsState", & ["new", "connecting", "connected", "closed", "failed"][..]),
+        ("localCandidateType", & ["host", "srflx", "prflx", "relay"][..]),
+        ("remoteCandidateType", & ["host", "srflx", "prflx", "relay"][..]),
+        ("trackState", & ["live", "ended"][..]),
+        ("audioTrackState", & ["live", "ended"][..]),
+    ] {
+        if let Some(value) = snapshot.get(key) {
+            if value.is_null() || value.as_str().map(|s| allowed.contains(&s)).unwrap_or(false) {
+                safe.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(safe)
+}
+
+#[tauri::command]
+pub fn native_log_screen_receiver(app: tauri::AppHandle, snapshot: serde_json::Value) {
+    log_capture_diag(Some(&app), &format!("screen_receiver {}", safe_receiver_snapshot(&snapshot)));
 }
 
 #[tauri::command]
@@ -524,17 +654,18 @@ pub async fn native_handle_screen_ice(
     candidate: String,
     sdp_mid: Option<String>,
     sdp_mline_index: Option<u16>,
+    screen_session_id: Option<String>,
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         state
             .inner
-            .handle_ice(&peer_id, candidate, sdp_mid, sdp_mline_index)
+            .handle_ice(&peer_id, candidate, sdp_mid, sdp_mline_index, screen_session_id)
             .await
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (state, peer_id, candidate, sdp_mid, sdp_mline_index);
+        let _ = (state, peer_id, candidate, sdp_mid, sdp_mline_index, screen_session_id);
         Err("Native Windows capture is only supported on Windows".to_string())
     }
 }
@@ -628,6 +759,31 @@ mod tests {
         assert_eq!(format_utc_timestamp(0), "1970-01-01 00:00:00.000Z");
         assert_eq!(format_utc_timestamp(1_794_244_036_461), "2026-11-09 17:07:16.461Z");
         assert_eq!(format_utc_timestamp(951_782_400_000), "2000-02-29 00:00:00.000Z");
+    }
+
+    #[test]
+    fn test_screen_receiver_log_rejects_sensitive_or_invalid_fields() {
+        let safe = safe_receiver_snapshot(&serde_json::json!({
+            "connectionState": "connected", "bytesReceived": 42,
+            "framesDecoded": null, "playerBound": true, "localCandidateType": "relay",
+            "sdp": "PRIVATE_SDP", "credential": "PRIVATE_SECRET", "address": "PRIVATE_IP",
+            "trackState": "PRIVATE_STATE", "framesDropped": -1, "playerWidth": "PRIVATE_WIDTH",
+            "senderToken": "PRIVATE_ID", "peerToken": "ab".repeat(32), "receiverGeneration": 2,
+            "localSetup": "PRIVATE_ROLE", "remoteSetup": "active", "setupCompatible": true,
+            "pairRequestsSent": 9, "pairResponsesReceived": -1, "localFingerprintMatchesCertificate": false
+        }));
+        assert_eq!(safe["bytesReceived"], 42);
+        assert_eq!(safe["connectionState"], "connected");
+        assert_eq!(safe["localCandidateType"], "relay");
+        assert!(safe.get("framesDecoded").unwrap().is_null());
+        assert_eq!(safe["playerBound"], true);
+        assert!(!safe.to_string().contains("PRIVATE_"));
+        assert!(safe.get("framesDropped").is_none());
+        assert_eq!(safe["peerToken"], "ab".repeat(32));
+        assert_eq!(safe["receiverGeneration"], 2);
+        assert_eq!(safe["pairRequestsSent"], 9); assert!(safe.get("pairResponsesReceived").is_none());
+        assert_eq!(safe["remoteSetup"], "active"); assert!(safe.get("localSetup").is_none());
+        assert_eq!(safe["localFingerprintMatchesCertificate"], false);
     }
 
     #[test]

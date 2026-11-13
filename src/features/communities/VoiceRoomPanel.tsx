@@ -26,10 +26,12 @@ import {
 import { VoiceParticipantCard } from '../../components/VoiceParticipantCard';
 import {
   NativeScreenShareBanner,
+  NativeLocalScreenPreview,
   ScreenSourcePickerModal,
 } from '../../components/ScreenSourcePickerModal';
 import { screenCaptureService } from '../../services/ScreenCaptureService';
 import { cn } from '../../lib/utils';
+import { bindScreenPlayback, updateScreenPlaybackAudio } from '../../services/ScreenPlayback';
 
 export interface VoiceRoomPanelProps {
   communityId: string;
@@ -87,6 +89,8 @@ interface RemoteVideoTileProps {
   displayName: string;
   isFocused: boolean;
   onToggleFocus: () => void;
+  audioMuted: boolean;
+  audioVolume: number;
 }
 
 const RemoteVideoTile: React.FC<RemoteVideoTileProps> = ({
@@ -94,22 +98,22 @@ const RemoteVideoTile: React.FC<RemoteVideoTileProps> = ({
   stream,
   displayName,
   isFocused,
-  onToggleFocus,
+  onToggleFocus, audioMuted, audioVolume,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [playBlocked, setPlayBlocked] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    if (el.srcObject !== stream) {
-      el.srcObject = stream;
-    }
-    return () => {
-      if (el.srcObject === stream) {
-        el.srcObject = null;
-      }
-    };
+    setPlayBlocked(false);
+    setPlaying(false);
+    return bindScreenPlayback(el, stream, audioMuted, audioVolume, () => setPlayBlocked(true));
   }, [stream]);
+  useEffect(() => {
+    if (videoRef.current) updateScreenPlaybackAudio(videoRef.current, audioMuted, audioVolume);
+  }, [stream, audioMuted, audioVolume]);
 
   return (
     <div
@@ -121,16 +125,24 @@ const RemoteVideoTile: React.FC<RemoteVideoTileProps> = ({
     >
       <video
         ref={videoRef}
+        onPlaying={() => setPlaying(true)}
+        onWaiting={() => setPlaying(false)}
+        onStalled={() => setPlaying(false)}
+        onEmptied={() => setPlaying(false)}
         autoPlay
         playsInline
-        muted
+        muted={audioMuted}
         className="w-full h-full object-contain bg-black"
       />
+      {playBlocked && <button type="button" className="absolute top-3 left-3 px-3 py-2 rounded bg-nexus-panel text-xs"
+        onClick={() => { void videoRef.current?.play().then(() => setPlayBlocked(false)).catch(() => {}); }}>
+        Reproduzir compartilhamento
+      </button>}
       <div className="absolute inset-x-0 bottom-0 px-3 py-2 bg-gradient-to-t from-black/80 via-black/40 to-transparent flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/30 border border-indigo-400/40 text-[10px] font-semibold text-indigo-200 shrink-0">
             <Monitor className="w-3 h-3" />
-            <span>Ao vivo</span>
+            <span>{playing ? 'Ao vivo' : 'Aguardando vídeo'}</span>
           </span>
           <span className="text-xs font-medium text-white truncate">{displayName}</span>
         </div>
@@ -172,6 +184,8 @@ export const VoiceRoomPanel: React.FC<VoiceRoomPanelProps> = ({
   const voiceRoomRemoteStreams = useAppStore((s) => s.voiceRoomRemoteStreams);
   const voiceRoomParticipantVolumes = useAppStore((s) => s.voiceRoomParticipantVolumes);
   const voiceRoomMetrics = useAppStore((s) => s.voiceRoomMetrics);
+  const screenReceivers = useAppStore(s => s.voiceRoomScreenReceivers);
+  const retryScreen = useAppStore(s => s.retryVoiceRoomScreen);
   const voiceRoomError = useAppStore((s) => s.voiceRoomError);
   const communityVoiceRooms = useAppStore((s) => s.communityVoiceRooms);
   const currentUserId = useAppStore((s) => s.onlineUser?.id || s.currentUser.id);
@@ -353,7 +367,16 @@ export const VoiceRoomPanel: React.FC<VoiceRoomPanelProps> = ({
       )}
 
       {/* Main Content */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+      <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-5 space-y-4">
+        {isThisChannelActive && nativeCaptureStatus?.active && <NativeLocalScreenPreview status={nativeCaptureStatus} />}
+        {isThisChannelActive && Object.entries(screenReceivers).filter(([id]) => !remoteStreamEntries.some(([peer]) => peer === id)).map(([id, state]) => (
+          <div key={id} className="rounded-xl border border-white/10 bg-white/5 p-4 flex items-center justify-between gap-3 text-sm">
+            <span>{displayedParticipants.find(p => p.user_id === id)?.display_name || 'Participante'} · {state === 'failed' ? 'A conexão direta da tela falhou' : state === 'waiting_video' ? 'Conectado, aguardando vídeo' : 'Conectando à tela…'}</span>
+            {state === 'failed' && <button type="button" className="shrink-0 rounded-lg border border-white/20 px-3 py-2 hover:bg-white/10" onClick={() => {
+              if (!retryScreen(id)) useAppStore.setState({ voiceRoomError: 'Aguarde 10 segundos para tentar novamente. Após três tentativas, peça ao transmissor para reiniciar a tela.' });
+            }}>Tentar novamente</button>}
+          </div>
+        ))}
         {/* Remote Screen Share Grid (supports multiple simultaneous streamers) */}
         {remoteStreamEntries.length > 0 && (
           <section className="space-y-2.5">
@@ -379,6 +402,8 @@ export const VoiceRoomPanel: React.FC<VoiceRoomPanelProps> = ({
                     key={peerUserId}
                     peerUserId={peerUserId}
                     stream={stream}
+                    audioMuted={voiceRoomDeafened}
+                    audioVolume={(voiceRoomParticipantVolumes[peerUserId] ?? 100) / 100}
                     displayName={name}
                     isFocused={focusedPeerId === peerUserId}
                     onToggleFocus={() =>

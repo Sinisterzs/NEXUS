@@ -12,11 +12,12 @@ const rootDir = path.resolve(__dirname, '..');
 const config = JSON.parse(fs.readFileSync(path.join(rootDir, 'src-tauri', 'tauri.conf.json'), 'utf8'));
 const installerName = `nexus_${config.version}_x64-setup.exe`;
 const manifestFile = config.version.includes('-') ? 'latest-nightly.json' : 'latest.json';
+const selectedManifest = process.argv[2] ? path.resolve(rootDir, process.argv[2]) : path.join(rootDir, manifestFile);
 const requiredFiles = [
   path.join(rootDir, 'src-tauri', 'target', 'release', 'nexus.exe'),
   path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle', 'nsis', installerName),
   path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle', 'nsis', `${installerName}.sig`),
-  path.join(rootDir, manifestFile),
+  selectedManifest,
 ];
 if (requiredFiles.some(file => !fs.existsSync(file) || fs.statSync(file).size === 0)) {
   console.error('[ERRO] Artefatos completos da versão atual são obrigatórios para a auditoria.');
@@ -78,9 +79,9 @@ for (const dir of searchDirs) {
 }
 
 // Verifica também arquivos na raiz que possam ser vinculados
-const rootFiles = ['latest-nightly.json', 'latest.json'];
+const rootFiles = ['latest-nightly.json', 'latest.json', selectedManifest];
 for (const file of rootFiles) {
-  const fullPath = path.join(rootDir, file);
+  const fullPath = path.resolve(rootDir, file);
   if (fs.existsSync(fullPath)) {
     auditedCount++;
     const content = fs.readFileSync(fullPath, 'utf8');
