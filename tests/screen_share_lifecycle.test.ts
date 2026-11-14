@@ -493,3 +493,37 @@ test('Mesh registers two outgoing and two incoming screen negotiations and route
     service.closeRemoteScreen('one'); service.closeRemoteScreen('two'); await service.stopScreenShare();
   }
 });
+
+
+test('four participants keep two senders with the same public address and offer ID isolated', async () => {
+  const { service } = mesh(); const inner = service as any;
+  const ids = ['house-a', 'house-b', 'fourth'];
+  const pcs: FakePc[] = [];
+  try {
+    for (const peer of ids) {
+      // The same SDP session number across different senders must still be peer-scoped.
+      await service.handleRemoteOffer(peer, sdp(2001), 'screen');
+      pcs.push(peers.at(-1)!);
+    }
+    for (const [index, peer] of ids.entries()) {
+      const address = index < 2 ? '203.0.113.10' : '203.0.113.20';
+      await service.handleRemoteIceCandidate(peer, {
+        candidate: `candidate:1 1 udp 1 ${address} ${5000 + index} typ srflx`,
+        nexusScreenSessionId: '2001',
+      } as any, 'screen');
+      assert.equal(pcs[index].candidates.length, 1);
+    }
+    assert.equal(new Set(pcs).size, 3); assert.equal(inner.screenReceiverPeers.size, 3);
+    const houseB = pcs[1], fourth = pcs[2];
+    pcs[0].state('failed');
+    assert.equal(houseB.closes, 0); assert.equal(fourth.closes, 0);
+    await service.handleRemoteOffer('house-a', sdp(2002), 'screen');
+    const replacement = peers.at(-1)!;
+    await service.handleRemoteIceCandidate('house-a', {
+      candidate: 'candidate:1 1 udp 1 203.0.113.10 5000 typ srflx', nexusScreenSessionId: '2001',
+    } as any, 'screen');
+    assert.equal(replacement.candidates.length, 0, 'old attempt cannot feed replacement');
+    assert.equal(houseB.candidates.length, 1); assert.equal(fourth.candidates.length, 1);
+    assert.equal(houseB.closes, 0); assert.equal(fourth.closes, 0);
+  } finally { for (const peer of ids) service.closeRemoteScreen(peer); await flush(); }
+});

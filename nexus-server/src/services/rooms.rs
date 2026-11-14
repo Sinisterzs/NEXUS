@@ -30,12 +30,14 @@ fn parse_max_participants(raw: Option<&str>) -> usize {
 
 #[derive(Debug, Clone)]
 struct VoiceRoom {
+    diagnostics_id: Uuid,
     participants: HashMap<Uuid, RoomParticipantDto>,
 }
 
 impl VoiceRoom {
     fn new() -> Self {
         Self {
+            diagnostics_id: Uuid::new_v4(),
             participants: HashMap::new(),
         }
     }
@@ -192,6 +194,14 @@ impl RoomService {
     pub fn with_max_participants(mut self, max_participants: usize) -> Self {
         self.max_participants = max_participants.max(1);
         self
+    }
+
+    // Only returns peers already present in this authenticated user's active room.
+    pub async fn diagnostics_members(&self, user: Uuid) -> Result<(Uuid,Vec<Uuid>),AppError> {
+        let state=self.state.read().await;
+        let key=state.user_rooms.get(&user).ok_or_else(||AppError::Forbidden("Entre em uma sala para diagnosticar.".into()))?;
+        let room=state.rooms.get(key).ok_or_else(||AppError::Forbidden("Sala indisponível.".into()))?;
+        Ok((room.diagnostics_id,room.participants.keys().copied().collect()))
     }
 
     pub fn max_participants(&self) -> usize {

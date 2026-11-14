@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use windows::core::{Interface, Result, GUID};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D, ID3D11VideoContext,
+    ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoProcessorEnumerator1,
     ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
     ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView, D3D11_BIND_RENDER_TARGET,
     D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
@@ -11,10 +11,12 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
     D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_OPTIMAL_SPEED, D3D11_VPIV_DIMENSION_TEXTURE2D,
-    D3D11_VPOV_DIMENSION_TEXTURE2D,
+    D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11_VIDEO_PROCESSOR_COLOR_SPACE,
+    D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_NV12, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
 };
 use windows::Win32::Graphics::Dxgi::IDXGISurface;
 use windows::Win32::Media::MediaFoundation::{
@@ -35,10 +37,15 @@ use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonQuality, CODECAPI_AVEncVideoEncodeQP,
     CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
-    MFVideoInterlace_Progressive,
+    MFVideoInterlace_Progressive, IMFMediaType,
+    MF_MT_YUV_MATRIX, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES, MF_MT_TRANSFER_FUNCTION,
+    MFVideoTransferMatrix_BT709, MFNominalRange_16_235, MFVideoPrimaries_BT709, MFVideoTransFunc_709,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Variant::VARIANT;
+
+#[path = "h264_color.rs"]
+mod h264_color;
 
 const ME_TRANSFORM_NEED_INPUT: u32 = 601;
 const ME_TRANSFORM_HAVE_OUTPUT: u32 = 602;
@@ -49,6 +56,18 @@ const H264_PROFILE_MAIN: u32 = 77;
 #[inline]
 fn pack_u32_pair(hi: u32, lo: u32) -> u64 {
     ((hi as u64) << 32) | (lo as u64)
+}
+
+// SDR transport contract: full-range RGB input -> BT.709 studio-range NV12.
+// D3D and MF use different numeric range enums; never interchange their values.
+const SDR_RGB_COLOR_BITS: u32 = (1 << 2) | ((D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255.0 as u32) << 4);
+const SDR_NV12_COLOR_BITS: u32 = (1 << 2) | ((D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235.0 as u32) << 4);
+unsafe fn set_sdr_media_colors(media: &IMFMediaType) -> Result<()> {
+    media.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)?;
+    media.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)?;
+    media.SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32)?;
+    media.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +92,7 @@ pub struct GpuBgraToNv12 {
     pub nv12_tex: ID3D11Texture2D,
     output_view: ID3D11VideoProcessorOutputView,
     staging_nv12: Option<ID3D11Texture2D>,
+    explicit_color_space: bool,
 }
 
 impl GpuBgraToNv12 {
@@ -84,7 +104,21 @@ impl GpuBgraToNv12 {
         dst_w: u32,
         dst_h: u32,
     ) -> Result<Self> {
+        Self::new_with_color_path(device,context,src_w,src_h,dst_w,dst_h,None)
+    }
+
+    #[cfg(any(test,feature="color-diagnostics"))]
+    pub(super) fn new_for_diagnostics(device:&ID3D11Device,context:&ID3D11DeviceContext,sw:u32,sh:u32,dw:u32,dh:u32,path:&str) -> Result<Self> {
+        let explicit=match path {"auto"=>None,"legacy"=>Some(false),"dxgi1"=>Some(true),_=>return Err(windows::core::Error::from_hresult(windows::core::HRESULT(0x80070057u32 as i32)))};
+        Self::new_with_color_path(device,context,sw,sh,dw,dh,explicit)
+    }
+
+    fn new_with_color_path(device:&ID3D11Device, context:&ID3D11DeviceContext, src_w:u32,src_h:u32,dst_w:u32,dst_h:u32,override_path:Option<bool>) -> Result<Self> {
         unsafe {
+            let adapter=device.cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice>()?.GetAdapter()?;
+            // AMD's measured legacy path is unchanged. NVIDIA's legacy nominal-range
+            // readback did not match the actual NV12 in the RTX 4060 Ti fixture.
+            let explicit_color_space=override_path.unwrap_or(adapter.GetDesc()?.VendorId==0x10de);
             if let Ok(mt) = device.cast::<ID3D11Multithread>() {
                 let _ = mt.SetMultithreadProtected(true);
             }
@@ -109,6 +143,23 @@ impl GpuBgraToNv12 {
             };
             let enumerator = video_device.CreateVideoProcessorEnumerator(&content_desc)?;
             let processor = video_device.CreateVideoProcessor(&enumerator, 0)?;
+            if explicit_color_space {
+                let enumerator1:ID3D11VideoProcessorEnumerator1=enumerator.cast()?;
+                if !enumerator1.CheckVideoProcessorFormatConversion(DXGI_FORMAT_B8G8R8A8_UNORM,DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,DXGI_FORMAT_NV12,DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709)?.as_bool() {
+                    return Err(windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32),"Explicit RGB full BT.709 to NV12 studio BT.709 conversion is unsupported; refusing an ambiguous range fallback"));
+                }
+                let vc1:ID3D11VideoContext1=video_context.cast()?;
+                vc1.VideoProcessorSetStreamColorSpace1(&processor,0,DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+                vc1.VideoProcessorSetOutputColorSpace1(&processor,DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
+                if vc1.VideoProcessorGetStreamColorSpace1(&processor,0)!=DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 || vc1.VideoProcessorGetOutputColorSpace1(&processor)!=DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709 {
+                    return Err(windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32),"Explicit video processor color-space readback mismatch"));
+                }
+            } else {
+                video_context.VideoProcessorSetStreamColorSpace(&processor, 0,
+                    &D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: SDR_RGB_COLOR_BITS });
+                video_context.VideoProcessorSetOutputColorSpace(&processor,
+                    &D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: SDR_NV12_COLOR_BITS });
+            }
 
             let nv12_desc = D3D11_TEXTURE2D_DESC {
                 Width: dst_w.max(2),
@@ -156,6 +207,7 @@ impl GpuBgraToNv12 {
                 nv12_tex,
                 output_view,
                 staging_nv12: None,
+                explicit_color_space,
             })
         }
     }
@@ -168,8 +220,18 @@ impl GpuBgraToNv12 {
         if self.src_w == sw && self.src_h == sh && self.dst_w == dw && self.dst_h == dh {
             return Ok(());
         }
-        *self = Self::new(&self.device, &self.context, sw, sh, dw, dh)?;
+        *self = Self::new_with_color_path(&self.device, &self.context, sw, sh, dw, dh,Some(self.explicit_color_space))?;
         Ok(())
+    }
+
+    #[cfg(any(test,feature="color-diagnostics"))]
+    pub(super) fn color_diagnostics(&self) -> serde_json::Value {
+        unsafe {
+            let mut caps=windows::Win32::Graphics::Direct3D11::D3D11_VIDEO_PROCESSOR_CAPS::default();
+            let caps= self.enumerator.GetVideoProcessorCaps(&mut caps).ok().map(|_|caps.DeviceCaps);
+            let modern=self.video_context.cast::<ID3D11VideoContext1>().ok().map(|v|serde_json::json!({"input":v.VideoProcessorGetStreamColorSpace1(&self.processor,0).0,"output":v.VideoProcessorGetOutputColorSpace1(&self.processor).0}));
+            serde_json::json!({"path":if self.explicit_color_space{"dxgi1"}else{"legacy"},"deviceCaps":caps,"colorSpace1Readback":modern,"requestedInputDxgi":0,"requestedOutputDxgi":8})
+        }
     }
 
     pub fn convert(&mut self, src_bgra: &ID3D11Texture2D) -> Result<()> {
@@ -515,6 +577,7 @@ impl MfH264Encoder {
         in_mt.SetUINT64(&MF_MT_FRAME_RATE, pack_u32_pair(fps, 1))?;
         in_mt.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
         in_mt.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_u32_pair(1, 1))?;
+        set_sdr_media_colors(&in_mt)?;
         mft.SetInputType(0, &in_mt, 0).map_err(|e| {
             crate::capture::log_capture_diag(None, &format!("screen_encoder stage=SetInputType format=NV12 width={} height={} hresult=0x{:08X}", width, height, e.code().0 as u32)); e
         })?;
@@ -697,6 +760,8 @@ impl MfH264Encoder {
                 injected_sps_pps: false,
             });
         }
+        let raw = h264_color::sdr_annex_b(raw).map_err(|_| windows::core::Error::new(
+            windows::core::HRESULT(0xC00D36B4u32 as i32), "Invalid H.264 SPS while declaring SDR color metadata"))?;
         Ok(self.process_annex_b(raw))
     }
 
@@ -903,7 +968,8 @@ impl MfH264Encoder {
                 ManuallyDrop::drop(&mut buf0[0].pEvents);
                 if e.code() == MF_E_TRANSFORM_STREAM_CHANGE && attempt == 0 {
                     if let Ok(avail_out) = self.mft.GetOutputAvailableType(0, 0) {
-                        let _ = self.mft.SetOutputType(0, &avail_out, 0);
+                        set_sdr_media_colors(&avail_out)?;
+                        self.mft.SetOutputType(0, &avail_out, 0)?;
                         if let Ok(info) = self.mft.GetOutputStreamInfo(0) {
                             self.output_stream_info = info;
                         }
@@ -967,6 +1033,7 @@ unsafe fn build_h264_out_mt(
     out_mt.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
     out_mt.SetUINT32(&MF_MT_MPEG2_PROFILE, profile)?;
     out_mt.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_u32_pair(1, 1))?;
+    set_sdr_media_colors(&out_mt)?;
     Ok(out_mt)
 }
 
@@ -1082,3 +1149,11 @@ mod tests {
         assert_eq!(nalus[2][0] & 0x1F, 5);
     }
 }
+
+#[cfg(test)]
+#[path = "color_experiment.rs"]
+mod color_experiment;
+
+#[cfg(any(test, feature = "color-diagnostics"))]
+#[path = "color_probe.rs"]
+pub mod color_probe;

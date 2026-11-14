@@ -10,7 +10,7 @@ import { screenIceServers, assertScreenCandidate, assertScreenSdp, assertVoiceOn
  */
 
 import { audioDeviceService } from './AudioDeviceService.ts';
-import { startScreenReceiveDiagnostics, screenReceiverContext } from './ScreenReceiveDiagnostics.ts';
+import { startScreenReceiveDiagnostics, screenReceiverContext, logScreenReceiverTermination } from './ScreenReceiveDiagnostics.ts';
 import { detachScreenElements, releaseScreenStream, screenSessionId, screenCandidateSessionId, tagScreenCandidate, screenAnswerSessionId, tagScreenAnswer, screenCandidateInit } from './screenReceiverLifecycle.ts';
 import { screenCaptureService, applyTrackContentHint } from './ScreenCaptureService.ts';
 import { processAnalyserFrame, type VoiceActivityDetector } from '../lib/voiceActivity.ts';
@@ -99,6 +99,8 @@ export interface MeshRoomCallbacks {
 }
 
 interface ScreenReceiverSession {
+  diagnosticContext: Promise<Record<string, string | number>>;
+  startedAt: number;
   offerSessionId: string | null;
   lastOfferSdp?: string;
   answerSdp?: string;
@@ -386,7 +388,7 @@ export class MeshRoomService {
     this.nativeScreenPendingIce.delete(peerUserId);
     this.nativeScreenOfferIds.delete(peerUserId);
     this.departedPeers.add(peerUserId);
-    this.closeRemoteScreen(peerUserId);
+    this.closeRemoteScreen(peerUserId, 'participant_left');
     const peer = this.peers.get(peerUserId);
     if (peer) {
       this.cleanupPeer(peer);
@@ -395,7 +397,7 @@ export class MeshRoomService {
 
     const screenReceiver = this.screenReceiverPeers.get(peerUserId);
     if (screenReceiver) {
-      this.cleanupScreenReceiver(screenReceiver);
+      this.cleanupScreenReceiver(screenReceiver, 'participant_left');
       this.screenReceiverPeers.delete(peerUserId);
     }
 
@@ -440,7 +442,7 @@ export class MeshRoomService {
     this.peers.clear();
 
     for (const receiver of this.screenReceiverPeers.values()) {
-      this.cleanupScreenReceiver(receiver);
+      this.cleanupScreenReceiver(receiver, 'room_left');
     }
     this.screenReceiverPeers.clear();
 
@@ -1510,9 +1512,12 @@ export class MeshRoomService {
     if (limit && (Date.now() - limit.at < 10000 || limit.count >= 3)) return false;
     this.screenRetryLimits.set(peerUserId, { at: Date.now(), count: (limit?.count ?? 0) + 1 });
     this.callbacks?.onScreenReceiverState?.(peerUserId, 'connecting');
+    const retryStartedAt = Date.now();
     const timer = setTimeout(() => {
       this.screenRetryPending.delete(peerUserId);
       if (this.isActive && this.screenRetryOffers.get(peerUserId) === id) {
+        logScreenReceiverTermination(undefined, 'retry_no_offer', screenReceiverContext(peerUserId, this.selfUserId ?? '', id,
+          this.screenReceiverVersions.get(peerUserId) ?? 0, this.roomGeneration), { attemptElapsedMs: Math.max(0, Date.now() - retryStartedAt) });
         this.callbacks?.onScreenReceiverState?.(peerUserId, 'failed');
         this.callbacks?.onError?.('A nova tentativa não recebeu resposta. Peça ao transmissor para reiniciar a tela ou atualizar o NEXUS.');
       }
@@ -1523,17 +1528,20 @@ export class MeshRoomService {
     return true;
   }
 
-  private failRemoteScreen(peerUserId: string, message: string): void {
+  private failRemoteScreen(peerUserId: string, message: string, failureCode: string): void {
+    const session = this.screenReceiverPeers.get(peerUserId);
+    if (session) logScreenReceiverTermination(session.pc, failureCode, session.diagnosticContext,
+      { ...session.diagnostics, attemptElapsedMs: Math.max(0, Date.now() - session.startedAt) });
     const id = this.screenReceiverOfferIds.get(peerUserId);
     const limit = this.screenRetryLimits.get(peerUserId);
-    this.closeRemoteScreen(peerUserId);
+    this.closeRemoteScreen(peerUserId, 'failed_cleanup');
     if (id) this.screenRetryOffers.set(peerUserId, id);
     if (limit) this.screenRetryLimits.set(peerUserId, limit);
     this.callbacks?.onScreenReceiverState?.(peerUserId, 'failed');
     this.callbacks?.onError?.(message);
   }
 
-  public closeRemoteScreen(peerUserId: string): void {
+  public closeRemoteScreen(peerUserId: string, closureCode = 'requested_stop'): void {
     clearTimeout(this.screenRetryPending.get(peerUserId)); this.screenRetryPending.delete(peerUserId);
     this.screenRetryOffers.delete(peerUserId); this.screenRetryLimits.delete(peerUserId);
     this.callbacks?.onScreenReceiverState?.(peerUserId, 'closed');
@@ -1544,7 +1552,7 @@ export class MeshRoomService {
     this.screenReceiverOfferIds.delete(peerUserId);
     const session = this.screenReceiverPeers.get(peerUserId);
     this.screenReceiverPeers.delete(peerUserId);
-    if (session) this.cleanupScreenReceiver(session);
+    if (session) this.cleanupScreenReceiver(session, closureCode);
     // The fallback stream can share transceivers with voice; only detach its player.
     else detachScreenElements(this.remoteVideoStreams.get(peerUserId) ?? null);
     if (this.remoteVideoStreams.delete(peerUserId)) {
@@ -1572,6 +1580,8 @@ export class MeshRoomService {
     });
 
     const session: ScreenReceiverSession = {
+      startedAt: Date.now(),
+      diagnosticContext: screenReceiverContext(peerUserId, this.selfUserId ?? '', this.screenReceiverOfferIds.get(peerUserId) ?? null, version, room),
       offerSessionId: null,
       diagnostics: { offersApplied: 0, answersSent: 0, iceQueued: 0, iceApplied: 0, iceRejected: 0, iceStale: 0 },
       stopDiagnostics: () => {},
@@ -1585,9 +1595,8 @@ export class MeshRoomService {
     this.callbacks?.onScreenReceiverState?.(peerUserId, 'connecting');
     this.earlyScreenCandidates.delete(peerUserId);
     session.stopDiagnostics = startScreenReceiveDiagnostics(pc, session.stream, () => {
-      if (this.screenReceiverPeers.get(peerUserId) === session) this.failRemoteScreen(peerUserId, 'A transmissão conectou, mas não recebeu vídeo. Tente conectar novamente a esta tela.');
-    }, screenReceiverContext(peerUserId, this.selfUserId ?? '', this.screenReceiverOfferIds.get(peerUserId) ?? null,
-      version, room), () => ({ ...session.diagnostics }));
+      if (this.screenReceiverPeers.get(peerUserId) === session) this.failRemoteScreen(peerUserId, 'A transmissão conectou, mas não recebeu vídeo. Tente conectar novamente a esta tela.', 'connected_no_frames');
+    }, session.diagnosticContext, () => ({ ...session.diagnostics, attemptElapsedMs: Math.max(0, Date.now() - session.startedAt) }));
 
     pc.onicecandidate = (event) => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
@@ -1613,14 +1622,15 @@ export class MeshRoomService {
     const stopDiagnostics = session.stopDiagnostics;
     const stopGuard = guardScreenP2P(pc, ready => {
       p2pReady = ready; session.stream.getTracks().forEach(track => { track.enabled = ready; });
-      if (ready) { this.callbacks?.onScreenReceiverState?.(peerUserId, 'waiting_video'); publish(); }
-    }, message => {
-      if (this.screenReceiverPeers.get(peerUserId) === session) this.failRemoteScreen(peerUserId, message);
+      if (ready) { session.diagnostics.directReadyMs ??= Math.max(0, Date.now() - session.startedAt); this.callbacks?.onScreenReceiverState?.(peerUserId, 'waiting_video'); publish(); }
+    }, (message, code) => {
+      if (this.screenReceiverPeers.get(peerUserId) === session) this.failRemoteScreen(peerUserId, message, code);
     });
     session.stopDiagnostics = () => { stopGuard(); stopDiagnostics(); };
     pc.ontrack = (event) => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
       const track = event.track;
+      session.diagnostics.firstTrackMs ??= Math.max(0, Date.now() - session.startedAt);
       track.enabled = p2pReady;
       if (!session.stream.getTracks().some((t) => t.id === track.id)) {
         session.stream.addTrack(track);
@@ -1630,15 +1640,15 @@ export class MeshRoomService {
 
       if (track.kind === 'video') {
         track.onended = () => {
-          if (this.screenReceiverPeers.get(peerUserId) === session) this.closeRemoteScreen(peerUserId);
+          if (this.screenReceiverPeers.get(peerUserId) === session) this.closeRemoteScreen(peerUserId, 'track_ended');
         };
       }
     };
 
     pc.onconnectionstatechange = () => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
-      if (pc.connectionState === 'failed') this.failRemoteScreen(peerUserId, 'Não foi possível estabelecer a conexão direta para esta tela. Tente novamente.');
-      else if (pc.connectionState === 'closed') this.closeRemoteScreen(peerUserId);
+      if (pc.connectionState === 'failed') this.failRemoteScreen(peerUserId, 'Não foi possível estabelecer a conexão direta para esta tela. Tente novamente.', 'pc_failed');
+      else if (pc.connectionState === 'closed') this.closeRemoteScreen(peerUserId, 'pc_closed');
     };
 
     return session;
@@ -1660,7 +1670,7 @@ export class MeshRoomService {
 
   private async handleScreenReceiverOffer(peerUserId: string, sdp: string): Promise<void> {
     try { assertScreenSdp(sdp); } catch {
-      this.closeRemoteScreen(peerUserId); this.callbacks?.onError?.(SCREEN_P2P_ERROR); throw new Error(SCREEN_P2P_ERROR);
+      this.closeRemoteScreen(peerUserId, 'sdp_rejected'); this.callbacks?.onError?.(SCREEN_P2P_ERROR); throw new Error(SCREEN_P2P_ERROR);
     }
     if (this.departedPeers.has(peerUserId)) return;
     clearTimeout(this.screenRetryPending.get(peerUserId)); this.screenRetryPending.delete(peerUserId);
@@ -1668,7 +1678,7 @@ export class MeshRoomService {
     const id = screenSessionId(sdp);
     const previous = this.screenReceiverPeers.get(peerUserId);
     const previousId = previous?.offerSessionId ?? this.screenReceiverOfferIds.get(peerUserId);
-    if (id && previousId && id !== previousId) this.closeRemoteScreen(peerUserId);
+    if (id && previousId && id !== previousId) this.closeRemoteScreen(peerUserId, 'session_replaced');
     if (id) this.screenReceiverOfferIds.set(peerUserId, id);
     this.stoppedScreenPeers.delete(peerUserId);
     const session = await this.ensureScreenReceiverPeer(peerUserId);
@@ -1684,6 +1694,7 @@ export class MeshRoomService {
       }
       await session.pc.setRemoteDescription({ type: 'offer', sdp });
       session.diagnostics.offersApplied++;
+      session.diagnostics.offerAppliedMs = Math.max(0, Date.now() - session.startedAt);
       if (!alive()) return;
       while (session.pendingCandidates.length > 0) {
         const cand = session.pendingCandidates.shift();
@@ -1701,11 +1712,12 @@ export class MeshRoomService {
         session.lastOfferSdp = sdp;
         session.answerSdp = tagScreenAnswer(session.pc.localDescription.sdp, session.offerSessionId);
         session.diagnostics.answersSent++;
+        session.diagnostics.answerSentMs = Math.max(0, Date.now() - session.startedAt);
         this.callbacks?.onSendAnswer(peerUserId, session.answerSdp, 'screen');
       }
       } catch (error) {
         if (!alive()) return;
-        this.closeRemoteScreen(peerUserId);
+        this.closeRemoteScreen(peerUserId, 'negotiation_error');
         throw error;
       }
     });
@@ -1738,7 +1750,7 @@ export class MeshRoomService {
     }
     try { assertScreenCandidate(candidate); } catch {
       if (toSender) await screenCaptureService.removeNativeScreenPeer(peerUserId).catch(() => {});
-      if (toReceiver) this.closeRemoteScreen(peerUserId);
+      if (toReceiver) this.closeRemoteScreen(peerUserId, 'candidate_rejected');
       this.callbacks?.onError?.(SCREEN_P2P_ERROR); throw new Error(SCREEN_P2P_ERROR);
     }
     if (toSender) {
@@ -1774,7 +1786,9 @@ export class MeshRoomService {
     }
   }
 
-  private cleanupScreenReceiver(session: ScreenReceiverSession): void {
+  private cleanupScreenReceiver(session: ScreenReceiverSession, closureCode = 'requested_stop'): void {
+    logScreenReceiverTermination(session.pc, closureCode, session.diagnosticContext,
+      { ...session.diagnostics, attemptElapsedMs: Math.max(0, Date.now() - session.startedAt) }, 'closed');
     session.stopDiagnostics();
     session.pendingCandidates = [];
     try {

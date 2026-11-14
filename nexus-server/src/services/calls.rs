@@ -23,6 +23,50 @@ struct CallState {
     ringing_timers: HashMap<Uuid, AbortHandle>,
 }
 
+#[cfg(test)]
+mod screen_stopped_tests {
+    use super::*;
+
+    fn session() -> CallSession {
+        CallSession { id: Uuid::new_v4(), caller_id: Uuid::new_v4(), callee_id: Uuid::new_v4(),
+            status: CallStatus::Active, caller_muted: false, callee_muted: false,
+            created_at: Utc::now(), started_at: Some(Utc::now()), ended_at: None }
+    }
+
+    #[test]
+    fn screen_stopped_authorizes_only_active_opposite_participants_and_bounded_session_id() {
+        let mut call = session();
+        let event = CallService::screen_stopped_event(&call, call.caller_id, call.callee_id, "12345").unwrap();
+        assert_eq!(event.event_type, "call.screen_stopped");
+        assert_eq!(event.payload["share_id"], "12345");
+        assert_eq!(event.payload["sender_id"], call.caller_id.to_string());
+        assert!(CallService::screen_stopped_event(&call, call.callee_id, call.caller_id, "12345").is_ok());
+        assert!(CallService::screen_stopped_event(&call, Uuid::new_v4(), call.callee_id, "12345").is_err());
+        assert!(CallService::screen_stopped_event(&call, call.caller_id, call.caller_id, "12345").is_err());
+        for invalid in ["", "SDP_or_credentials", &"1".repeat(65)] {
+            assert!(CallService::screen_stopped_event(&call, call.caller_id, call.callee_id, invalid).is_err());
+        }
+        call.status = CallStatus::Ringing;
+        assert!(CallService::screen_stopped_event(&call, call.caller_id, call.callee_id, "12345").is_err());
+        call.status = CallStatus::Ended;
+        assert!(CallService::screen_stopped_event(&call, call.caller_id, call.callee_id, "12345").is_err());
+    }
+
+    #[test]
+    fn screen_stopped_wire_format_deserializes_without_sdp_or_ice() {
+        let call = session();
+        let msg: crate::models::GatewayClientMessage = serde_json::from_value(json!({
+            "op":"call.screen_stopped", "call_id":call.id, "target_user_id":call.callee_id, "share_id":"12345"
+        })).unwrap();
+        match msg {
+            crate::models::GatewayClientMessage::CallScreenStopped { call_id, target_user_id, share_id } => {
+                assert_eq!(call_id, call.id); assert_eq!(target_user_id, call.callee_id); assert_eq!(share_id, "12345");
+            }
+            _ => panic!("wrong message kind"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct CallService {
     state: Arc<RwLock<CallState>>,
@@ -33,6 +77,32 @@ pub struct CallService {
 }
 
 impl CallService {
+    fn screen_stopped_event(session: &CallSession, sender: Uuid, target: Uuid, share_id: &str) -> Result<GatewayEvent, AppError> {
+        if session.status != CallStatus::Active {
+            return Err(AppError::BadRequest("A chamada não está ativa.".into()));
+        }
+        if !((session.caller_id == sender && session.callee_id == target) ||
+            (session.callee_id == sender && session.caller_id == target)) {
+            return Err(AppError::Forbidden("Sinalização de tela não autorizada.".into()));
+        }
+        if share_id.is_empty() || share_id.len() > 64 || !share_id.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(AppError::BadRequest("Identificador de transmissão inválido.".into()));
+        }
+        Ok(GatewayEvent::new("call.screen_stopped", json!({
+            "call_id":session.id,"sender_id":sender,"share_id":share_id
+        })))
+    }
+
+    pub async fn relay_screen_stopped(&self, sender: Uuid, call_id: Uuid, target: Uuid, share_id: String) -> Result<(), AppError> {
+        let event = {
+            let state = self.state.read().await;
+            let session = state.calls.get(&call_id).ok_or_else(|| AppError::NotFound("Chamada não encontrada.".into()))?;
+            Self::screen_stopped_event(session, sender, target, &share_id)?
+        };
+        self.presence_mgr.send_to_user(target, &event).await;
+        Ok(())
+    }
+
     pub fn new(
         friend_repo: FriendRepository,
         auth_service: AuthService,

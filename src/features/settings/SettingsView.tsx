@@ -1,3 +1,4 @@
+import { DiagnosticsPrivacy } from '../../components/DiagnosticsPrivacy';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   User,
@@ -1458,6 +1459,7 @@ export const SettingsView: React.FC = () => {
         {/* 5. SEÇÃO PRIVACIDADE */}
         {activeSection === 'privacy' && (
           <div className="space-y-6">
+            <DiagnosticsPrivacy />
             <div>
               <h2 className="text-base font-bold text-nexus-text">Privacidade & Proteção</h2>
               <p className="text-xs text-nexus-muted">

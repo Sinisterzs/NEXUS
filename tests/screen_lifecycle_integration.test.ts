@@ -1,3 +1,4 @@
+import {syntheticPeerDiagnostics} from '../src/services/SyntheticPeerDiagnostics';
 // Bundled with esbuild before running under node:test, to resolve the app's Vite imports.
 import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -119,4 +120,34 @@ test('room participant false event closes its receiver even when previous DTO wa
     event('room_participant_updated', { community_id: 'community', channel_id: 'room', participant: { user_id: 'peer', is_screen_sharing: false } });
     assert.deepEqual(closed, ['peer']);
   } finally { service.closeRemoteScreen = oldClose; }
+});
+
+
+test('synthetic room signaling is isolated before normal screen and voice handlers, including malformed reserved IDs', () => {
+  const saved = { offer: meshRoomService.handleRemoteOffer, answer: meshRoomService.handleRemoteAnswer, ice: meshRoomService.handleRemoteIceCandidate,
+    so: syntheticPeerDiagnostics.offer, sa: syntheticPeerDiagnostics.answer, si: syntheticPeerDiagnostics.ice };
+  const normal: string[] = [], synthetic: string[] = [];
+  meshRoomService.handleRemoteOffer = async () => { normal.push('offer'); };
+  meshRoomService.handleRemoteAnswer = async () => { normal.push('answer'); };
+  meshRoomService.handleRemoteIceCandidate = async () => { normal.push('ice'); };
+  syntheticPeerDiagnostics.offer = async () => { synthetic.push('offer'); };
+  syntheticPeerDiagnostics.answer = async () => { synthetic.push('answer'); };
+  syntheticPeerDiagnostics.ice = async () => { synthetic.push('ice'); };
+  try {
+    useAppStore.setState({ activeVoiceCommunityId: 'community', activeVoiceChannelId: 'room' });
+    useAppStore.getState().initWebSocket();
+    const base = {community_id:'community',channel_id:'room',sender_id:'peer',stream_kind:'screen'};
+    event('room_webrtc_offer',{...base,sdp:'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n'});
+    event('room_webrtc_answer',{...base,sdp:'v=0\r\n'});
+    event('room_webrtc_ice_candidate',{...base,candidate:{candidate:'normal'}});
+    event('room_webrtc_offer',{...base,sdp:'v=0\r\na=x-nexus-synthetic:'+crypto.randomUUID()+'\r\n'});
+    event('room_webrtc_offer',{...base,sdp:'v=0\r\na=x-nexus-synthetic:malformed\r\n'});
+    event('room_webrtc_answer',{...base,sdp:'v=0\r\na=x-nexus-synthetic:'+crypto.randomUUID()+'\r\n'});
+    event('room_webrtc_ice_candidate',{...base,candidate:{nexusSyntheticDiagnostic:crypto.randomUUID(),candidate:'diagnostic'}});
+    event('room_webrtc_offer',{...base,channel_id:'other',sdp:'v=0\r\na=x-nexus-synthetic:'+crypto.randomUUID()+'\r\n'});
+    assert.deepEqual(normal,['offer','answer','ice']);assert.deepEqual(synthetic,['offer','offer','answer','ice']);
+  } finally {
+    meshRoomService.handleRemoteOffer=saved.offer;meshRoomService.handleRemoteAnswer=saved.answer;meshRoomService.handleRemoteIceCandidate=saved.ice;
+    syntheticPeerDiagnostics.offer=saved.so;syntheticPeerDiagnostics.answer=saved.sa;syntheticPeerDiagnostics.ice=saved.si;
+  }
 });

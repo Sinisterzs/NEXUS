@@ -1,4 +1,4 @@
-param([string]$OutputDirectory = "scratch/nightly4-preparation/distribution")
+param([string]$OutputDirectory = "scratch/nightly4-preparation/distribution", [string]$CargoFeatures = "color-diagnostics", [switch]$BundleOnly)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
@@ -17,7 +17,16 @@ try {
     $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -LiteralPath $keyPath -Raw
   }
   if ($null -eq $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '' }
-  & node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis -- --offline --locked
+  if ($BundleOnly) {
+    $binary = Get-Item -LiteralPath (Join-Path $root 'src-tauri/target/release/nexus.exe')
+    foreach ($source in Get-ChildItem -LiteralPath @((Join-Path $root 'src'),(Join-Path $root 'src-tauri/src'),(Join-Path $root 'shared')) -Recurse -File) {
+      if ($source.LastWriteTimeUtc -gt $binary.LastWriteTimeUtc) { throw 'Source changed after the Release binary. Run a full build before bundling.' }
+    }
+  }
+  $buildArguments = @($(if ($BundleOnly) { 'bundle' } else { 'build' }),'--bundles','nsis')
+  if ($CargoFeatures) { $buildArguments += @('--features',$CargoFeatures) }
+  if (-not $BundleOnly) { $buildArguments += @('--','--offline','--locked') }
+  & node node_modules/@tauri-apps/cli/tauri.js @buildArguments
   if ($LASTEXITCODE -ne 0) { throw 'Tauri NSIS build/signing failed' }
   $productVersion = (Get-Item -LiteralPath src-tauri/target/release/nexus.exe).VersionInfo.ProductVersion
   if ($productVersion -ne $config.version) { throw 'Desktop binary version does not match the requested Nightly' }

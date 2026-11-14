@@ -351,6 +351,20 @@ impl GpuPreview {
     }
 }
 
+/// Explicit diagnostic only: same GPU implementation, one synthetic frame, no IPC/session.
+#[cfg(feature = "color-diagnostics")]
+pub fn diagnostic_color_frame(device:&ID3D11Device, context:&ID3D11DeviceContext, texture:&ID3D11Texture2D) -> Result<Vec<u8>> {
+    let mut desc=D3D11_TEXTURE2D_DESC::default();unsafe{texture.GetDesc(&mut desc);}
+    let mut gpu=GpuPreview::new(device,context,desc.Width,desc.Height,640,360)?;
+    gpu.submit(texture)?;
+    let start=Instant::now();
+    loop {
+        if let Some(frame)=gpu.read_ready(0,0)? {return Ok(frame[32..].to_vec());}
+        if start.elapsed()>Duration::from_secs(2) {return Err(windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32),"Diagnostic preview readback timed out"));}
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 pub struct PreviewSampler {
     gpu: Option<GpuPreview>,
     pending: bool,

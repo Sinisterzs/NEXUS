@@ -1,0 +1,558 @@
+{
+  "provenance": "Synthetic 24-color chart, RTX 4060 Ti WGC capture equal byte-for-byte to generated reference; no personal media",
+  "videoSha256": "9464e6c3f86d91e6ef108542ebb448a100f02ad40e086225a6853b5f28a11f6c",
+  "frames": 60,
+  "gpuStreamColorBits": 36,
+  "gpuOutputColorBits": 20,
+  "mfInput": {
+    "chroma": null,
+    "matrix": 1,
+    "primaries": 2,
+    "range": 2,
+    "transfer": 5
+  },
+  "mfOutput": {
+    "chroma": null,
+    "matrix": 1,
+    "primaries": 2,
+    "range": 2,
+    "transfer": 5
+  },
+  "h264Color": {
+    "color_range": "tv",
+    "color_space": "bt709",
+    "color_transfer": "bt709",
+    "color_primaries": "bt709"
+  },
+  "patchRgbMae": 6.319,
+  "patches": [
+    {
+      "index": 0,
+      "referenceRgb": [
+        0,
+        0,
+        0
+      ],
+      "measuredNv12": [
+        0,
+        128,
+        128
+      ],
+      "decodedRgb": [
+        0,
+        0,
+        0
+      ],
+      "x": 40,
+      "y": 40,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 1,
+      "referenceRgb": [
+        16,
+        16,
+        16
+      ],
+      "measuredNv12": [
+        16,
+        128,
+        128
+      ],
+      "decodedRgb": [
+        0,
+        0,
+        0
+      ],
+      "x": 200,
+      "y": 40,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 2,
+      "referenceRgb": [
+        32,
+        32,
+        32
+      ],
+      "measuredNv12": [
+        32,
+        128,
+        128
+      ],
+      "decodedRgb": [
+        18,
+        18,
+        18
+      ],
+      "x": 360,
+      "y": 40,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 3,
+      "referenceRgb": [
+        64,
+        64,
+        64
+      ],
+      "measuredNv12": [
+        64,
+        128,
+        128
+      ],
+      "decodedRgb": [
+        55,
+        55,
+        55
+      ],
+      "x": 520,
+      "y": 40,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 4,
+      "referenceRgb": [
+        128,
+        128,
+        128
+      ],
+      "measuredNv12": [
+        128,
+        128,
+        128
+      ],
+      "decodedRgb": [
+        130,
+        130,
+        130
+      ],
+      "x": 680,
+      "y": 40,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 5,
+      "referenceRgb": [
+        192,
+        192,
+        192
+      ],
+      "measuredNv12": [
+        192,
+        128,
+        128
+      ],
+      "decodedRgb": [
+        204,
+        204,
+        204
+      ],
+      "x": 840,
+      "y": 40,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 6,
+      "referenceRgb": [
+        235,
+        235,
+        235
+      ],
+      "measuredNv12": [
+        235,
+        128,
+        128
+      ],
+      "decodedRgb": [
+        255,
+        255,
+        255
+      ],
+      "x": 1000,
+      "y": 40,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 7,
+      "referenceRgb": [
+        255,
+        255,
+        255
+      ],
+      "measuredNv12": [
+        255,
+        128,
+        128
+      ],
+      "decodedRgb": [
+        255,
+        255,
+        255
+      ],
+      "x": 1160,
+      "y": 40,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 8,
+      "referenceRgb": [
+        255,
+        0,
+        0
+      ],
+      "measuredNv12": [
+        54,
+        98,
+        255
+      ],
+      "decodedRgb": [
+        255,
+        0,
+        0
+      ],
+      "x": 40,
+      "y": 200,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 9,
+      "referenceRgb": [
+        0,
+        255,
+        0
+      ],
+      "measuredNv12": [
+        182,
+        28,
+        10
+      ],
+      "decodedRgb": [
+        0,
+        255,
+        0
+      ],
+      "x": 200,
+      "y": 200,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 10,
+      "referenceRgb": [
+        0,
+        0,
+        255
+      ],
+      "measuredNv12": [
+        18,
+        255,
+        116
+      ],
+      "decodedRgb": [
+        0,
+        0,
+        255
+      ],
+      "x": 360,
+      "y": 200,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 11,
+      "referenceRgb": [
+        255,
+        255,
+        0
+      ],
+      "measuredNv12": [
+        237,
+        0,
+        140
+      ],
+      "decodedRgb": [
+        255,
+        255,
+        0
+      ],
+      "x": 520,
+      "y": 200,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 12,
+      "referenceRgb": [
+        0,
+        255,
+        255
+      ],
+      "measuredNv12": [
+        201,
+        158,
+        0
+      ],
+      "decodedRgb": [
+        0,
+        255,
+        255
+      ],
+      "x": 680,
+      "y": 200,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 13,
+      "referenceRgb": [
+        255,
+        0,
+        255
+      ],
+      "measuredNv12": [
+        73,
+        228,
+        246
+      ],
+      "decodedRgb": [
+        255,
+        0,
+        255
+      ],
+      "x": 840,
+      "y": 200,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 14,
+      "referenceRgb": [
+        192,
+        128,
+        96
+      ],
+      "measuredNv12": [
+        139,
+        104,
+        162
+      ],
+      "decodedRgb": [
+        203,
+        129,
+        92
+      ],
+      "x": 1000,
+      "y": 200,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 15,
+      "referenceRgb": [
+        128,
+        80,
+        64
+      ],
+      "measuredNv12": [
+        89,
+        114,
+        153
+      ],
+      "decodedRgb": [
+        129,
+        73,
+        55
+      ],
+      "x": 1160,
+      "y": 200,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 16,
+      "referenceRgb": [
+        32,
+        64,
+        96
+      ],
+      "measuredNv12": [
+        59,
+        148,
+        110
+      ],
+      "decodedRgb": [
+        17,
+        54,
+        92
+      ],
+      "x": 40,
+      "y": 360,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 17,
+      "referenceRgb": [
+        64,
+        128,
+        192
+      ],
+      "measuredNv12": [
+        119,
+        168,
+        92
+      ],
+      "decodedRgb": [
+        54,
+        129,
+        203
+      ],
+      "x": 200,
+      "y": 360,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 18,
+      "referenceRgb": [
+        96,
+        160,
+        96
+      ],
+      "measuredNv12": [
+        142,
+        103,
+        98
+      ],
+      "decodedRgb": [
+        92,
+        166,
+        93
+      ],
+      "x": 360,
+      "y": 360,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 19,
+      "referenceRgb": [
+        224,
+        192,
+        160
+      ],
+      "measuredNv12": [
+        196,
+        108,
+        146
+      ],
+      "decodedRgb": [
+        241,
+        203,
+        166
+      ],
+      "x": 520,
+      "y": 360,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 20,
+      "referenceRgb": [
+        192,
+        64,
+        64
+      ],
+      "measuredNv12": [
+        91,
+        113,
+        193
+      ],
+      "decodedRgb": [
+        203,
+        55,
+        55
+      ],
+      "x": 680,
+      "y": 360,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 21,
+      "referenceRgb": [
+        64,
+        192,
+        64
+      ],
+      "measuredNv12": [
+        156,
+        78,
+        69
+      ],
+      "decodedRgb": [
+        57,
+        204,
+        57
+      ],
+      "x": 840,
+      "y": 360,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 22,
+      "referenceRgb": [
+        64,
+        64,
+        192
+      ],
+      "measuredNv12": [
+        73,
+        193,
+        122
+      ],
+      "decodedRgb": [
+        55,
+        55,
+        203
+      ],
+      "x": 1000,
+      "y": 360,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "index": 23,
+      "referenceRgb": [
+        200,
+        160,
+        120
+      ],
+      "measuredNv12": [
+        166,
+        103,
+        150
+      ],
+      "decodedRgb": [
+        213,
+        167,
+        121
+      ],
+      "x": 1160,
+      "y": 360,
+      "width": 80,
+      "height": 80
+    }
+  ]
+}

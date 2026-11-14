@@ -544,6 +544,7 @@ pub async fn auth_login(login: String, password: String) -> Result<AuthUserProfi
 
 #[tauri::command]
 pub async fn auth_logout() -> Result<(), String> {
+    crate::diagnostics::reset();
     // 1. Immediately revoke microphone consent, active user context, and purge local keyring credential first
     crate::reset_mic_consent();
     set_active_user_id(None);

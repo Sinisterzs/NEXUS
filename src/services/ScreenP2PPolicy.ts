@@ -34,31 +34,34 @@ export function screenSelectedTypes(report: RTCStatsReport): { local: unknown; r
   return { local: stats.get(pair?.localCandidateId)?.candidateType, remote: stats.get(pair?.remoteCandidateId)?.candidateType };
 }
 
-export function guardScreenP2P(pc: RTCPeerConnection, onReady: (ready: boolean) => void, onFailure: (message: string) => void): () => void {
+export type ScreenP2PFailureCode = 'direct_deadline' | 'stats_stalled' | 'pc_failed' | 'ice_failed' | 'relay_selected';
+
+export function guardScreenP2P(pc: RTCPeerConnection, onReady: (ready: boolean) => void, onFailure: (message: string, code: ScreenP2PFailureCode) => void): () => void {
   let stopped = false, busy = false, ready = false;
   let pendingSince = Date.now();
   let revision = 0;
   let statsStarted = 0;
   const publish = (value: boolean) => { if (ready !== value) { ready = value; onReady(value); } };
-  const fail = () => { if (!stopped) { stop(); publish(false); onFailure(SCREEN_P2P_ERROR); } };
+  const fail = (code: ScreenP2PFailureCode) => { if (!stopped) { stop(); publish(false); onFailure(SCREEN_P2P_ERROR, code); } };
   const check = async () => {
     if (stopped) return;
-    if (!ready && Date.now() - pendingSince >= 30000) { fail(); return; }
-    if (busy) { if (Date.now() - statsStarted >= 2000) fail(); return; }
+    if (!ready && Date.now() - pendingSince >= 30000) { fail('direct_deadline'); return; }
+    if (busy) { if (Date.now() - statsStarted >= 2000) fail('stats_stalled'); return; }
     if (pc.connectionState === 'closed') { stop(); return; }
-    if (pc.connectionState === 'failed' || pc.iceConnectionState === 'failed') { fail(); return; }
+    if (pc.connectionState === 'failed') { fail('pc_failed'); return; }
+    if (pc.iceConnectionState === 'failed') { fail('ice_failed'); return; }
     const connected = pc.connectionState === 'connected' && ['connected', 'completed'].includes(pc.iceConnectionState);
-    if (!connected) { publish(false); if (Date.now() - pendingSince >= 30000) fail(); return; }
+    if (!connected) { publish(false); if (Date.now() - pendingSince >= 30000) fail('direct_deadline'); return; }
     busy = true; statsStarted = Date.now(); const generation = revision;
     try {
       const types = screenSelectedTypes(await pc.getStats());
       if (stopped || generation !== revision) return;
-      if (types.local === 'relay' || types.remote === 'relay') { fail(); return; }
+      if (types.local === 'relay' || types.remote === 'relay') { fail('relay_selected'); return; }
       if (isDirectCandidateType(types.local) && isDirectCandidateType(types.remote)) {
         if (!ready) console.info('[ScreenP2P] selected', { local: types.local, remote: types.remote });
         pendingSince = Date.now(); publish(true);
-      } else { publish(false); if (Date.now() - pendingSince >= 30000) fail(); }
-    } catch { publish(false); if (Date.now() - pendingSince >= 30000) fail(); }
+      } else { publish(false); if (Date.now() - pendingSince >= 30000) fail('direct_deadline'); }
+    } catch { publish(false); if (Date.now() - pendingSince >= 30000) fail('direct_deadline'); }
     finally { busy = false; }
   };
   const state = () => { revision++; if (!['connected', 'completed'].includes(pc.iceConnectionState) || pc.connectionState !== 'connected') {

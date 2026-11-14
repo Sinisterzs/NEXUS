@@ -432,6 +432,12 @@ pub enum GatewayClientMessage {
         call_id: Uuid,
         is_muted: bool,
     },
+    #[serde(rename = "call.screen_stopped")]
+    CallScreenStopped {
+        call_id: Uuid,
+        target_user_id: Uuid,
+        share_id: String,
+    },
     #[serde(rename = "call.webrtc.offer")]
     CallWebrtcOffer {
         call_id: Uuid,

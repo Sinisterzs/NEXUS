@@ -2,6 +2,7 @@ import { summarizeScreenNegotiation } from './ScreenTransportDiagnostics.ts';
 // Observe only the dedicated screen PC. Never serialize a stats report or candidate.
 let receiverSequence = 0;
 const diagnosticRun = globalThis.crypto?.randomUUID?.().replaceAll('-', '') ?? '';
+const lastReceiverStats = new WeakMap<RTCPeerConnection, { at: number; snapshot: Record<string, any> }>();
 export async function screenReceiverContext(senderId: string, peerId: string, offerId: string | null,
   generation: number, roomGeneration: number): Promise<Record<string, string | number>> {
   const token = async (kind: string, value: string) => {
@@ -27,6 +28,7 @@ export function summarizeScreenReceiver(
     connectionState: pc.connectionState,
     iceConnectionState: pc.iceConnectionState,
     signalingState: pc.signalingState,
+    iceGatheringState: pc.iceGatheringState ?? null,
   };
   for (const key of ['packetsReceived', 'bytesReceived', 'framesReceived', 'framesDecoded',
     'keyFramesDecoded', 'framesDropped']) {
@@ -42,6 +44,19 @@ export function summarizeScreenReceiver(
     snapshot[`pair${key[0].toUpperCase()}${key.slice(1)}`] = number(pair?.[key]);
   }
   const pairs = [...stats.values()].filter(stat => stat.type === 'candidate-pair');
+  // Addresses are inspected only in memory to count families. Never return them.
+  const family = (candidate: any): string => {
+    const value = candidate?.address;
+    if (typeof value !== 'string') return 'unknown';
+    if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(value)) return 'ipv4';
+    if (value.includes(':') && /^[0-9a-f:]+$/i.test(value)) return 'ipv6';
+    return value.endsWith('.local') ? 'mdns' : 'unknown';
+  };
+  for (const side of ['local', 'remote']) {
+    const candidates = [...stats.values()].filter(s => s.type === `${side}-candidate`);
+    for (const protocol of ['udp', 'tcp']) snapshot[`${side}_${protocol}`] = candidates.filter(c => c.protocol === protocol).length;
+    for (const kind of ['ipv4', 'ipv6', 'mdns', 'unknown']) snapshot[`${side}_${kind}`] = candidates.filter(c => family(c) === kind).length;
+  }
   snapshot.icePairs = pairs.length;
   for (const [name, state] of [['Waiting','waiting'],['InProgress','in-progress'],['Succeeded','succeeded'],['Failed','failed']]) {
     snapshot[`icePairs${name}`] = pairs.filter(p => p.state === state).length;
@@ -120,6 +135,7 @@ export function startScreenReceiveDiagnostics(
       if (snapshot.dtlsState === 'connecting') dtlsConnectingSince ??= Date.now(); else dtlsConnectingSince = null;
       snapshot.iceConnectedObservedMs = iceConnectedSince === null ? null : Math.max(0, Date.now() - iceConnectedSince);
       snapshot.dtlsConnectingObservedMs = dtlsConnectingSince === null ? null : Math.max(0, Date.now() - dtlsConnectingSince);
+      lastReceiverStats.set(pc, { at: Date.now(), snapshot: { ...snapshot } });
       if (pc.connectionState === 'connected') {
         connectedSince ??= Date.now();
         const frames = snapshot.framesDecoded ?? snapshot.framesReceived;
@@ -159,4 +175,28 @@ export function startScreenReceiveDiagnostics(
   };
   void sample();
   return stop;
+}
+
+// Capture terminal state before teardown. Never serialize errors or candidates.
+export function logScreenReceiverTermination(
+  pc: RTCPeerConnection | undefined, code: string,
+  context: Promise<Record<string, string | number>>,
+  counters: Record<string, number> = {}, terminationKind: 'failed' | 'closed' = 'failed'
+): void {
+  const previous = pc ? lastReceiverStats.get(pc) : undefined;
+  const snapshot = { ...previous?.snapshot, ...counters, terminationKind,
+    lastStatsAgeMs: previous ? Math.max(0, Date.now() - previous.at) : null,
+    [terminationKind === 'failed' ? 'failureCode' : 'closureCode']: code,
+    connectionState: pc?.connectionState ?? null,
+    iceConnectionState: pc?.iceConnectionState ?? null,
+    signalingState: pc?.signalingState ?? null,
+    iceGatheringState: pc?.iceGatheringState ?? null };
+  void context.then(async identity => {
+    const safe = { ...snapshot, ...identity };
+    console.info('[ScreenReceiverTermination]', safe);
+    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('native_log_screen_receiver', { snapshot: safe });
+    }
+  }).catch(() => { console.warn('[ScreenReceiver] failure_diagnostics_unavailable'); });
 }

@@ -38,6 +38,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("Aviso ao inicializar presença dos usuários: {}", e);
     }
 
+    // Optional admin listener is ALWAYS loopback; never follows SERVER_HOST.
+    // Disabled by default. No public router contains administrative routes.
+    if std::env::var("NEXUS_DIAGNOSTICS_ADMIN").as_deref()==Ok("1") {
+        let allowed: Vec<uuid::Uuid> = std::env::var("NEXUS_DIAGNOSTICS_ADMINS").unwrap_or_default()
+            .split(',').filter_map(|v|v.trim().parse().ok()).collect();
+        if allowed.is_empty() { return Err("Admin diagnostics requires an explicit user UUID allowlist".into()); }
+        let admin_pool=pool.clone(); let admin_config=config.clone();
+        let admin_auth=nexus_server::services::AuthService::new(
+            nexus_server::repositories::UserRepository::new(admin_pool.clone()),
+            nexus_server::repositories::SessionRepository::new(admin_pool),admin_config);
+        let admin=nexus_server::diagnostics::admin_app(admin_auth,allowed);
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
+        tokio::spawn(async move {
+            if axum::serve(listener,admin.into_make_service_with_connect_info::<SocketAddr>()).await.is_err() {
+                tracing::error!("diagnostics_admin_listener_failed");
+            }
+        });
+    }
+    let expiry_pool=pool.clone();
+    tokio::spawn(async move {
+        loop {
+            if nexus_server::diagnostics::purge(&expiry_pool).await.is_err() { tracing::warn!("diagnostics_retention_failed"); }
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    });
+
     let lab_identity = if cfg!(feature = "test-lab") {
         Some(nexus_server::config::lab_root().join("server_identity.pk8"))
     } else { None };

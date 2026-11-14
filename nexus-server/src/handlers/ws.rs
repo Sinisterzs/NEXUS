@@ -550,6 +550,11 @@ async fn handle_gateway_socket(
                                 let _ =
                                     recv_call_service.set_mute(user_id, call_id, is_muted).await;
                             }
+                            GatewayClientMessage::CallScreenStopped { call_id, target_user_id, share_id } => {
+                                if let Err(error) = recv_call_service.relay_screen_stopped(user_id, call_id, target_user_id, share_id).await {
+                                    recv_conn.try_enqueue(user_id, GatewayEvent::new("call.error", json!({"message":error.to_string()})));
+                                }
+                            }
                             GatewayClientMessage::CallWebrtcOffer {
                                 call_id,
                                 target_user_id,

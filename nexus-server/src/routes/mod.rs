@@ -189,6 +189,10 @@ pub fn create_router_with_identity(
         friend_service.presence_manager().clone(),
     );
 
+    let diagnostics_routes = if std::env::var("NEXUS_DIAGNOSTICS_INGEST").as_deref() == Ok("1") {
+        crate::diagnostics::routes(auth_service.clone(), room_service.clone())
+    } else { Router::new() };
+
     let ws_state = handlers::ws::WsState {
         auth_service: auth_service.clone(),
         friend_service: friend_service.clone(),
@@ -458,6 +462,7 @@ pub fn create_router_with_identity(
 
     Router::new()
         .merge(system_routes)
+        .nest("/v1/diagnostics", diagnostics_routes)
         .nest("/v1/auth", auth_routes)
         .nest("/v1/users", users_routes)
         .nest("/v1/friends", friends_routes)

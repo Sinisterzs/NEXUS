@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod lab;
 pub mod auth;
 pub mod capture;
@@ -332,6 +333,13 @@ pub fn run() {
             communities::community_revoke_invite,
             communities::community_get_invite_preview,
             communities::community_accept_invite,
+            diagnostics::diagnostics_consent,
+            diagnostics::diagnostics_stop,
+            diagnostics::diagnostics_save_queue,
+            diagnostics::diagnostics_load_queue,
+            diagnostics::diagnostics_context,
+            diagnostics::diagnostics_send,
+            diagnostics::diagnostics_synthetic,
             capture::native_list_capture_sources,
             capture::native_start_screen_share,
             capture::native_stop_screen_share,

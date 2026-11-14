@@ -121,6 +121,11 @@ fn monitor_screen_peer(pc: &Arc<RTCPeerConnection>, app: AppHandle, peer_id: Str
                             "dtlsState": pc.dtls_transport().state().to_string(),
                             "iceState": pc.ice_connection_state().to_string()
                         })));
+                        crate::diagnostics::observe(&app,crate::diagnostics::wire::Kind::P2p,"sender",serde_json::json!({
+                            "peerToken":peer_token,"offerToken":offer_token,"terminationKind":"failed",
+                            "failureCode":"direct_deadline","timeoutPhase":if direct{"secure_transport"}else{"ice_pair"},
+                            "iceConnectionState":pc.ice_connection_state().to_string(),"dtlsState":pc.dtls_transport().state().to_string()
+                        }));
                         let _ = app.emit("native-screen-error", NativeScreenErrorEvent { code: "SCREEN_P2P_ONLY".into(), message: super::p2p::ERROR.into(), recoverable: true });
                         let _ = pc.close().await;
                         return;
@@ -194,6 +199,14 @@ fn monitor_screen_peer(pc: &Arc<RTCPeerConnection>, app: AppHandle, peer_id: Str
                     peer_id, pc.connection_state(), pc.ice_connection_state(), pc.signaling_state(), dtls.state(),
                     pair.as_ref().map(|p| p.local.typ.to_string()).unwrap_or_else(|| "none".into()),
                     pair.as_ref().map(|p| p.remote.typ.to_string()).unwrap_or_else(|| "none".into()), packets, bytes));
+                crate::diagnostics::observe(&app,crate::diagnostics::wire::Kind::P2p,"sender",serde_json::json!({
+                    "peerToken":peer_token,"offerToken":offer_token,
+                    "connectionState":pc.connection_state().to_string(),"iceConnectionState":pc.ice_connection_state().to_string(),
+                    "dtlsState":dtls.state().to_string(),"signalingState":pc.signaling_state().to_string(),
+                    "icePairs":pairs,"iceNominatedPairs":nominated,"iceCheckCountersAvailable":false,
+                    "localCandidateType":pair.as_ref().map(|p|p.local.typ.to_string()),
+                    "remoteCandidateType":pair.as_ref().map(|p|p.remote.typ.to_string()),"traffic":gate.traffic_snapshot()
+                }));
             };
             if tokio::time::timeout(Duration::from_secs(1), sample).await.is_err() {
                 crate::capture::log_capture_diag(Some(&app), "screen_sender stats_timeout");
@@ -656,8 +669,21 @@ impl NativeScreenManager {
         let state_gate = gate.clone();
         let app_state = app.clone();
         let pid_state = peer_id.clone();
+        let diagnostic_session=ice_session_id.clone();
+        let diagnostic_pc=Arc::downgrade(&pc);
         pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
             crate::capture::log_capture_diag(Some(&app_state), &format!("screen_sender peer={} connection={}", pid_state, s));
+            if matches!(s,RTCPeerConnectionState::Failed|RTCPeerConnectionState::Closed) {
+                use sha2::{Digest,Sha256};
+                let id=diagnostic_session.lock().unwrap().clone().unwrap_or_default();
+                let peer_token=format!("{:x}",Sha256::digest(format!("nexus-screen:user:{pid_state}").as_bytes()));
+                let offer_token=format!("{:x}",Sha256::digest(format!("nexus-screen:offer:{id}").as_bytes()));
+                let mut snapshot=serde_json::json!({"peerToken":peer_token,"offerToken":offer_token,"connectionState":s.to_string()});
+                if let Some(pc)=diagnostic_pc.upgrade(){snapshot["iceConnectionState"]=serde_json::json!(pc.ice_connection_state().to_string());snapshot["dtlsState"]=serde_json::json!(pc.dtls_transport().state().to_string());}
+                if s==RTCPeerConnectionState::Failed{snapshot["terminationKind"]=serde_json::json!("failed");snapshot["failureCode"]=serde_json::json!("pc_failed");}
+                else{snapshot["terminationKind"]=serde_json::json!("closed");snapshot["closureCode"]=serde_json::json!("pc_closed");}
+                crate::diagnostics::observe(&app_state,crate::diagnostics::wire::Kind::P2p,"sender",snapshot);
+            }
             let gate = state_gate.clone(); let force = force_kf_conn.clone();
             Box::pin(async move {
                 if s == RTCPeerConnectionState::Connected && gate.allowed().await { force.store(true, Ordering::SeqCst); }
@@ -997,6 +1023,7 @@ fn run_capture_encode_loop(
         }
         Err(e) => {
             let err_msg = format!("D3D11CreateDevice failed on adapter {}: {e:?}", adapter_idx);
+            crate::diagnostics::color_failure(&app,"capture",Some(e.code().0 as u32));
             crate::capture::log_capture_diag(Some(&app), &err_msg);
             let _ = ready_tx.send(Err(err_msg));
             unsafe {
@@ -1016,6 +1043,7 @@ fn run_capture_encode_loop(
         }
         Err(e) => {
             let err_msg = format!("Capture open failed: {e:?}");
+            crate::diagnostics::color_failure(&app,"capture",None);
             crate::capture::log_capture_diag(Some(&app), &err_msg);
             let _ = ready_tx.send(Err(err_msg));
             drop(context);
@@ -1050,6 +1078,7 @@ fn run_capture_encode_loop(
         }
         Err(e) => {
             let err_msg = format!("GpuBgraToNv12 failed: {e:?}");
+            crate::diagnostics::color_failure(&app,"conversion",Some(e.code().0 as u32));
             crate::capture::log_capture_diag(Some(&app), &err_msg);
             let _ = ready_tx.send(Err(err_msg));
             capturer.close();
@@ -1079,6 +1108,7 @@ fn run_capture_encode_loop(
         }
         Err(e) => {
             let err_msg = format!("MfH264Encoder failed: {e:?}");
+            crate::diagnostics::color_failure(&app,"encoding",Some(e.code().0 as u32));
             crate::capture::log_capture_diag(Some(&app), &err_msg);
             let _ = ready_tx.send(Err(err_msg));
             drop(converter);
@@ -1095,6 +1125,10 @@ fn run_capture_encode_loop(
         }
     };
 
+    let mut last_color_diagnostic = Instant::now() - Duration::from_secs(10);
+    let mut last_source_diagnostic=Instant::now()-Duration::from_secs(10);
+    let source_diagnostic_token={use sha2::{Digest,Sha256};format!("{:x}",Sha256::digest(uuid::Uuid::new_v4().as_bytes()))};
+    let mut color_sps = serde_json::json!({});
     let stream_epoch = std::time::SystemTime::now();
     let mut audio_thread: Option<std::thread::JoinHandle<()>> = None;
     let mut app_audio_active = false;
@@ -1376,6 +1410,23 @@ fn run_capture_encode_loop(
             continue;
         }
         frames_encoded += 1;
+        if crate::diagnostics::enabled(crate::diagnostics::wire::Kind::Color) {
+            if let Some(metadata)=super::diagnostic_metadata::annex_b(&encoded.annex_b){color_sps=metadata;}
+            if last_color_diagnostic.elapsed()>=Duration::from_secs(10) {
+                last_color_diagnostic=Instant::now();
+                let name=encoder.encoder_name.to_ascii_lowercase();
+                let gpu=if name.contains("nvidia"){"nvidia"}else if name.contains("amd"){"amd"}else if name.contains("intel"){"intel"}else{"other"};
+                let mut metadata=serde_json::json!({"capture":super::diagnostic_metadata::capture_backend(capturer.backend_used()),
+                    "pixelFormat":"nv12","width":dst_w,"height":dst_h,"gpu":gpu,"encoder":"mf_h264","hardware":encoder.is_hardware,
+                    "hdr":"unavailable","range":"unavailable","matrixName":"unavailable","encoderErrors":encode_errors,"keyframes":encoder.idr_count,"framesCaptured":frames_captured,"framesEncoded":frames_encoded,"framesSubmitted":frames_sent,"offerToken":source_diagnostic_token,"stage":"encoding","result":"observed"});
+                if let Some(fields)=color_sps.as_object(){for (key,value) in fields{metadata[key]=value.clone();}}
+                #[cfg(feature="color-diagnostics")]
+                {let config=converter.color_diagnostics();
+                    metadata["vpInputColorSpace"]=config["colorSpace1Readback"]["input"].clone();
+                    metadata["vpOutputColorSpace"]=config["colorSpace1Readback"]["output"].clone();}
+                crate::diagnostics::observe(&app,crate::diagnostics::wire::Kind::Color,"local",metadata);
+            }
+        }
 
         let sample_len = encoded.annex_b.len();
         let sample_ts =
@@ -1435,6 +1486,13 @@ fn run_capture_encode_loop(
                     0.0
                 },
             };
+            if crate::diagnostics::enabled(crate::diagnostics::wire::Kind::P2p) && last_source_diagnostic.elapsed()>=Duration::from_secs(10) {
+                last_source_diagnostic=Instant::now();
+                crate::diagnostics::observe(&app,crate::diagnostics::wire::Kind::P2p,"local",serde_json::json!({
+                    "offerToken":source_diagnostic_token,"framesCaptured":frames_captured,"framesEncoded":frames_encoded,
+                    "framesSubmitted":frames_sent,"keyframes":encoder.idr_count,"stage":"encoding","result":"observed"
+                }));
+            }
             let _ = app.emit("native-screen-stats", &stats);
         }
     }

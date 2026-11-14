@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão SemVer Prerelease (ex: 0.1.9-nightly.1)'
         required: true
-        default: '0.4.0-nightly.4'
+        default: '0.4.0-nightly.5'
         type: string
       publish_release:
         description: 'Publicar a Nightly após autorização explícita (desmarcado: somente artefatos)'
@@ -73,6 +73,8 @@ jobs:
         run: |
           npm test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:diagnostics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:screen-lifecycle
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test --test-concurrency=1 tests/nightly_distribution_signature.test.cjs
@@ -83,11 +85,11 @@ jobs:
       - name: Validate Screen Transport and Updater (Rust)
         shell: pwsh
         run: |
-          foreach ($filter in @('capture::recovery::', 'capture::quality::', 'capture::health::', 'capture::p2p::tests', 'capture::webrtc_sender::tests', 'capture::wasapi_loopback::tests', 'test_screen_receiver_log_rejects_sensitive_or_invalid_fields')) {
-            cargo test --manifest-path src-tauri/Cargo.toml --locked --lib $filter -- --test-threads=1
+          foreach ($filter in @('diagnostics::wire::tests', 'capture::diagnostic_metadata::tests', 'capture::recovery::', 'capture::quality::', 'capture::health::', 'capture::p2p::tests', 'capture::webrtc_sender::tests', 'capture::wasapi_loopback::tests', 'test_screen_receiver_log_rejects_sensitive_or_invalid_fields')) {
+            cargo test --manifest-path src-tauri/Cargo.toml --locked --features color-diagnostics --lib $filter -- --test-threads=1
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib updater::tests -- --test-threads=1 --skip test_resolve_channel_endpoints --skip test_nightly_manifest_and_minisign_signature
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --features color-diagnostics --lib updater::tests -- --test-threads=1 --skip test_resolve_channel_endpoints --skip test_nightly_manifest_and_minisign_signature
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Frontend
@@ -108,11 +110,15 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx tauri build --bundles nsis
+        run: npx tauri build --bundles nsis --features color-diagnostics
 
       - name: Generate Nightly Updater Manifest (latest-nightly.json)
         shell: pwsh
-        run: node scripts/generate-nightly-manifest.cjs "$env:RELEASE_VERSION" "$env:RELEASE_NOTES"
+        run: |
+          $notesFile = "scripts/release-notes-v$env:RELEASE_VERSION.md"
+          $publicNotes = if (Test-Path -LiteralPath $notesFile) { Get-Content -LiteralPath $notesFile -Raw -Encoding UTF8 } else { $env:RELEASE_NOTES }
+          node scripts/generate-nightly-manifest.cjs "$env:RELEASE_VERSION" "$publicNotes"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_NOTES: ${{ inputs.release_notes }}

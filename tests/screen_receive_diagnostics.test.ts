@@ -170,3 +170,36 @@ test('checking receivers report checks for all pairs even before any selected pa
   assert.equal(safe.iceResponsesReceivedTotal,1); assert.equal(safe.icePairsInProgress,1); assert.equal(safe.icePairsFailed,1);
   assert.equal(JSON.stringify(safe).includes('PRIVATE'),false);
 });
+
+
+test('terminal diagnostics capture state before close, retaining anonymized correlation', async () => {
+  const { logScreenReceiverTermination } = await import('../src/services/ScreenReceiveDiagnostics.ts');
+  const old = console.info; const logs: any[] = []; console.info = (...args) => { logs.push(args); };
+  const pc = { connectionState: 'connecting', iceConnectionState: 'checking', signalingState: 'stable' };
+  try {
+    logScreenReceiverTermination(pc as any, 'direct_deadline', Promise.resolve({ peerToken: 'a'.repeat(64) }), { attemptElapsedMs: 30000 });
+    pc.connectionState = 'closed'; pc.iceConnectionState = 'closed';
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    assert.equal(logs.length, 1); assert.equal(logs[0][1].connectionState, 'connecting');
+    assert.equal(logs[0][1].iceConnectionState, 'checking');
+    assert.equal(logs[0][1].failureCode, 'direct_deadline'); assert.equal(logs[0][1].attemptElapsedMs, 30000);
+    assert.equal(logs[0][1].peerToken, 'a'.repeat(64));
+  } finally { console.info = old; }
+});
+
+
+test('candidate protocol and family counts reveal incompatible inventories without retaining addresses', () => {
+  const values = [
+    { id: 'l1', type: 'local-candidate', protocol: 'udp', address: '192.0.2.1' },
+    { id: 'l2', type: 'local-candidate', protocol: 'tcp', address: 'PRIVATE.local' },
+    { id: 'r1', type: 'remote-candidate', protocol: 'udp', address: '2001:db8::1' },
+    { id: 'r2', type: 'remote-candidate', protocol: 'udp' },
+  ];
+  const result = summarizeScreenReceiver({ iceGatheringState: 'complete' } as any,
+    new Map(values.map(s => [s.id, s])) as any, { getVideoTracks: () => [] } as any);
+  assert.equal(result.local_udp, 1); assert.equal(result.local_tcp, 1);
+  assert.equal(result.remote_udp, 2); assert.equal(result.local_ipv4, 1);
+  assert.equal(result.remote_ipv6, 1); assert.equal(result.local_mdns, 1); assert.equal(result.remote_unknown, 1);
+  assert.equal(result.iceGatheringState, 'complete');
+  for (const address of ['192.0.2.1', 'PRIVATE', '2001:db8::1']) assert.equal(JSON.stringify(result).includes(address), false);
+});

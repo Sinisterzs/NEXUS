@@ -1,3 +1,7 @@
+#[cfg(all(target_os = "windows", feature = "color-diagnostics"))]
+pub mod diagnostic_synthetic;
+#[cfg(target_os = "windows")]
+pub mod diagnostic_metadata;
 #[cfg(target_os = "windows")]
 pub mod dxgi_wgc;
 pub mod health;
@@ -598,6 +602,8 @@ fn safe_receiver_snapshot(snapshot: &serde_json::Value) -> serde_json::Value {
         "icePairs", "icePairsWaiting", "icePairsInProgress", "icePairsSucceeded", "icePairsFailed",
         "iceRequestsSentTotal", "iceRequestsReceivedTotal", "iceResponsesSentTotal", "iceResponsesReceivedTotal", "iceConsentRequestsSentTotal",
         "pairRequestsSent", "pairRequestsReceived", "pairResponsesSent", "pairResponsesReceived", "pairConsentRequestsSent", "pairBytesSent", "pairBytesReceived", "iceConnectedObservedMs", "dtlsConnectingObservedMs",
+        "local_udp", "local_tcp", "remote_udp", "remote_tcp", "local_ipv4", "local_ipv6", "local_mdns", "local_unknown", "remote_ipv4", "remote_ipv6", "remote_mdns", "remote_unknown",
+        "attemptElapsedMs", "offerAppliedMs", "answerSentMs", "directReadyMs", "firstTrackMs", "lastStatsAgeMs",
         "receiverGeneration", "roomGeneration", "offersApplied", "answersSent", "iceQueued", "iceApplied", "iceRejected", "iceStale",
         "roundTripTime", "availableIncomingBitrate", "packetsLost", "jitter", "nackCount", "pliCount", "firCount", "qpSum", "totalDecodeTime",
         "audioPacketsReceived", "audioBytesReceived", "audioPacketsLost", "audioJitter", "audioTotalSamplesReceived", "audioConcealedSamples", "audioTrackCount", "playerVolume"] {
@@ -621,6 +627,10 @@ fn safe_receiver_snapshot(snapshot: &serde_json::Value) -> serde_json::Value {
         }
     }
     for (key, allowed) in [
+        ("iceGatheringState", & ["new", "gathering", "complete"][..]),
+        ("terminationKind", & ["failed", "closed"][..]),
+        ("closureCode", & ["participant_left", "room_left", "remote_stopped", "requested_stop", "track_ended", "pc_closed", "sdp_rejected", "candidate_rejected", "session_replaced", "negotiation_error", "failed_cleanup"][..]),
+        ("failureCode", & ["direct_deadline", "stats_stalled", "pc_failed", "ice_failed", "relay_selected", "retry_no_offer", "connected_no_frames"][..]),
         ("connectionState", & ["new", "connecting", "connected", "disconnected", "failed", "closed"][..]),
         ("iceConnectionState", & ["new", "checking", "connected", "completed", "disconnected", "failed", "closed"][..]),
         ("signalingState", & ["stable", "have-local-offer", "have-remote-offer", "have-local-pranswer", "have-remote-pranswer", "closed"][..]),
@@ -644,7 +654,9 @@ fn safe_receiver_snapshot(snapshot: &serde_json::Value) -> serde_json::Value {
 
 #[tauri::command]
 pub fn native_log_screen_receiver(app: tauri::AppHandle, snapshot: serde_json::Value) {
-    log_capture_diag(Some(&app), &format!("screen_receiver {}", safe_receiver_snapshot(&snapshot)));
+    let safe=safe_receiver_snapshot(&snapshot);
+    crate::diagnostics::observe(&app,crate::diagnostics::wire::Kind::P2p,"receiver",safe.clone());
+    log_capture_diag(Some(&app), &format!("screen_receiver {}", safe));
 }
 
 #[tauri::command]
@@ -764,6 +776,7 @@ mod tests {
     #[test]
     fn test_screen_receiver_log_rejects_sensitive_or_invalid_fields() {
         let safe = safe_receiver_snapshot(&serde_json::json!({
+            "failureCode": "direct_deadline", "attemptElapsedMs": 30001,
             "connectionState": "connected", "bytesReceived": 42,
             "framesDecoded": null, "playerBound": true, "localCandidateType": "relay",
             "sdp": "PRIVATE_SDP", "credential": "PRIVATE_SECRET", "address": "PRIVATE_IP",
@@ -772,6 +785,11 @@ mod tests {
             "localSetup": "PRIVATE_ROLE", "remoteSetup": "active", "setupCompatible": true,
             "pairRequestsSent": 9, "pairResponsesReceived": -1, "localFingerprintMatchesCertificate": false
         }));
+        assert_eq!(safe["failureCode"], "direct_deadline");
+        assert_eq!(safe["attemptElapsedMs"], 30001);
+        let invalid = safe_receiver_snapshot(&serde_json::json!({"failureCode":"PRIVATE_ERROR", "attemptElapsedMs": -1}));
+        assert!(invalid.get("failureCode").is_none());
+        assert!(invalid.get("attemptElapsedMs").is_none());
         assert_eq!(safe["bytesReceived"], 42);
         assert_eq!(safe["connectionState"], "connected");
         assert_eq!(safe["localCandidateType"], "relay");

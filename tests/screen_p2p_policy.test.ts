@@ -65,3 +65,35 @@ test('stats stalled after a direct pair revokes readiness and cannot reopen the 
     finish(report('host','srflx'));await tick();assert.deepEqual(states,[true,false]);
   });
 });
+
+
+test('guard reports the operation causing failure without changing its deadline', async () => {
+  const old = { interval: globalThis.setInterval, clear: globalThis.clearInterval, now: Date.now };
+  let now = 1000; const ticks = new Map<number, () => void>(); let id = 0;
+  globalThis.setInterval = ((cb: () => void) => { ticks.set(++id, cb); return id; }) as any;
+  globalThis.clearInterval = ((key: number) => ticks.delete(key)) as any;
+  Date.now = () => now;
+  const failures: string[] = []; const stops: (() => void)[] = [];
+  const add = (connectionState: string, iceConnectionState: string, getStats = async () => report()) => {
+    const pc = Object.assign(new EventTarget(), { connectionState, iceConnectionState, getStats });
+    stops.push(guardScreenP2P(pc as any, () => {}, (_message, code) => failures.push(code)));
+    return pc;
+  };
+  const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+  try {
+    add('failed', 'checking'); add('connecting', 'failed');
+    add('connected', 'connected', async () => report('host', 'relay')); await flush();
+    assert.deepEqual(failures, ['pc_failed', 'ice_failed', 'relay_selected']);
+    add('connecting', 'checking');
+    now += 29999; for (const tick of [...ticks.values()]) tick(); await flush();
+    assert.equal(failures.length, 3);
+    now++; for (const tick of [...ticks.values()]) tick(); await flush();
+    assert.equal(failures.at(-1), 'direct_deadline');
+    add('connected', 'connected', () => new Promise(() => {}));
+    now += 2000; for (const tick of [...ticks.values()]) tick(); await flush();
+    assert.equal(failures.at(-1), 'stats_stalled'); assert.equal(ticks.size, 0);
+  } finally {
+    for (const stop of stops) stop(); globalThis.setInterval = old.interval;
+    globalThis.clearInterval = old.clear; Date.now = old.now;
+  }
+});

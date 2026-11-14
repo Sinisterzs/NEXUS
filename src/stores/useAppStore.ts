@@ -1,3 +1,5 @@
+import {syntheticPeerDiagnostics,isSyntheticCandidate} from '../services/SyntheticPeerDiagnostics';
+import { diagnosticsService } from '../services/DiagnosticsService';
 import { create } from 'zustand';
 import {
   MainTab,
@@ -1355,6 +1357,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   logoutOnline: async () => {
+    await diagnosticsService.stop();
     await settingsRepository.flushSave();
     callService.terminateOnLogout();
     void meshRoomService.leaveRoom();
@@ -2409,7 +2412,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (current.activeVoiceCommunityId === data.community_id && current.activeVoiceChannelId === data.channel_id &&
           data.participant.user_id !== current.onlineUser?.id &&
           data.participant.is_screen_sharing === false) {
-          meshRoomService.closeRemoteScreen(data.participant.user_id);
+          meshRoomService.closeRemoteScreen(data.participant.user_id, 'remote_stopped');
         }
         set((state) => {
           const isCurrentRoom =
@@ -2439,7 +2442,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           for (const participant of current.voiceRoomParticipants) {
             const next = data.participants.find((p) => p.user_id === participant.user_id);
             if (!next) meshRoomService.removeParticipant(participant.user_id);
-            else if (participant.user_id !== current.onlineUser?.id && !next.is_screen_sharing) meshRoomService.closeRemoteScreen(participant.user_id);
+            else if (participant.user_id !== current.onlineUser?.id && !next.is_screen_sharing) meshRoomService.closeRemoteScreen(participant.user_id, 'remote_stopped');
           }
         }
         set((state) => ({
@@ -2459,6 +2462,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeVoiceCommunityId === data.community_id &&
           activeVoiceChannelId === data.channel_id
         ) {
+          if(data.stream_kind==='screen' && /^a=x-nexus-synthetic:/mi.test(data.sdp)){void syntheticPeerDiagnostics.offer(data.sender_id,data.sdp);return;}
           void meshRoomService.handleRemoteOffer(data.sender_id, data.sdp, data.stream_kind);
         }
       },
@@ -2468,6 +2472,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeVoiceCommunityId === data.community_id &&
           activeVoiceChannelId === data.channel_id
         ) {
+          if(data.stream_kind==='screen' && /^a=x-nexus-synthetic:/mi.test(data.sdp)){void syntheticPeerDiagnostics.answer(data.sender_id,data.sdp);return;}
           void meshRoomService.handleRemoteAnswer(data.sender_id, data.sdp, data.stream_kind);
         }
       },
@@ -2477,6 +2482,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeVoiceCommunityId === data.community_id &&
           activeVoiceChannelId === data.channel_id
         ) {
+          if(data.stream_kind==='screen' && isSyntheticCandidate(data.candidate)){void syntheticPeerDiagnostics.ice(data.sender_id,data.candidate);return;}
           void meshRoomService.handleRemoteIceCandidate(
             data.sender_id,
             data.candidate,
