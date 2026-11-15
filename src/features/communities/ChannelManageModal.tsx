@@ -153,6 +153,17 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
     setFlagStates(next);
   }, [selectedTargetKey, overwrites, roles, members]);
 
+  useEffect(() => {
+    if (!isOpen || !mode) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isSubmitting) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, mode, isSubmitting, onClose]);
+
   if (!isOpen || !mode) return null;
 
   const isCategory = mode.kind === 'create_category' || mode.kind === 'edit_category';
@@ -272,6 +283,9 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="channel-manage-modal-title"
         className="w-full max-w-xl bg-nexus-surface border border-nexus-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]"
         onClick={(e) => e.stopPropagation()}
       >
@@ -284,11 +298,14 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
             ) : (
               <Hash className="w-5 h-5 text-nexus-accent shrink-0" />
             )}
-            <h3 className="text-sm font-bold text-nexus-text truncate">{modalTitle}</h3>
+            <h3 id="channel-manage-modal-title" className="text-sm font-bold text-nexus-text truncate">
+              {modalTitle}
+            </h3>
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fechar"
             className="p-1 rounded-md text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />

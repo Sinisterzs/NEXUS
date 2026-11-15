@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Maximize2, Minimize2, Loader2, Monitor, Eye, EyeOff } from 'lucide-react';
 import { screenCaptureService } from '../services/ScreenCaptureService';
 import { startPreviewPolling, previewProfile, readPreviewVisible, savePreviewVisible, type PreviewPhase, type PreviewProfile } from '../services/ScreenPreview';
+import { formatFpsMetric, sanitizeNonNegativeMetric, sanitizePositiveMetric } from '../lib/streamMetrics';
 
 export function LocalScreenPreview({ sessionId, sourceName, isWindow, targetFps, sourceWidth, sourceHeight }: {
   sessionId: number; sourceName: string; isWindow: boolean; targetFps: number; sourceWidth: number; sourceHeight: number;
@@ -14,8 +15,13 @@ export function LocalScreenPreview({ sessionId, sourceName, isWindow, targetFps,
   const [enabled, setEnabled] = useState(() => readPreviewVisible(window.localStorage));
   const [phase, setPhase] = useState<PreviewPhase>('loading');
   const [expanded, setExpanded] = useState(false);
-  const ratio = sourceWidth > 0 && sourceHeight > 0 ? sourceWidth / sourceHeight : 16 / 9;
-  const [fps, setFps] = useState(0);
+  const safeSourceWidth = sanitizePositiveMetric(sourceWidth);
+  const safeSourceHeight = sanitizePositiveMetric(sourceHeight);
+  const ratio =
+    safeSourceWidth !== null && safeSourceHeight !== null
+      ? safeSourceWidth / safeSourceHeight
+      : 16 / 9;
+  const [fps, setFps] = useState<number | null>(null);
   useEffect(() => {
     const element = viewport.current;
     if (!element) return;
@@ -50,13 +56,17 @@ export function LocalScreenPreview({ sessionId, sourceName, isWindow, targetFps,
         return new Promise<void>((resolve) => {
           finishPaint = resolve;
           animation = requestAnimationFrame(() => {
-            if (alive) {
+            const frameWidth = sanitizePositiveMetric(frame.width);
+            const frameHeight = sanitizePositiveMetric(frame.height);
+            if (alive && frameWidth !== null && frameHeight !== null) {
+              const targetWidth = Math.round(frameWidth);
+              const targetHeight = Math.round(frameHeight);
               // Resizing clears/reallocates canvas storage. Do it only on a size change.
-              if (element.width !== frame.width || element.height !== frame.height) {
-                element.width = frame.width; element.height = frame.height;
+              if (element.width !== targetWidth || element.height !== targetHeight) {
+                element.width = targetWidth; element.height = targetHeight;
                 // Source ratio stays stable across rounding/adaptive preview resolutions.
               }
-              context.putImageData(new ImageData(frame.rgba, frame.width, frame.height), 0, 0);
+              context.putImageData(new ImageData(frame.rgba, targetWidth, targetHeight), 0, 0);
             }
             finishPaint = undefined; resolve();
           });
@@ -69,7 +79,7 @@ export function LocalScreenPreview({ sessionId, sourceName, isWindow, targetFps,
       metrics(metrics) {
         // Scalar timings only. Never expose/store pixels through diagnostics.
         if (section.current) section.current.dataset.previewMetrics = JSON.stringify(metrics);
-        if (performance.now() - lastMetrics > 500) { setFps(Math.round(metrics.fps)); lastMetrics = performance.now(); }
+        if (performance.now() - lastMetrics > 500) { setFps(sanitizeNonNegativeMetric(metrics?.fps)); lastMetrics = performance.now(); }
       },
     }, { visible: () => !document.hidden, profile: () => profile.current });
     }).catch(() => { if (alive) setPhase('unavailable'); });
@@ -104,7 +114,7 @@ export function LocalScreenPreview({ sessionId, sourceName, isWindow, targetFps,
           className="p-1.5 rounded hover:bg-nexus-panel text-nexus-muted hover:text-nexus-text cursor-pointer">
           {enabled ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
         </button>
-        {enabled && phase === 'ready' && <span className="text-[10px] text-nexus-muted tabular-nums shrink-0">{fps} FPS</span>}
+        {enabled && phase === 'ready' && <span className="text-[10px] text-nexus-muted tabular-nums shrink-0">{formatFpsMetric(fps, 'FPS', '—')}</span>}
         {enabled && <button ref={expandButton} type="button" onClick={() => setExpanded((value) => !value)}
           aria-label={expanded ? 'Reduzir prévia' : 'Expandir prévia'}
           className="p-1.5 rounded hover:bg-nexus-panel text-nexus-muted hover:text-nexus-text cursor-pointer">

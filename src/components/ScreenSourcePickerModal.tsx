@@ -21,6 +21,15 @@ import {
   ScreenShareQualityPreset,
 } from '../lib/types';
 import { cn } from '../lib/utils';
+import {
+  formatBitrateKbpsMetric,
+  formatBitrateMbpsFromBps,
+  formatBitrateMbpsFromKbps,
+  formatFpsMetric,
+  formatResolutionMetric,
+  pickFirstValidMetric,
+  sanitizeNonNegativeMetric,
+} from '../lib/streamMetrics';
 import { LocalScreenPreview } from './LocalScreenPreview';
 import { screenCaptureService } from '../services/ScreenCaptureService';
 
@@ -67,15 +76,26 @@ export const NativeScreenShareBanner: React.FC<NativeScreenShareBannerProps> = (
   if (!status.active) return null;
 
   const backend = stats?.backend_used || status.backend_used;
-  const encoderName = stats?.encoder_name || status.encoder_name;
+  const rawEncoderName = (stats?.encoder_name || status.encoder_name || '').trim();
   const isHardware = stats?.is_hardware ?? status.is_hardware;
+  const encoderLabel = rawEncoderName
+    ? `${rawEncoderName} (${isHardware ? 'HW' : 'SW'})`
+    : `Codificador ${isHardware ? 'HW' : 'SW'}`;
   const appAudioActive = stats?.app_audio_active ?? status.app_audio_active;
-  const width = stats?.dst_width || status.width;
-  const height = stats?.dst_height || status.height;
-  const fps = stats ? Math.round(stats.send_fps) : status.fps;
-  const bitrateKbps = stats
-    ? Math.round(stats.send_bitrate_kbps)
-    : Math.round(status.bitrate_bps / 1000);
+  const width = pickFirstValidMetric([stats?.dst_width, status.width], { allowZero: false });
+  const height = pickFirstValidMetric([stats?.dst_height, status.height], { allowZero: false });
+  const resolutionLabel = formatResolutionMetric(width, height, 'x', '—');
+  const fpsValue = stats ? sanitizeNonNegativeMetric(stats.send_fps) : sanitizeNonNegativeMetric(status.fps);
+  const fpsLabel = formatFpsMetric(fpsValue, 'FPS', '—');
+  const statusBitrateKbps =
+    sanitizeNonNegativeMetric(status.bitrate_bps) !== null ? status.bitrate_bps / 1000 : null;
+  const bitrateValue = stats ? sanitizeNonNegativeMetric(stats.send_bitrate_kbps) : statusBitrateKbps;
+  const bitrateLabel = formatBitrateKbpsMetric(bitrateValue, '—');
+  const requestedBps = pickFirstValidMetric([
+    stats?.requested_bitrate_bps,
+    stats?.target_bitrate_bps,
+    status.bitrate_bps,
+  ]);
 
   return (
     <div
@@ -103,19 +123,15 @@ export const NativeScreenShareBanner: React.FC<NativeScreenShareBannerProps> = (
 
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-nexus-panel border border-nexus-border text-nexus-muted font-mono text-[11px]">
           <Cpu className="w-3 h-3 text-nexus-accent" />
-          <span>
-            {encoderName} ({isHardware ? 'HW' : 'SW'})
-          </span>
+          <span>{encoderLabel}</span>
         </span>
 
         <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-nexus-panel border border-nexus-border text-nexus-text font-mono text-[11px] tabular-nums">
-          <span>
-            {width}x{height}
-          </span>
+          <span>{resolutionLabel}</span>
           <span className="text-nexus-muted">•</span>
-          <span>{fps} FPS</span>
+          <span>{fpsLabel}</span>
           <span className="text-nexus-muted">•</span>
-          <span>{bitrateKbps} kbps</span>
+          <span>{bitrateLabel}</span>
         </span>
 
         <span
@@ -151,9 +167,9 @@ export const NativeScreenShareBanner: React.FC<NativeScreenShareBannerProps> = (
             <option value="6000000">B · 6 Mbps</option><option value="8000000">C · 8 Mbps</option><option value="10000000">D · 10 Mbps (exige margem)</option>
           </select></label>}
         {experimentOpen && <span className="text-nexus-muted">
-          Solicitado: {((stats?.requested_bitrate_bps || stats?.target_bitrate_bps || status.bitrate_bps)/1e6).toFixed(2)} Mbps ·
-          MFT: {stats?.encoder_readback_bitrate_bps == null ? 'não confirmado' : `${(stats.encoder_readback_bitrate_bps/1e6).toFixed(2)} Mbps`} ·
-          Codificado: {stats?.encoded_payload_bitrate_kbps == null ? 'aguardando' : `${(stats.encoded_payload_bitrate_kbps/1000).toFixed(2)} Mbps`}
+          Solicitado: {formatBitrateMbpsFromBps(requestedBps, '—')} ·
+          Readback: {formatBitrateMbpsFromBps(stats?.encoder_readback_bitrate_bps, 'não confirmado')} ·
+          Payload: {formatBitrateMbpsFromKbps(stats?.encoded_payload_bitrate_kbps, 'aguardando')}
         </span>}
         {experimentError && <span role="alert" className="text-amber-300 max-w-md">{experimentError}</span>}
       </div>
@@ -174,12 +190,14 @@ export const NativeScreenShareBanner: React.FC<NativeScreenShareBannerProps> = (
 export const NativeLocalScreenPreview: React.FC<{ status: NativeCaptureStatus }> = ({ status }) => {
   const sources = useAppStore((s) => s.nativeCaptureSources);
   const stats = useAppStore((s) => s.nativeScreenStats);
-  const targetFps = stats?.target_fps;
+  const targetFps = pickFirstValidMetric([stats?.target_fps, status.fps], { allowZero: false }) ?? 15;
+  const sourceWidth = pickFirstValidMetric([stats?.src_width, status.width], { allowZero: false }) ?? 0;
+  const sourceHeight = pickFirstValidMetric([stats?.src_height, status.height], { allowZero: false }) ?? 0;
   const source = [...(sources?.monitors ?? []), ...(sources?.windows ?? [])].find((item) => item.id === status.source_id);
   if (!status.active || !status.preview_session_id) return null;
   return <LocalScreenPreview key={status.preview_session_id} sessionId={status.preview_session_id}
     sourceName={source?.title || source?.device_name || (status.backend_used === 'WgcWindow' ? 'Janela compartilhada' : 'Monitor compartilhado')}
-    isWindow={status.backend_used === 'WgcWindow'} targetFps={targetFps || status.fps} sourceWidth={stats?.src_width || status.width} sourceHeight={stats?.src_height || status.height} />;
+    isWindow={status.backend_used === 'WgcWindow'} targetFps={targetFps} sourceWidth={sourceWidth} sourceHeight={sourceHeight} />;
 };
 
 export const ScreenSourcePickerModal: React.FC = () => {
@@ -414,9 +432,9 @@ export const ScreenSourcePickerModal: React.FC = () => {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-                      {src.width > 0 && src.height > 0 && (
+                      {formatResolutionMetric(src.width, src.height, 'x', '') && (
                         <span className="px-1.5 py-0.5 rounded bg-nexus-bg border border-nexus-border text-nexus-muted font-mono">
-                          {src.width}x{src.height}
+                          {formatResolutionMetric(src.width, src.height, 'x', '')}
                         </span>
                       )}
 

@@ -368,11 +368,24 @@ export function syncCommunityMembersPresence(
 }
 
 let wsUnsubscribe: (() => void) | null = null;
+let loadedTextChannelKey: string | null = null;
+let voiceJoinSeq = 0;
+let voiceJoinTimeoutId: ReturnType<typeof setTimeout> | null = null;
+const VOICE_ROOM_JOIN_TIMEOUT_MS = 12_000;
+
+function clearVoiceJoinTimeout(): void {
+  if (voiceJoinTimeoutId !== null) {
+    clearTimeout(voiceJoinTimeoutId);
+    voiceJoinTimeoutId = null;
+  }
+}
 
 function clearActiveCommunityState() {
+  loadedTextChannelKey = null;
   return {
     activeCommunityId: null,
     activeChannelId: null,
+    activeTextChannelId: null,
     communitySnapshot: null,
     activeCommunityChannelMessages: [] as ChannelMessageDto[],
     communityMessagesHasMore: false,
@@ -399,6 +412,8 @@ interface AppState {
   isSidebarCollapsed: boolean;
   activeCommunityId: string | null;
   activeChannelId: string | null;
+  activeTextChannelId: string | null;
+  lastTextChannelByCommunity: Record<string, string>;
   activeDmId: string | null;
 
   // Current User Profile
@@ -456,6 +471,7 @@ interface AppState {
   voiceRoomScreenReceivers: Record<string, ScreenReceiverState>;
   retryVoiceRoomScreen: (peerUserId: string) => boolean;
   voiceRoomError: string | null;
+  preferredVoiceStreamPeerId: string | null;
   communityVoiceRooms: Record<string, Record<string, RoomParticipantDto[]>>;
 
   // Local Audio & Call Controls (simulated state)
@@ -602,6 +618,8 @@ interface AppState {
   deleteCommunityChannel: (communityId: string, channelId: string) => Promise<boolean>;
   reorderCommunityChannels: (communityId: string, items: ReorderChannelItem[]) => Promise<boolean>;
   selectCommunityChannel: (channelId: string | null) => Promise<void>;
+  returnToCommunityTextChannel: () => void;
+  setPreferredVoiceStreamPeerId: (peerId: string | null) => void;
   listChannelOverwrites: (communityId: string, channelId: string) => Promise<ChannelPermissionOverwriteDto[]>;
   upsertChannelOverwrite: (communityId: string, channelId: string, payload: UpsertChannelOverwritePayload) => Promise<ChannelPermissionOverwriteDto | null>;
   deleteChannelOverwrite: (communityId: string, channelId: string, targetType: OverwriteTargetType | string, targetId: string) => Promise<boolean>;
@@ -845,6 +863,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   isSidebarCollapsed: false,
   activeCommunityId: null,
   activeChannelId: null,
+  activeTextChannelId: null,
+  lastTextChannelByCommunity: {},
+  preferredVoiceStreamPeerId: null,
   activeDmId: null,
   currentUser: mockCurrentUser,
 
@@ -1360,6 +1381,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     await diagnosticsService.stop();
     await settingsRepository.flushSave();
     callService.terminateOnLogout();
+    voiceJoinSeq++;
+    clearVoiceJoinTimeout();
+    loadedTextChannelKey = null;
     void meshRoomService.leaveRoom();
     get().closeWebSocket();
     await authRepository.logout();
@@ -1385,6 +1409,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       communitySnapshot: null,
       activeCommunityId: null,
       activeChannelId: null,
+      activeTextChannelId: null,
+      lastTextChannelByCommunity: {},
+      preferredVoiceStreamPeerId: null,
       activeCommunityChannelMessages: [],
       communityMessagesHasMore: false,
       communityMessagesNextBefore: null,
@@ -1425,6 +1452,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setOfflineDemoMode: () => {
     callService.terminateOnLogout();
+    voiceJoinSeq++;
+    clearVoiceJoinTimeout();
+    loadedTextChannelKey = null;
     void meshRoomService.leaveRoom();
     get().closeWebSocket();
     syncAccountRepositories('offline_demo');
@@ -1444,6 +1474,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       communitySnapshot: null,
       activeCommunityId: null,
       activeChannelId: null,
+      activeTextChannelId: null,
+      lastTextChannelByCommunity: {},
+      preferredVoiceStreamPeerId: null,
       activeCommunityChannelMessages: [],
       communityMessagesHasMore: false,
       communityMessagesNextBefore: null,
@@ -2275,7 +2308,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
       },
       onRoomJoined: (data) => {
-        const selfUserId = get().onlineUser?.id || get().currentUser.id;
+        const current = get();
+        const matchesRequestedRoom =
+          current.voiceRoomState !== 'idle' &&
+          current.voiceRoomState !== 'error' &&
+          current.activeVoiceCommunityId === data.community_id &&
+          current.activeVoiceChannelId === data.channel_id;
+        if (!matchesRequestedRoom) {
+          gatewayClient.sendRoomLeave(data.community_id, data.channel_id);
+          return;
+        }
+
+        clearVoiceJoinTimeout();
+        const joinSeqAtEvent = voiceJoinSeq;
+        const selfUserId = current.onlineUser?.id || current.currentUser.id;
         const canSpeak = data.can_speak !== false;
         const initialMuted = !canSpeak;
         set((state) => ({
@@ -2301,15 +2347,29 @@ export const useAppStore = create<AppState>((set, get) => ({
         }));
 
         if (selfUserId) {
-          void meshRoomService.startRoomSession({
-            selfUserId,
-            communityId: data.community_id,
-            channelId: data.channel_id,
-            participants: data.participants,
-            maxParticipants: data.max_participants,
-            canSpeak,
-            initialVolumes: get().voiceRoomParticipantVolumes,
-          });
+          void meshRoomService
+            .startRoomSession({
+              selfUserId,
+              communityId: data.community_id,
+              channelId: data.channel_id,
+              participants: data.participants,
+              maxParticipants: data.max_participants,
+              canSpeak,
+              initialVolumes: get().voiceRoomParticipantVolumes,
+            })
+            .then(() => {
+              const after = get();
+              if (
+                joinSeqAtEvent !== voiceJoinSeq &&
+                (after.voiceRoomState === 'idle' || after.voiceRoomState === 'error')
+              ) {
+                void meshRoomService.leaveRoom();
+                return;
+              }
+              if (after.voiceRoomState === 'idle' || after.voiceRoomState === 'error') {
+                void meshRoomService.leaveRoom();
+              }
+            });
         }
       },
       onRoomLeft: (data) => {
@@ -2318,6 +2378,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeVoiceCommunityId === data.community_id &&
           activeVoiceChannelId === data.channel_id
         ) {
+          voiceJoinSeq++;
+          clearVoiceJoinTimeout();
           void meshRoomService.leaveRoom();
           set({
             voiceRoomState: 'idle',
@@ -2330,6 +2392,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             voiceRoomPeerStatuses: {},
             voiceRoomRemoteStreams: {},
             voiceRoomMetrics: null,
+            voiceRoomScreenReceivers: {},
+            preferredVoiceStreamPeerId: null,
             voiceRoomError: data.reason || null,
           });
         }
@@ -2491,6 +2555,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       },
       onRoomError: (data) => {
+        const current = get();
+        if (current.voiceRoomState === 'idle') {
+          return;
+        }
+        if (
+          (data.community_id &&
+            current.activeVoiceCommunityId &&
+            data.community_id !== current.activeVoiceCommunityId) ||
+          (data.channel_id &&
+            current.activeVoiceChannelId &&
+            data.channel_id !== current.activeVoiceChannelId)
+        ) {
+          return;
+        }
+        clearVoiceJoinTimeout();
+        if (current.voiceRoomState === 'joining') {
+          voiceJoinSeq++;
+        }
         set((state) => ({
           voiceRoomError: data.message,
           voiceRoomState: state.voiceRoomState === 'joining' ? 'error' : state.voiceRoomState,
@@ -2856,9 +2938,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectCommunity: async (communityId) => {
+    loadedTextChannelKey = null;
     set({
       activeCommunityId: communityId,
       activeChannelId: null,
+      activeTextChannelId: null,
       activeCommunityChannelMessages: [],
       communityMessagesHasMore: false,
       communityMessagesNextBefore: null,
@@ -2879,7 +2963,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const snapshot = await get().loadCommunitySnapshot(communityId);
     if (snapshot && get().activeCommunityId === communityId && !get().activeChannelId) {
+      const rememberedId = get().lastTextChannelByCommunity[communityId];
+      const rememberedTextChannel = rememberedId
+        ? snapshot.channels.find((ch) => ch.id === rememberedId && ch.channel_type === 'text') || null
+        : null;
       const firstTextChannel =
+        rememberedTextChannel ||
         snapshot.channels.find((ch) => ch.channel_type === 'text') ||
         snapshot.channels[0] ||
         null;
@@ -3184,24 +3273,39 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ communityError: null });
     try {
       await communityRepository.deleteChannel(communityId, channelId);
-      const wasActiveChannel = get().activeChannelId === channelId;
-      set((state) => ({
-        communitySnapshot:
-          state.communitySnapshot?.community.id === communityId
+      const current = get();
+      const wasActiveChannel = current.activeChannelId === channelId;
+      const wasActiveTextChannel = current.activeTextChannelId === channelId;
+      const shouldClearMessages =
+        wasActiveTextChannel || (wasActiveChannel && !current.activeTextChannelId);
+      if (shouldClearMessages) {
+        loadedTextChannelKey = null;
+      }
+      set((state) => {
+        const nextLastTextByCommunity = { ...state.lastTextChannelByCommunity };
+        if (nextLastTextByCommunity[communityId] === channelId) {
+          delete nextLastTextByCommunity[communityId];
+        }
+        return {
+          communitySnapshot:
+            state.communitySnapshot?.community.id === communityId
+              ? {
+                  ...state.communitySnapshot,
+                  channels: state.communitySnapshot.channels.filter((ch) => ch.id !== channelId),
+                }
+              : state.communitySnapshot,
+          lastTextChannelByCommunity: nextLastTextByCommunity,
+          ...(wasActiveChannel ? { activeChannelId: null } : {}),
+          ...(wasActiveTextChannel ? { activeTextChannelId: null } : {}),
+          ...(shouldClearMessages
             ? {
-                ...state.communitySnapshot,
-                channels: state.communitySnapshot.channels.filter((ch) => ch.id !== channelId),
+                activeCommunityChannelMessages: [],
+                communityMessagesHasMore: false,
+                communityMessagesNextBefore: null,
               }
-            : state.communitySnapshot,
-        ...(wasActiveChannel
-          ? {
-              activeChannelId: null,
-              activeCommunityChannelMessages: [],
-              communityMessagesHasMore: false,
-              communityMessagesNextBefore: null,
-            }
-          : {}),
-      }));
+            : {}),
+        };
+      });
       if (wasActiveChannel) {
         settingsRepository.savePreferences({ activeChannelId: null });
       }
@@ -3234,17 +3338,111 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectCommunityChannel: async (channelId) => {
     const communityId = get().activeCommunityId;
-    set({
+    const channel = channelId
+      ? get().communitySnapshot?.channels.find((ch) => ch.id === channelId) ?? null
+      : null;
+    if (channel?.channel_type === 'voice') {
+      set({
+        activeChannelId: channelId,
+        communityError: null,
+      });
+      settingsRepository.savePreferences({ activeChannelId: channelId });
+      return;
+    }
+
+    const cacheKey = communityId && channelId ? `${communityId}:${channelId}` : null;
+    const keepCachedMessages = Boolean(
+      cacheKey &&
+        loadedTextChannelKey === cacheKey &&
+        get().activeTextChannelId === channelId
+    );
+    if (!keepCachedMessages) {
+      loadedTextChannelKey = null;
+    }
+
+    set((state) => ({
       activeChannelId: channelId,
-      activeCommunityChannelMessages: [],
-      communityMessagesHasMore: false,
-      communityMessagesNextBefore: null,
+      activeTextChannelId: channelId,
+      lastTextChannelByCommunity:
+        communityId && channelId
+          ? { ...state.lastTextChannelByCommunity, [communityId]: channelId }
+          : state.lastTextChannelByCommunity,
+      ...(keepCachedMessages
+        ? {}
+        : {
+            activeCommunityChannelMessages: [],
+            communityMessagesHasMore: false,
+            communityMessagesNextBefore: null,
+          }),
       communityError: null,
-    });
+    }));
     settingsRepository.savePreferences({ activeChannelId: channelId });
 
-    if (communityId && channelId) {
+    if (communityId && channelId && !keepCachedMessages) {
       await get().loadChannelMessages(communityId, channelId);
+    }
+  },
+
+  returnToCommunityTextChannel: () => {
+    const state = get();
+    const communityId = state.activeCommunityId;
+    const channels = state.communitySnapshot?.channels || [];
+    if (!communityId || channels.length === 0) {
+      return;
+    }
+
+    const findValidTextChannel = (candidateId: string | null | undefined) =>
+      candidateId
+        ? channels.find((ch) => ch.id === candidateId && ch.channel_type === 'text') || null
+        : null;
+
+    const target =
+      findValidTextChannel(state.activeTextChannelId) ||
+      findValidTextChannel(state.lastTextChannelByCommunity[communityId]) ||
+      channels.find((ch) => ch.channel_type === 'text') ||
+      channels[0] ||
+      null;
+
+    if (!target) {
+      return;
+    }
+
+    if (target.channel_type !== 'text') {
+      set({
+        activeChannelId: target.id,
+        communityError: null,
+      });
+      settingsRepository.savePreferences({ activeChannelId: target.id });
+      return;
+    }
+
+    const cacheKey = `${communityId}:${target.id}`;
+    const keepCachedMessages =
+      loadedTextChannelKey === cacheKey && state.activeTextChannelId === target.id;
+    if (!keepCachedMessages) {
+      loadedTextChannelKey = null;
+    }
+
+    set((prev) => ({
+      activeChannelId: target.id,
+      activeTextChannelId: target.id,
+      lastTextChannelByCommunity: {
+        ...prev.lastTextChannelByCommunity,
+        [communityId]: target.id,
+      },
+      ...(keepCachedMessages
+        ? {}
+        : {
+            activeCommunityChannelMessages: [],
+            communityMessagesHasMore: false,
+            communityMessagesNextBefore: null,
+          }),
+      communityError: null,
+    }));
+    settingsRepository.savePreferences({ activeChannelId: target.id });
+
+    if (!keepCachedMessages) {
+      void get().loadChannelMessages(communityId, target.id);
     }
   },
 
@@ -3329,6 +3527,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         communityMessagesNextBefore: page.next_before ?? null,
         isLoadingChannelMessages: false,
       });
+      if (!before) {
+        loadedTextChannelKey = `${communityId}:${channelId}`;
+      }
 
       if (!before && merged.length > 0) {
         const lastMsg = merged[merged.length - 1];
@@ -3979,30 +4180,110 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (
       current.activeVoiceCommunityId === communityId &&
       current.activeVoiceChannelId === channelId &&
-      (current.voiceRoomState === 'connected' || current.voiceRoomState === 'joining')
+      (current.voiceRoomState === 'connected' ||
+        current.voiceRoomState === 'joining' ||
+        current.voiceRoomState === 'reconnecting')
     ) {
       return;
     }
 
-    if (current.activeVoiceCommunityId && current.activeVoiceChannelId) {
-      await get().leaveVoiceChannel();
-    }
+    const previousCommunityId = current.activeVoiceCommunityId;
+    const previousChannelId = current.activeVoiceChannelId;
+    const hadPreviousRoom = Boolean(
+      previousCommunityId &&
+        previousChannelId &&
+        current.voiceRoomState !== 'idle' &&
+        (previousCommunityId !== communityId || previousChannelId !== channelId)
+    );
+
+    const reqSeq = ++voiceJoinSeq;
+    clearVoiceJoinTimeout();
 
     set({
       voiceRoomState: 'joining',
       activeVoiceCommunityId: communityId,
       activeVoiceChannelId: channelId,
+      voiceRoomParticipants: [],
+      voiceRoomMuted: false,
+      voiceRoomDeafened: false,
+      voiceRoomScreenSharing: false,
       voiceRoomScreenReceivers: {},
       voiceRoomError: null,
       voiceRoomPeerStatuses: {},
       voiceRoomRemoteStreams: {},
       voiceRoomMetrics: null,
+      preferredVoiceStreamPeerId: null,
     });
 
-    gatewayClient.sendRoomJoin(communityId, channelId);
+    if (hadPreviousRoom && previousCommunityId && previousChannelId) {
+      gatewayClient.sendRoomLeave(previousCommunityId, previousChannelId);
+      await meshRoomService.leaveRoom();
+    } else if (current.voiceRoomState !== 'idle') {
+      await meshRoomService.leaveRoom();
+    }
+
+    if (
+      reqSeq !== voiceJoinSeq ||
+      get().voiceRoomState !== 'joining' ||
+      get().activeVoiceCommunityId !== communityId ||
+      get().activeVoiceChannelId !== channelId
+    ) {
+      return;
+    }
+
+    const gatewayWithConn = gatewayClient as typeof gatewayClient & {
+      isConnected?: () => boolean;
+    };
+    const isGatewayConnected =
+      typeof gatewayWithConn.isConnected === 'function'
+        ? Boolean(gatewayWithConn.isConnected())
+        : get().gatewayConnected;
+
+    if (!isGatewayConnected || typeof gatewayClient.sendRoomJoin !== 'function') {
+      voiceJoinSeq++;
+      set({
+        voiceRoomState: 'error',
+        voiceRoomError: 'Sem conexão com o servidor. Reconecte e tente novamente.',
+      });
+      return;
+    }
+
+    try {
+      gatewayClient.sendRoomJoin(communityId, channelId);
+    } catch (err: any) {
+      if (reqSeq === voiceJoinSeq) {
+        voiceJoinSeq++;
+        set({
+          voiceRoomState: 'error',
+          voiceRoomError: err?.message || 'Não foi possível entrar na sala de voz.',
+        });
+      }
+      return;
+    }
+
+    voiceJoinTimeoutId = setTimeout(() => {
+      voiceJoinTimeoutId = null;
+      const latest = get();
+      if (
+        reqSeq !== voiceJoinSeq ||
+        latest.voiceRoomState !== 'joining' ||
+        latest.activeVoiceCommunityId !== communityId ||
+        latest.activeVoiceChannelId !== channelId
+      ) {
+        return;
+      }
+      voiceJoinSeq++;
+      gatewayClient.sendRoomLeave(communityId, channelId);
+      set({
+        voiceRoomState: 'error',
+        voiceRoomError: 'Tempo esgotado ao entrar na sala de voz. Tente novamente.',
+      });
+    }, VOICE_ROOM_JOIN_TIMEOUT_MS);
   },
 
   leaveVoiceChannel: async () => {
+    voiceJoinSeq++;
+    clearVoiceJoinTimeout();
     const { activeVoiceCommunityId, activeVoiceChannelId } = get();
     if (activeVoiceCommunityId && activeVoiceChannelId) {
       gatewayClient.sendRoomLeave(activeVoiceCommunityId, activeVoiceChannelId);
@@ -4020,8 +4301,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       voiceRoomRemoteStreams: {},
       voiceRoomMetrics: null,
       voiceRoomScreenReceivers: {},
+      preferredVoiceStreamPeerId: null,
       voiceRoomError: null,
     });
+  },
+
+  setPreferredVoiceStreamPeerId: (peerId) => {
+    set({ preferredVoiceStreamPeerId: peerId });
   },
 
   toggleVoiceRoomMute: () => {

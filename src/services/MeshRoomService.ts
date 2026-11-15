@@ -243,6 +243,8 @@ export class MeshRoomService {
   private statsInterval: ReturnType<typeof setInterval> | null = null;
   private isActive = false;
   private sessionInitPromise: Promise<void> | null = null;
+  private sessionRequestSeq = 0;
+  private sessionInitChain: Promise<void> = Promise.resolve();
 
   public setCallbacks(callbacks: MeshRoomCallbacks): void {
     this.callbacks = callbacks;
@@ -331,40 +333,63 @@ export class MeshRoomService {
     canSpeak?: boolean;
     initialVolumes?: Record<string, number>;
   }): Promise<void> {
-    await this.leaveRoom();
+    const mySeq = ++this.sessionRequestSeq;
 
-    this.isActive = true;
-    this.selfUserId = params.selfUserId;
-    this.communityId = params.communityId;
-    this.channelId = params.channelId;
-    this.maxParticipants = params.maxParticipants ?? DEFAULT_MAX_PARTICIPANTS;
-    this.isMuted = params.canSpeak === false;
+    const run = async (): Promise<void> => {
+      if (mySeq !== this.sessionRequestSeq) return;
 
-    if (params.initialVolumes) {
-      for (const [uid, vol] of Object.entries(params.initialVolumes)) {
-        this.peerVolumes.set(uid, Math.max(0, Math.min(200, Math.round(vol))));
+      await this.resetRoomState();
+      if (mySeq !== this.sessionRequestSeq) return;
+
+      const expectedGen = this.roomGeneration;
+      this.isActive = true;
+      this.selfUserId = params.selfUserId;
+      this.communityId = params.communityId;
+      this.channelId = params.channelId;
+      this.maxParticipants = params.maxParticipants ?? DEFAULT_MAX_PARTICIPANTS;
+      this.isMuted = params.canSpeak === false;
+
+      if (params.initialVolumes) {
+        for (const [uid, vol] of Object.entries(params.initialVolumes)) {
+          this.peerVolumes.set(uid, Math.max(0, Math.min(200, Math.round(vol))));
+        }
       }
-    }
 
-    const initPromise = (async () => {
-      await this.fetchIceServers();
-      await this.ensureLocalAudio();
-    })();
-    this.sessionInitPromise = initPromise;
-    await initPromise;
-    if (this.sessionInitPromise === initPromise) {
-      this.sessionInitPromise = null;
-    }
-    if (!this.isActive) return;
-
-    this.startVadLoop();
-    this.startStatsLoop();
-
-    for (const participant of params.participants) {
-      if (participant.user_id !== this.selfUserId) {
-        await this.ensurePeerConnection(participant.user_id);
+      const initPromise = (async () => {
+        await this.fetchIceServers();
+        if (!this.isActive || this.roomGeneration !== expectedGen || mySeq !== this.sessionRequestSeq) {
+          return;
+        }
+        await this.ensureLocalAudio();
+      })();
+      this.sessionInitPromise = initPromise;
+      try {
+        await initPromise;
+      } finally {
+        if (this.sessionInitPromise === initPromise) {
+          this.sessionInitPromise = null;
+        }
       }
-    }
+      if (!this.isActive || this.roomGeneration !== expectedGen || mySeq !== this.sessionRequestSeq) {
+        return;
+      }
+
+      this.startVadLoop();
+      this.startStatsLoop();
+
+      for (const participant of params.participants) {
+        if (!this.isActive || this.roomGeneration !== expectedGen || mySeq !== this.sessionRequestSeq) {
+          return;
+        }
+        if (participant.user_id !== this.selfUserId) {
+          await this.ensurePeerConnection(participant.user_id);
+        }
+      }
+    };
+
+    const next = this.sessionInitChain.then(run, run);
+    this.sessionInitChain = next;
+    return next;
   }
 
   public async addParticipant(participant: RoomParticipantDto): Promise<void> {
@@ -414,7 +439,7 @@ export class MeshRoomService {
     }
   }
 
-  public async leaveRoom(): Promise<void> {
+  private async resetRoomState(): Promise<void> {
     this.isActive = false;
     this.roomGeneration++;
     this.screenReceiverCreations.clear();
@@ -459,6 +484,11 @@ export class MeshRoomService {
     this.communityId = null;
     this.channelId = null;
     this.lastLocalSpeaking = false;
+  }
+
+  public async leaveRoom(): Promise<void> {
+    this.sessionRequestSeq++;
+    await this.resetRoomState();
   }
 
   public setMuted(muted: boolean): void {

@@ -18,17 +18,6 @@ export function DiagnosticsRuntime(){
     }).catch(()=>{});
     return()=>{disposed=true;unlisten?.();};
   },[]);
-  useEffect(()=>{
-    let disposed=false;let unlisten:(()=>void)|undefined;let closing=false;
-    void import('@tauri-apps/api/window').then(async({getCurrentWindow})=>{
-      const win=getCurrentWindow();const stop=await win.onCloseRequested(async event=>{
-        if(closing || !Object.values(diagnosticsService.permissions).some(Boolean))return;
-        event.preventDefault();closing=true;
-        await Promise.race([diagnosticsService.close(),new Promise(resolve=>setTimeout(resolve,2500))]);
-        await win.close();
-      });if(disposed)stop();else unlisten=stop;
-    }).catch(()=>{});return()=>{disposed=true;unlisten?.();};
-  },[]);
   if(!Object.values(diagnosticsService.permissions).some(Boolean))return null;
   return <div className="fixed bottom-3 right-3 z-50 rounded-lg border border-nexus-border bg-nexus-panel px-3 py-2 text-xs shadow-lg" role="status"><span>Diagnostics · {diagnosticsService.status}</span><button className="ml-3 underline" onClick={()=>void diagnosticsService.setPermissions({p2p:false,color:false,synthetic:false})}>Desativar</button></div>;
 }

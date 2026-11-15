@@ -234,6 +234,17 @@ export const CommunitySettingsModal: React.FC<CommunitySettingsModalProps> = ({
     loadCommunityAuditLogs,
   ]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isBusy) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isBusy, onClose]);
+
   if (!isOpen) return null;
 
   const notifySuccess = (msg: string) => {
@@ -543,6 +554,9 @@ export const CommunitySettingsModal: React.FC<CommunitySettingsModalProps> = ({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="community-settings-modal-title"
         className="w-full max-w-4xl h-[82vh] bg-nexus-surface border border-nexus-border rounded-xl shadow-2xl overflow-hidden flex"
         onClick={(e) => e.stopPropagation()}
       >
@@ -592,7 +606,7 @@ export const CommunitySettingsModal: React.FC<CommunitySettingsModalProps> = ({
         {/* Right Content */}
         <div className="flex-1 flex flex-col overflow-hidden bg-nexus-bg">
           <div className="h-12 px-5 border-b border-nexus-border bg-nexus-surface/60 flex items-center justify-between shrink-0">
-            <h3 className="text-sm font-bold text-nexus-text">
+            <h3 id="community-settings-modal-title" className="text-sm font-bold text-nexus-text">
               {tabs.find((t) => t.id === activeTab)?.label}
             </h3>
             {isBusy && <Loader2 className="w-4 h-4 animate-spin text-nexus-accent" />}

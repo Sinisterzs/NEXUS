@@ -27,15 +27,17 @@ export const StatusIndicator: React.FC<StatusIndicatorProps> = ({
   size = 'md',
   className,
 }) => {
+  const publicStatus = status === 'invisible' ? 'offline' : status;
+
   return (
     <span
       className={cn(
         'rounded-full ring-2 ring-nexus-surface shrink-0',
-        statusColors[status],
+        statusColors[publicStatus],
         sizeClasses[size],
         className
       )}
-      title={`Status: ${status}`}
+      title={`Status: ${publicStatus}`}
     />
   );
 };

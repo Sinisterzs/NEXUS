@@ -3,6 +3,8 @@ import {
   Search,
   Bell,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   User,
   Settings,
   LogOut,
@@ -14,7 +16,8 @@ import {
 import { useAppStore } from '../stores/useAppStore';
 import { CurrentUserAvatar } from './Avatar';
 import { WindowControls } from './WindowControls';
-import { UserStatus } from '../lib/types';
+import { Tooltip } from './Tooltip';
+import { MainTab, UserStatus } from '../lib/types';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const statusOptions: Array<{
@@ -34,6 +37,7 @@ interface TitleBarProps {
 }
 
 export const TitleBar: React.FC<TitleBarProps> = () => {
+  const activeTab = useAppStore((state) => state.activeTab);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const authMode = useAppStore((state) => state.authMode);
   const currentUser = useAppStore((state) => state.currentUser);
@@ -46,6 +50,67 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
   const friendRequests = useAppStore((state) => state.friendRequests);
   const selectConversation = useAppStore((state) => state.selectConversation);
   const startConversationWithUser = useAppStore((state) => state.startConversationWithUser);
+
+  // In-memory tab navigation history
+  const historyRef = useRef<{ stack: MainTab[]; index: number }>({
+    stack: [activeTab],
+    index: 0,
+  });
+  const pendingNavTabRef = useRef<MainTab | null>(null);
+  const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false });
+
+  useEffect(() => {
+    if (pendingNavTabRef.current === activeTab) {
+      pendingNavTabRef.current = null;
+      return;
+    }
+    pendingNavTabRef.current = null;
+
+    const { stack, index } = historyRef.current;
+    if (stack[index] === activeTab) {
+      return;
+    }
+
+    const nextStack = stack.slice(0, index + 1);
+    nextStack.push(activeTab);
+    if (nextStack.length > 50) {
+      nextStack.shift();
+    }
+    const nextIndex = nextStack.length - 1;
+    historyRef.current = { stack: nextStack, index: nextIndex };
+    setNavState({
+      canGoBack: nextIndex > 0,
+      canGoForward: false,
+    });
+  }, [activeTab]);
+
+  const handleGoBack = () => {
+    const { stack, index } = historyRef.current;
+    if (index <= 0) return;
+    const nextIndex = index - 1;
+    const targetTab = stack[nextIndex];
+    historyRef.current.index = nextIndex;
+    setNavState({
+      canGoBack: nextIndex > 0,
+      canGoForward: nextIndex < stack.length - 1,
+    });
+    pendingNavTabRef.current = targetTab;
+    setActiveTab(targetTab);
+  };
+
+  const handleGoForward = () => {
+    const { stack, index } = historyRef.current;
+    if (index >= stack.length - 1) return;
+    const nextIndex = index + 1;
+    const targetTab = stack[nextIndex];
+    historyRef.current.index = nextIndex;
+    setNavState({
+      canGoBack: nextIndex > 0,
+      canGoForward: nextIndex < stack.length - 1,
+    });
+    pendingNavTabRef.current = targetTab;
+    setActiveTab(targetTab);
+  };
 
   // Popover / dropdown states
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -73,6 +138,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
         setIsProfileOpen(false);
         setIsNotificationsOpen(false);
         setIsSearchFocused(false);
+        setShowLogoutConfirm(false);
         setSearchQuery('');
         searchInputRef.current?.blur();
       }
@@ -136,6 +202,10 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
   const isSearching = isSearchFocused && trimmedSearch.length > 0;
 
   const incomingRequestsCount = friendRequests?.incoming?.length || 0;
+  const currentStatusOption =
+    statusOptions.find((opt) => opt.value === currentUser?.status) || statusOptions[0];
+  const statusDisplayLabel =
+    currentStatusOption.value === 'online' ? 'Online' : currentStatusOption.label;
 
   const handleSelectFriend = async (friendId: string, friendName?: string) => {
     await startConversationWithUser(friendId, friendName);
@@ -156,40 +226,72 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
       <header
         data-tauri-drag-region
         onDoubleClick={handleHeaderDoubleClick}
-        className="h-10 w-full bg-[#0B0C0E] border-b border-[#1E2026] flex items-center justify-between px-3 shrink-0 select-none text-xs relative z-30"
+        className="h-10 w-full bg-[#090A0F] border-b border-white/[0.06] flex items-center justify-between px-3 shrink-0 select-none text-xs relative z-30"
       >
-        {/* Left: Brand Monogram with sleek curved red accent line */}
-        <div className="flex items-center gap-2.5 shrink-0 relative">
+        {/* Left: Angular NEXUS Monogram + Wordmark + Tab History Arrows */}
+        <div className="flex items-center gap-3 shrink-0">
           <div className="flex items-center gap-2">
-            <div className="w-5 h-5 rounded bg-gradient-to-br from-nexus-accent to-nexus-accent-hover flex items-center justify-center text-white font-black text-[11px] shadow-sm shadow-nexus-accent/30 shrink-0">
-              N
-            </div>
-            <span className="font-bold text-[13px] tracking-wide text-zinc-100">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              className="w-5 h-5 shrink-0 drop-shadow-[0_0_8px_rgba(200,62,82,0.5)]"
+              aria-hidden="true"
+            >
+              <defs>
+                <linearGradient id="nexus-emblem-pillar" x1="3" y1="4" x2="21" y2="20" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stopColor="#E04F64" />
+                  <stop offset="100%" stopColor="#9E2336" />
+                </linearGradient>
+                <linearGradient id="nexus-emblem-slash" x1="3" y1="4" x2="21" y2="20" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stopColor="#FF6B81" />
+                  <stop offset="50%" stopColor="#E04F64" />
+                  <stop offset="100%" stopColor="#C83E52" />
+                </linearGradient>
+              </defs>
+              <path
+                d="M3.0 20.0L4.6 4.0H8.0L6.4 18.0L3.0 20.0Z"
+                fill="url(#nexus-emblem-pillar)"
+              />
+              <path
+                d="M16.0 20.0L17.6 6.0L21.0 4.0L19.4 20.0H16.0Z"
+                fill="url(#nexus-emblem-pillar)"
+              />
+              <path
+                d="M3.2 5.4L4.6 4.0H8.2L20.8 18.6L19.4 20.0H15.8L3.2 5.4Z"
+                fill="url(#nexus-emblem-slash)"
+              />
+            </svg>
+            <span className="font-extrabold text-[13px] tracking-wider text-zinc-100">
               NEXUS
             </span>
           </div>
 
-          {/* Carmine glow swoosh extending right & curving to bottom edge */}
-          <div className="hidden sm:block pointer-events-none relative w-28 h-6 overflow-visible">
-            <svg
-              className="absolute top-1/2 -translate-y-1/2 left-0 w-28 h-6 overflow-visible"
-              viewBox="0 0 112 24"
-              fill="none"
-            >
-              <path
-                d="M 0 11 C 30 11 60 11 85 24"
-                stroke="url(#titlebar-red-swoosh)"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-              <defs>
-                <linearGradient id="titlebar-red-swoosh" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0%" stopColor="var(--nexus-accent)" stopOpacity="0.8" />
-                  <stop offset="60%" stopColor="var(--nexus-accent)" stopOpacity="0.4" />
-                  <stop offset="100%" stopColor="var(--nexus-accent)" stopOpacity="0.0" />
-                </linearGradient>
-              </defs>
-            </svg>
+          <div
+            data-tauri-drag-region="false"
+            className="flex items-center gap-0.5 pl-1"
+          >
+            <Tooltip content="Voltar" position="bottom">
+              <button
+                type="button"
+                onClick={handleGoBack}
+                disabled={!navState.canGoBack}
+                aria-label="Voltar"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06] active:bg-white/[0.09] transition-colors cursor-pointer disabled:opacity-30 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+            </Tooltip>
+            <Tooltip content="Avançar" position="bottom">
+              <button
+                type="button"
+                onClick={handleGoForward}
+                disabled={!navState.canGoForward}
+                aria-label="Avançar"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06] active:bg-white/[0.09] transition-colors cursor-pointer disabled:opacity-30 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </Tooltip>
           </div>
         </div>
 
@@ -197,7 +299,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
         <div
           ref={searchContainerRef}
           data-tauri-drag-region="false"
-          className="relative flex-1 max-w-md mx-4"
+          className="relative flex-1 max-w-md w-full mx-4 min-w-0"
         >
           <div className="relative flex items-center">
             <Search className="w-3.5 h-3.5 absolute left-3 text-zinc-400 pointer-events-none" />
@@ -207,11 +309,12 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => setIsSearchFocused(true)}
+              aria-label="Pesquisar canais, amigos ou mensagens"
               placeholder="Pesquisar canais, amigos ou mensagens..."
-              className="w-full bg-[#111319]/90 hover:bg-[#151821] text-zinc-200 placeholder-zinc-400 text-xs pl-8 pr-16 py-1.5 rounded-full border border-white/[0.08] hover:border-white/[0.15] focus:border-nexus-accent/60 focus:bg-[#151821] focus:outline-none transition-colors"
+              className="w-full bg-[#10121A] hover:bg-[#141722] focus:bg-[#141722] border border-white/[0.07] hover:border-white/[0.13] focus:border-nexus-accent/60 rounded-lg py-1.5 pl-8 pr-16 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none transition-colors"
             />
-            <div className="absolute right-2.5 flex items-center gap-1 pointer-events-none">
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded-md bg-white/[0.06] text-zinc-400 border border-white/[0.08]">
+            <div className="absolute right-2 flex items-center gap-1 pointer-events-none">
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/[0.05] text-zinc-400 border border-white/[0.07]">
                 Ctrl + K
               </span>
             </div>
@@ -219,7 +322,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
 
           {/* Search Dropdown Results */}
           {isSearching && (
-            <div className="absolute left-0 right-0 top-full mt-1.5 bg-[#14161C] border border-zinc-800 rounded-xl shadow-2xl p-2 z-50 text-xs animate-fadeIn max-h-80 overflow-y-auto">
+            <div className="absolute left-0 right-0 top-full mt-1.5 bg-nexus-surface border border-nexus-border rounded-xl shadow-2xl p-2 z-50 text-xs animate-fadeIn max-h-80 overflow-y-auto">
               {hasSearchResults ? (
                 <div className="space-y-2">
                   {matchingFriends.length > 0 && (
@@ -232,7 +335,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                           key={friend.id}
                           type="button"
                           onClick={() => handleSelectFriend(friend.id, friend.name)}
-                          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-zinc-800/70 text-left transition-colors cursor-pointer group"
+                          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/[0.06] text-left transition-colors cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
                         >
                           <div className="flex items-center gap-2 min-w-0">
                             <span
@@ -270,7 +373,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                           key={conv.id}
                           type="button"
                           onClick={() => handleSelectConversation(conv.id)}
-                          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-zinc-800/70 text-left transition-colors cursor-pointer group"
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.06] text-left transition-colors cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
                         >
                           <MessageSquare className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300" />
                           <span className="text-zinc-200 font-medium truncate group-hover:text-white">
@@ -293,33 +396,36 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
         {/* Right: Notifications, Profile Dropdown & Window Controls */}
         <div
           data-tauri-drag-region="false"
-          className="flex items-center gap-1.5 h-full"
+          className="flex items-center gap-1.5 h-full shrink-0"
         >
           {/* Notifications Bell */}
           <div ref={notificationsRef} className="relative">
-            <button
-              type="button"
-              onClick={() => {
-                setIsNotificationsOpen(!isNotificationsOpen);
-                setIsProfileOpen(false);
-              }}
-              title="Notificações"
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer relative ${
-                isNotificationsOpen
-                  ? 'bg-zinc-800 text-zinc-100'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
-              }`}
-            >
-              <Bell className="w-4 h-4" />
-              {incomingRequestsCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-nexus-accent shadow-sm shadow-nexus-accent/40" />
-              )}
-            </button>
+            <Tooltip content="Notificações" position="bottom">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsNotificationsOpen(!isNotificationsOpen);
+                  setIsProfileOpen(false);
+                }}
+                aria-label="Notificações"
+                aria-expanded={isNotificationsOpen}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70 ${
+                  isNotificationsOpen
+                    ? 'bg-white/[0.08] text-zinc-100'
+                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06]'
+                }`}
+              >
+                <Bell className="w-4 h-4" />
+                {incomingRequestsCount > 0 && (
+                  <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-nexus-accent shadow-[0_0_8px_var(--nexus-accent)]" />
+                )}
+              </button>
+            </Tooltip>
 
             {/* Notifications Popover */}
             {isNotificationsOpen && (
-              <div className="absolute right-0 top-full mt-2 w-72 bg-[#14161C] border border-zinc-800 rounded-xl shadow-2xl p-3 z-50 text-xs animate-fadeIn space-y-2">
-                <div className="flex items-center justify-between pb-2 border-b border-zinc-800">
+              <div className="absolute right-0 top-full mt-2 w-72 bg-nexus-surface border border-nexus-border rounded-xl shadow-2xl p-3 z-50 text-xs animate-fadeIn space-y-2">
+                <div className="flex items-center justify-between pb-2 border-b border-nexus-border">
                   <span className="font-semibold text-zinc-200">Notificações</span>
                   {incomingRequestsCount > 0 && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-nexus-accent/20 text-nexus-accent font-mono font-medium">
@@ -339,7 +445,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                         setActiveTab('home');
                         setIsNotificationsOpen(false);
                       }}
-                      className="w-full py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-center font-medium transition-colors cursor-pointer"
+                      className="w-full py-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-border text-zinc-200 text-center font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
                     >
                       Ver Solicitações no Início
                     </button>
@@ -362,15 +468,23 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                   setIsProfileOpen(!isProfileOpen);
                   setIsNotificationsOpen(false);
                 }}
-                className={`flex items-center gap-2 pl-1.5 pr-2.5 py-1 rounded-xl transition-all cursor-pointer border ${
+                aria-expanded={isProfileOpen}
+                className={`flex items-center gap-2 pl-1.5 pr-2 py-0.5 rounded-lg transition-colors cursor-pointer border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70 ${
                   isProfileOpen
-                    ? 'bg-zinc-800/90 border-zinc-700 text-white'
-                    : 'bg-[#111319]/80 hover:bg-[#161922] border-white/[0.06] text-zinc-200 hover:text-white'
+                    ? 'bg-white/[0.08] border-white/[0.14] text-white'
+                    : 'bg-[#10121A] hover:bg-[#141722] border-white/[0.07] hover:border-white/[0.13] text-zinc-200 hover:text-white'
                 }`}
               >
                 <div className="relative">
-                  <CurrentUserAvatar size="xs" shapeClassName="rounded-md" className="shadow-[0_0_8px_var(--nexus-accent-dim)]" />
-                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-nexus-surface" />
+                  <CurrentUserAvatar
+                    size="xs"
+                    shapeClassName="rounded-md"
+                    showStatus={false}
+                    className="shadow-[0_0_8px_var(--nexus-accent-dim)]"
+                  />
+                  <span
+                    className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ${currentStatusOption.colorClass} ring-1 ring-[#090A0F]`}
+                  />
                 </div>
                 <div className="flex flex-col items-start text-left leading-tight">
                   <div className="flex items-center gap-1">
@@ -380,17 +494,17 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                     <ChevronDown className="w-3 h-3 text-zinc-400 shrink-0" />
                   </div>
                   <span className="text-[10px] text-zinc-400 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
-                    Online
+                    <span className={`w-1.5 h-1.5 rounded-full ${currentStatusOption.colorClass} shrink-0`} />
+                    {statusDisplayLabel}
                   </span>
                 </div>
               </button>
 
               {/* Profile Dropdown Menu */}
               {isProfileOpen && (
-                <div className="absolute right-0 top-full mt-2 w-64 bg-[#14161C] border border-zinc-800 rounded-xl shadow-2xl p-2 z-50 text-xs animate-fadeIn space-y-2">
+                <div className="absolute right-0 top-full mt-2 w-64 bg-nexus-surface border border-nexus-border rounded-xl shadow-2xl p-2 z-50 text-xs animate-fadeIn space-y-2">
                   {/* User Profile Header Card */}
-                  <div className="p-2.5 rounded-lg bg-zinc-900/70 border border-zinc-800/70 flex items-center gap-3">
+                  <div className="p-2.5 rounded-lg bg-nexus-panel/60 border border-nexus-border/70 flex items-center gap-3">
                     <CurrentUserAvatar size="md" />
                     <div className="min-w-0 flex-1">
                       <p className="font-semibold text-zinc-100 truncate">
@@ -415,10 +529,10 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                             key={opt.value}
                             type="button"
                             onClick={() => setUserStatus(opt.value)}
-                            className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-left transition-colors cursor-pointer border ${
+                            className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-left transition-colors cursor-pointer border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70 ${
                               isCurrent
-                                ? `bg-zinc-800 ${opt.borderClass} text-white font-medium`
-                                : 'bg-zinc-900/40 hover:bg-zinc-800/50 border-transparent text-zinc-400 hover:text-zinc-200'
+                                ? `bg-nexus-panel ${opt.borderClass} text-white font-medium`
+                                : 'bg-nexus-panel/30 hover:bg-nexus-panel/70 border-transparent text-zinc-400 hover:text-zinc-200'
                             }`}
                           >
                             <span className={`w-2 h-2 rounded-full ${opt.colorClass} shrink-0`} />
@@ -430,7 +544,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                     </div>
                   </div>
 
-                  <div className="h-[1px] bg-zinc-800/80 my-1" />
+                  <div className="h-[1px] bg-nexus-border/80 my-1" />
 
                   {/* Navigation Actions */}
                   <div className="space-y-0.5">
@@ -440,7 +554,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                         setActiveTab('settings');
                         setIsProfileOpen(false);
                       }}
-                      className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/70 transition-colors cursor-pointer text-left"
+                      className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
                     >
                       <User className="w-3.5 h-3.5 text-zinc-400" />
                       <span>Meu perfil</span>
@@ -452,14 +566,14 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                         setActiveTab('settings');
                         setIsProfileOpen(false);
                       }}
-                      className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/70 transition-colors cursor-pointer text-left"
+                      className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
                     >
                       <Settings className="w-3.5 h-3.5 text-zinc-400" />
                       <span>Configurações</span>
                     </button>
                   </div>
 
-                  <div className="h-[1px] bg-zinc-800/80 my-1" />
+                  <div className="h-[1px] bg-nexus-border/80 my-1" />
 
                   {/* Logout with Confirmation Trigger */}
                   <button
@@ -468,7 +582,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                       setIsProfileOpen(false);
                       setShowLogoutConfirm(true);
                     }}
-                    className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-rose-400 hover:text-rose-300 hover:bg-rose-500/15 transition-colors cursor-pointer text-left font-medium"
+                    className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-rose-400 hover:text-rose-300 hover:bg-rose-500/15 transition-colors cursor-pointer text-left font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
                   >
                     <LogOut className="w-3.5 h-3.5" />
                     <span>Sair da conta</span>
@@ -481,7 +595,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
               <button
                 type="button"
                 onClick={openAuthModal}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-nexus-accent/20 hover:bg-nexus-accent/30 border border-nexus-accent/40 text-[11px] font-semibold text-nexus-text transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-nexus-accent/20 hover:bg-nexus-accent/30 border border-nexus-accent/40 text-[11px] font-semibold text-nexus-text transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
               >
                 <LogIn className="w-3 h-3 text-nexus-accent" />
                 <span>Entrar</span>
@@ -490,7 +604,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
           )}
 
           {/* Vertical Divider */}
-          <div className="h-4 w-[1px] bg-zinc-800 mx-1 shrink-0" />
+          <div className="h-4 w-[1px] bg-white/[0.08] mx-1 shrink-0" />
 
           {/* Official Native Tauri 2 Window Controls */}
           <WindowControls />
@@ -499,14 +613,25 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
 
       {/* Logout Confirmation Modal */}
       {showLogoutConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fadeIn select-none">
-          <div className="relative w-full max-w-sm bg-[#14161C] border border-zinc-800 rounded-2xl shadow-2xl p-5 space-y-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fadeIn select-none"
+          onClick={() => setShowLogoutConfirm(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="logout-confirm-title"
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-sm bg-nexus-surface border border-nexus-border rounded-2xl shadow-2xl p-5 space-y-4"
+          >
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
                 <AlertTriangle className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-sm font-bold text-white">Encerrar Sessão?</h3>
+                <h3 id="logout-confirm-title" className="text-sm font-bold text-white">
+                  Encerrar Sessão?
+                </h3>
                 <p className="text-xs text-zinc-400 mt-0.5">Desconectar da sua conta NEXUS</p>
               </div>
             </div>
@@ -519,7 +644,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
               <button
                 type="button"
                 onClick={() => setShowLogoutConfirm(false)}
-                className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 transition-colors cursor-pointer"
+                className="px-3 py-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-border text-xs font-semibold text-zinc-200 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
               >
                 Cancelar
               </button>
@@ -529,7 +654,7 @@ export const TitleBar: React.FC<TitleBarProps> = () => {
                   setShowLogoutConfirm(false);
                   await logoutOnline();
                 }}
-                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white shadow-sm transition-colors cursor-pointer"
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white shadow-sm transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
               >
                 Sair da Conta
               </button>

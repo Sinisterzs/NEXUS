@@ -65,6 +65,7 @@ export const WindowControls: React.FC<{ className?: string }> = ({ className = '
         type="button"
         onClick={handleMinimize}
         title="Minimizar"
+        aria-label="Minimizar"
         className="h-full px-3 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800/80 active:bg-zinc-700/60 transition-colors cursor-pointer"
       >
         <Minus className="w-3.5 h-3.5" />
@@ -74,6 +75,7 @@ export const WindowControls: React.FC<{ className?: string }> = ({ className = '
         type="button"
         onClick={handleToggleMaximize}
         title={isMaximized ? 'Restaurar' : 'Maximizar'}
+        aria-label={isMaximized ? 'Restaurar' : 'Maximizar'}
         className="h-full px-3 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800/80 active:bg-zinc-700/60 transition-colors cursor-pointer"
       >
         {isMaximized ? (
@@ -87,6 +89,8 @@ export const WindowControls: React.FC<{ className?: string }> = ({ className = '
         type="button"
         onClick={handleClose}
         title="Fechar"
+        aria-label="Fechar"
+        data-testid="window-close-btn"
         className="h-full px-3.5 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-rose-600 active:bg-rose-700 transition-colors cursor-pointer"
       >
         <X className="w-3.5 h-3.5" />

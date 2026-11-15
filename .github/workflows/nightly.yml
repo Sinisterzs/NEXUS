@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão SemVer Prerelease (ex: 0.1.9-nightly.1)'
         required: true
-        default: '0.4.0-nightly.5'
+        default: '0.4.0-nightly.6'
         type: string
       publish_release:
         description: 'Publicar a Nightly após autorização explícita (desmarcado: somente artefatos)'

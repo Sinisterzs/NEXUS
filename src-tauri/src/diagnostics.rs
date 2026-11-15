@@ -316,7 +316,7 @@ pub async fn diagnostics_synthetic(app: tauri::AppHandle, vendor: String) -> Res
         return Err("diagnostics_synthetic_busy".into());
     }
     let started = Instant::now();
-    let mut result = tauri::async_runtime::spawn_blocking(move || {
+    let mut result: Result<Value, String> = tauri::async_runtime::spawn_blocking(move || {
         #[cfg(all(target_os = "windows", feature = "color-diagnostics"))]
         {
             crate::capture::diagnostic_synthetic::run(&app, &vendor)

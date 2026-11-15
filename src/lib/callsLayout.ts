@@ -3,6 +3,12 @@
  * Provides deterministic layout presets, aspect-ratio calculators, and diagnostic formatters.
  */
 
+import {
+  formatFpsMetric,
+  sanitizeNonNegativeMetric,
+  sanitizePositiveMetric,
+} from './streamMetrics.ts';
+
 export type CallLayoutMode = 'compact' | 'balanced' | 'cinema';
 
 export interface LayoutPresetConfig {
@@ -191,24 +197,44 @@ export function formatDetailedFps(stats?: DetailedFpsStats | null): {
     };
   }
 
-  const effective = stats.effective ?? stats.rendered ?? stats.received ?? stats.sent ?? stats.captured ?? null;
-  const primaryLabel = effective !== null && Number.isFinite(effective) ? `${Math.round(effective)} FPS` : '—';
+  const candidates = [
+    stats.effective,
+    stats.rendered,
+    stats.received,
+    stats.sent,
+    stats.captured,
+  ];
+  let effective: number | null = null;
+  for (const candidate of candidates) {
+    const valid = sanitizeNonNegativeMetric(candidate);
+    if (valid !== null) {
+      effective = valid;
+      break;
+    }
+  }
+  const primaryLabel = formatFpsMetric(effective, 'FPS', '—');
+
+  const captured = sanitizeNonNegativeMetric(stats.captured);
+  const sent = sanitizeNonNegativeMetric(stats.sent);
+  const received = sanitizeNonNegativeMetric(stats.received);
+  const rendered = sanitizeNonNegativeMetric(stats.rendered);
+  const requested = sanitizePositiveMetric(stats.requested);
 
   const parts: string[] = [];
-  if (stats.captured !== undefined && stats.captured !== null) {
-    parts.push(`Cap: ${Math.round(stats.captured)}`);
+  if (captured !== null) {
+    parts.push(`Cap: ${Math.round(captured)}`);
   }
-  if (stats.sent !== undefined && stats.sent !== null) {
-    parts.push(`Env: ${Math.round(stats.sent)}`);
+  if (sent !== null) {
+    parts.push(`Env: ${Math.round(sent)}`);
   }
-  if (stats.received !== undefined && stats.received !== null) {
-    parts.push(`Rec: ${Math.round(stats.received)}`);
+  if (received !== null) {
+    parts.push(`Rec: ${Math.round(received)}`);
   }
-  if (stats.rendered !== undefined && stats.rendered !== null) {
-    parts.push(`Rend: ${Math.round(stats.rendered)}`);
+  if (rendered !== null) {
+    parts.push(`Rend: ${Math.round(rendered)}`);
   }
-  if (stats.requested !== undefined && stats.requested !== null) {
-    parts.push(`Ped: ${Math.round(stats.requested)}`);
+  if (requested !== null) {
+    parts.push(`Ped: ${Math.round(requested)}`);
   }
 
   return {

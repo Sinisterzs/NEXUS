@@ -1,6 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { TitleBar } from '../components/TitleBar';
+import { WindowControls } from '../components/WindowControls';
 import { ConnectionBanner } from '../components/ConnectionBanner';
+import { FloatingCallDock } from '../components/FloatingCallDock';
 import { IncomingCallToast } from '../components/IncomingCallToast';
 import { UpdateNotificationToast } from '../components/UpdateNotificationToast';
 import { AuthModal } from '../features/auth/AuthModal';
@@ -17,6 +20,12 @@ import { PreloginStartupView } from '../features/startup/PreloginStartupView';
 import { useAppStore } from '../stores/useAppStore';
 import { callService } from '../services/CallService';
 import { gatewayClient } from '../services/GatewayClient';
+import {
+  ActiveMediaSessionSummary,
+  cleanupBeforeWindowClose,
+  destroyMainWindow,
+  getActiveMediaSessionSummary,
+} from '../lib/windowLifecycle';
 
 export const App: React.FC = () => {
   const activeTab = useAppStore((state) => state.activeTab);
@@ -33,6 +42,72 @@ export const App: React.FC = () => {
   const [rustBackendReady, setRustBackendReady] = useState(false);
   const [startupTimedOut, setStartupTimedOut] = useState(false);
   const [preloginCompleted, setPreloginCompleted] = useState(false);
+  const [closeConfirmSummary, setCloseConfirmSummary] = useState<ActiveMediaSessionSummary | null>(
+    null
+  );
+  const [isClosingWindow, setIsClosingWindow] = useState(false);
+  const isClosingRef = useRef(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    void import('@tauri-apps/api/window')
+      .then(async ({ getCurrentWindow }) => {
+        const win = getCurrentWindow();
+        const stop = await win.onCloseRequested(async (event) => {
+          if (disposed || isClosingRef.current) {
+            return;
+          }
+          event.preventDefault();
+          const summary = getActiveMediaSessionSummary(useAppStore.getState());
+          if (summary.hasActiveSession) {
+            setCloseConfirmSummary(summary);
+            return;
+          }
+          isClosingRef.current = true;
+          await cleanupBeforeWindowClose();
+          await destroyMainWindow();
+        });
+        if (disposed) {
+          stop();
+        } else {
+          unlisten = stop;
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!closeConfirmSummary) return;
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isClosingWindow) {
+        e.preventDefault();
+        e.stopPropagation();
+        setCloseConfirmSummary(null);
+      }
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [closeConfirmSummary, isClosingWindow]);
+
+  const handleCancelWindowClose = () => {
+    if (isClosingWindow) return;
+    setCloseConfirmSummary(null);
+  };
+
+  const handleConfirmWindowClose = async () => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    setIsClosingWindow(true);
+    await cleanupBeforeWindowClose();
+    await destroyMainWindow();
+  };
 
   useEffect(() => {
     if (!preloginCompleted) return;
@@ -111,115 +186,193 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTab]);
 
-  // 0. Pre-login Auto Updater (executa ANTES de qualquer tentativa de restauração de sessão ou AuthView)
-  if (!preloginCompleted) {
-    return <PreloginStartupView onComplete={() => setPreloginCompleted(true)} />;
-  }
+  const renderScreen = () => {
+    // 0. Pre-login Auto Updater (executa ANTES de qualquer tentativa de restauração de sessão ou AuthView)
+    if (!preloginCompleted) {
+      return <PreloginStartupView onComplete={() => setPreloginCompleted(true)} />;
+    }
 
-  // 1. Splash / Carregamento Inicial (com timeout de segurança recuperável para evitar loading infinito)
-  if (!isInitialized || authStatus === 'initializing' || (networkStatus.server_reachability === 'connecting' && !onlineUser)) {
-    if (startupTimedOut) {
+    // 1. Splash / Carregamento Inicial (com timeout de segurança recuperável para evitar loading infinito)
+    if (!isInitialized || authStatus === 'initializing' || (networkStatus.server_reachability === 'connecting' && !onlineUser)) {
+      if (startupTimedOut) {
+        return (
+          <div className="relative flex flex-col items-center justify-center h-screen w-screen bg-nexus-bg text-nexus-text select-none p-6">
+            <div
+              data-tauri-drag-region
+              className="absolute top-0 left-0 right-0 h-9 flex items-center justify-end px-3 z-50 bg-nexus-bg/60 backdrop-blur-md border-b border-nexus-border/30"
+            >
+              <WindowControls />
+            </div>
+            <div className="w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-xl shadow-lg mb-3">
+              !
+            </div>
+            <p className="text-xs font-semibold text-nexus-text">A inicialização está demorando mais do que o esperado</p>
+            <p className="text-[10px] text-nexus-muted mt-1 text-center max-w-xs font-mono">
+              Não foi possível concluir a verificação inicial de conectividade.
+            </p>
+            <div className="flex items-center gap-2 mt-4">
+              <button
+                onClick={() => {
+                  setStartupTimedOut(false);
+                  checkSession();
+                }}
+                className="px-3 py-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors cursor-pointer"
+              >
+                Tentar novamente
+              </button>
+              <button
+                onClick={() => {
+                  useAppStore.setState({
+                    isInitialized: true,
+                    backendAvailable: false,
+                    networkStatus: {
+                      ...networkStatus,
+                      server_reachability: 'server_unreachable',
+                    },
+                  });
+                }}
+                className="px-3 py-1.5 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover text-xs font-semibold text-white transition-colors cursor-pointer"
+              >
+                Abrir opções de rede
+              </button>
+            </div>
+          </div>
+        );
+      }
+
       return (
-        <div className="flex flex-col items-center justify-center h-screen w-screen bg-nexus-bg text-nexus-text select-none p-6">
-          <div className="w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-xl shadow-lg mb-3">
-            !
+        <div className="relative flex flex-col items-center justify-center h-screen w-screen bg-nexus-bg text-nexus-text select-none">
+          <div
+            data-tauri-drag-region
+            className="absolute top-0 left-0 right-0 h-9 flex items-center justify-end px-3 z-50 bg-nexus-bg/60 backdrop-blur-md border-b border-nexus-border/30"
+          >
+            <WindowControls />
           </div>
-          <p className="text-xs font-semibold text-nexus-text">A inicialização está demorando mais do que o esperado</p>
-          <p className="text-[10px] text-nexus-muted mt-1 text-center max-w-xs font-mono">
-            Não foi possível concluir a verificação inicial de conectividade.
-          </p>
-          <div className="flex items-center gap-2 mt-4">
-            <button
-              onClick={() => {
-                setStartupTimedOut(false);
-                checkSession();
-              }}
-              className="px-3 py-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors cursor-pointer"
-            >
-              Tentar novamente
-            </button>
-            <button
-              onClick={() => {
-                useAppStore.setState({
-                  isInitialized: true,
-                  backendAvailable: false,
-                  networkStatus: {
-                    ...networkStatus,
-                    server_reachability: 'server_unreachable',
-                  },
-                });
-              }}
-              className="px-3 py-1.5 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover text-xs font-semibold text-white transition-colors cursor-pointer"
-            >
-              Abrir opções de rede
-            </button>
+          <div className="w-12 h-12 rounded-xl bg-nexus-accent flex items-center justify-center text-white font-extrabold text-xl shadow-lg mb-3 animate-pulse">
+            N
           </div>
+          <p className="text-xs font-semibold text-nexus-text">Iniciando NEXUS...</p>
+          <p className="text-[10px] text-nexus-muted mt-1 font-mono">Restaurando sessão e verificando conectividade</p>
         </div>
       );
     }
 
+    // 2. Servidor pendente de aprovação criptográfica de identidade (TOFU)
+    if (networkStatus.server_reachability === 'needs_approval') {
+      return <ServerApprovalView />;
+    }
+
+    // 3. Servidor offline / rede desconectada sem sessão ativa em memória
+    if (
+      (networkStatus.server_reachability === 'network_disconnected' ||
+        networkStatus.server_reachability === 'server_unreachable') &&
+      !onlineUser
+    ) {
+      return <ServerOfflineView />;
+    }
+
+    // 4. Sem autenticação (primeiro acesso, sem sessão ou sessão expirada/deslogado)
+    if (authStatus === 'unauthenticated' || !onlineUser) {
+      return <AuthView />;
+    }
+
     return (
-      <div className="flex flex-col items-center justify-center h-screen w-screen bg-nexus-bg text-nexus-text select-none">
-        <div className="w-12 h-12 rounded-xl bg-nexus-accent flex items-center justify-center text-white font-extrabold text-xl shadow-lg mb-3 animate-pulse">
-          N
+      <div className="flex flex-col h-screen w-screen overflow-hidden bg-nexus-bg text-nexus-text">
+        {/* Top TitleBar (prepared for custom titlebar + search + indicators) */}
+        <TitleBar backendReady={rustBackendReady} />
+
+        {/* Discrete Connection / Network Status Banner */}
+        <ConnectionBanner />
+
+        {/* Main Workspace Body */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Collapsible Sidebar */}
+          <Sidebar suppressCallBar />
+
+          {/* Dynamic Center Work Area */}
+          <main className="flex-1 flex flex-col min-w-0 bg-nexus-bg overflow-hidden relative">
+            <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative">
+              {activeTab === 'home' && <HomeView />}
+              {activeTab === 'messages' && <MessagesView />}
+              {activeTab === 'communities' && <CommunitiesView />}
+              {activeTab === 'calls' && <CallsView />}
+              {activeTab === 'settings' && <SettingsView />}
+            </div>
+            <FloatingCallDock />
+          </main>
         </div>
-        <p className="text-xs font-semibold text-nexus-text">Iniciando NEXUS...</p>
-        <p className="text-[10px] text-nexus-muted mt-1 font-mono">Restaurando sessão e verificando conectividade</p>
+
+        {/* Modal de Autenticação Online */}
+        <AuthModal isOpen={isAuthModalOpen} onClose={closeAuthModal} />
+
+        {/* Notificação Flutuante de Chamada Recebida */}
+        <IncomingCallToast />
+
+        {/* Notificação Flutuante de Atualização Automática (GitHub Releases) */}
+        <UpdateNotificationToast />
       </div>
     );
-  }
-
-  // 2. Servidor pendente de aprovação criptográfica de identidade (TOFU)
-  if (networkStatus.server_reachability === 'needs_approval') {
-    return <ServerApprovalView />;
-  }
-
-  // 3. Servidor offline / rede desconectada sem sessão ativa em memória
-  if (
-    (networkStatus.server_reachability === 'network_disconnected' ||
-      networkStatus.server_reachability === 'server_unreachable') &&
-    !onlineUser
-  ) {
-    return <ServerOfflineView />;
-  }
-
-  // 4. Sem autenticação (primeiro acesso, sem sessão ou sessão expirada/deslogado)
-  if (authStatus === 'unauthenticated' || !onlineUser) {
-    return <AuthView />;
-  }
+  };
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-nexus-bg text-nexus-text">
-      {/* Top TitleBar (prepared for custom titlebar + search + indicators) */}
-      <TitleBar backendReady={rustBackendReady} />
+    <>
+      {renderScreen()}
 
-      {/* Discrete Connection / Network Status Banner */}
-      <ConnectionBanner />
+      {/* Confirmação de fechamento quando há chamada, sala de voz ou transmissão ativa */}
+      {closeConfirmSummary && (
+        <div
+          data-testid="close-confirm-modal"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fadeIn select-none"
+          onClick={handleCancelWindowClose}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="close-confirm-title"
+            aria-describedby="close-confirm-description"
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-sm bg-nexus-surface border border-nexus-border rounded-2xl shadow-2xl p-5 space-y-4"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 id="close-confirm-title" className="text-sm font-bold text-white">
+                  {closeConfirmSummary.title}
+                </h3>
+                <p className="text-xs text-zinc-400 mt-0.5">Sessão de mídia em andamento</p>
+              </div>
+            </div>
 
-      {/* Main Workspace Body */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Collapsible Sidebar */}
-        <Sidebar />
+            <p id="close-confirm-description" className="text-xs text-zinc-300 leading-relaxed">
+              {closeConfirmSummary.description}
+            </p>
 
-        {/* Dynamic Center Work Area */}
-        <main className="flex-1 flex flex-col min-w-0 bg-nexus-bg overflow-hidden relative">
-          {activeTab === 'home' && <HomeView />}
-          {activeTab === 'messages' && <MessagesView />}
-          {activeTab === 'communities' && <CommunitiesView />}
-          {activeTab === 'calls' && <CallsView />}
-          {activeTab === 'settings' && <SettingsView />}
-        </main>
-      </div>
-
-      {/* Modal de Autenticação Online */}
-      <AuthModal isOpen={isAuthModalOpen} onClose={closeAuthModal} />
-
-      {/* Notificação Flutuante de Chamada Recebida */}
-      <IncomingCallToast />
-
-      {/* Notificação Flutuante de Atualização Automática (GitHub Releases) */}
-      <UpdateNotificationToast />
-    </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                data-testid="close-confirm-cancel"
+                disabled={isClosingWindow}
+                onClick={handleCancelWindowClose}
+                className="px-3 py-1.5 rounded-lg bg-nexus-panel hover:bg-nexus-border disabled:opacity-50 text-xs font-semibold text-zinc-200 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                data-testid="close-confirm-accept"
+                disabled={isClosingWindow}
+                onClick={() => void handleConfirmWindowClose()}
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-xs font-semibold text-white shadow-sm transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
+              >
+                {isClosingWindow ? 'Encerrando...' : 'Encerrar e Fechar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 

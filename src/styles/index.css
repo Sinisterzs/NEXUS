@@ -1,17 +1,17 @@
 @import "tailwindcss";
 
 :root, [data-theme="nexus-dark"] {
-  --nexus-bg: #111318;
-  --nexus-surface: #1B1E25;
-  --nexus-panel: #262931;
-  --nexus-border: #353943;
-  --nexus-border-light: #444955;
-  --nexus-accent: #B8495A;
-  --nexus-accent-hover: #cf5668;
-  --nexus-accent-dim: rgba(184, 73, 90, 0.15);
-  --nexus-text: #F0EEF2;
-  --nexus-muted: #9699A5;
-  --nexus-muted-hover: #c4c7d4;
+  --nexus-bg: #090A0F;
+  --nexus-surface: #0E1017;
+  --nexus-panel: #161923;
+  --nexus-border: #222634;
+  --nexus-border-light: #31374A;
+  --nexus-accent: #C83E52;
+  --nexus-accent-hover: #E04F64;
+  --nexus-accent-dim: rgba(200, 62, 82, 0.16);
+  --nexus-text: #F2F0F5;
+  --nexus-muted: #8E93A4;
+  --nexus-muted-hover: #C5C9D6;
   --nexus-status-online: #22c55e;
   --nexus-status-idle: #eab308;
   --nexus-status-dnd: #ef4444;
@@ -105,12 +105,12 @@ html[data-font-size="lg"] {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2a2e38;
+  background: #222634;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3e4452;
+  background: #31374A;
 }
 
 /* Speaking pulse effect */
@@ -161,4 +161,13 @@ html, body {
   padding: 0;
   width: 100%;
   height: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

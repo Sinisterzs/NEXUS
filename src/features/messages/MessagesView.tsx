@@ -20,10 +20,50 @@ import { mockFriends, mockDirectMessages } from '../../mocks';
 import { Avatar } from '../../components/Avatar';
 import { Badge } from '../../components/Badge';
 import { Tooltip } from '../../components/Tooltip';
-import { ChatMessage, DbMessage, DirectMessageSummary, DirectMessageDto } from '../../lib/types';
+import { ChatMessage, DbMessage, DirectMessageSummary, DirectMessageDto, UserStatus } from '../../lib/types';
 import { messageRepository } from '../../repositories/MessageRepository';
 import { conversationRepository } from '../../repositories/ConversationRepository';
 import { callService } from '../../services/CallService';
+
+function maskPublicStatus(status?: UserStatus): Exclude<UserStatus, 'invisible'> {
+  if (!status || status === 'invisible') {
+    return 'offline';
+  }
+  return status;
+}
+
+function getStatusDotClass(status?: UserStatus): string {
+  switch (status) {
+    case 'online':
+      return 'bg-emerald-500';
+    case 'idle':
+      return 'bg-amber-500';
+    case 'dnd':
+      return 'bg-rose-500';
+    default:
+      return 'bg-slate-500';
+  }
+}
+
+function getConversationRowClass(isSelected: boolean): string {
+  return `relative w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70 ${
+    isSelected
+      ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/12 to-nexus-accent/[0.03] border border-nexus-accent/45 text-white shadow-[0_0_14px_var(--nexus-accent-dim)]'
+      : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100 border border-transparent'
+  }`;
+}
+
+function renderDateDivider(label: string) {
+  return (
+    <div className="flex items-center my-5">
+      <div className="flex-1 border-t border-white/[0.06]" />
+      <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#12141C] border border-white/[0.06] rounded-full">
+        {label}
+      </span>
+      <div className="flex-1 border-t border-white/[0.06]" />
+    </div>
+  );
+}
 
 function formatDbMessage(
   dbMsg: DbMessage,
@@ -126,6 +166,7 @@ export const MessagesView: React.FC = () => {
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const composerInputRef = useRef<HTMLInputElement | null>(null);
   const isOlderLoadingRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
   const prevConvIdRef = useRef<string | null>(null);
   const prevMessagesCountRef = useRef<number>(0);
@@ -419,96 +460,108 @@ export const MessagesView: React.FC = () => {
     ? selectedOnlineConv?.other_user.avatarUrl || (selectedOnlineConv?.other_user.username === currentUser.username ? currentUser.avatarUrl : undefined)
     : selectedDemoFriend?.avatarUrl || (selectedDemoFriend?.username === currentUser.username ? currentUser.avatarUrl : undefined);
 
-  const activePartnerStatus = isOnline
-    ? selectedOnlineConv?.other_user.status
-    : selectedDemoFriend?.status;
+  const activePartnerStatus = maskPublicStatus(
+    isOnline ? selectedOnlineConv?.other_user.status : selectedDemoFriend?.status
+  );
 
   const activePartnerActivity = isOnline
-    ? selectedOnlineConv?.other_user.activity || selectedOnlineConv?.other_user.customStatus || 'Disponível'
-    : selectedDemoFriend?.activity || selectedDemoFriend?.customStatus || 'Disponível';
+    ? selectedOnlineConv?.other_user.activity ||
+      selectedOnlineConv?.other_user.customStatus ||
+      (activePartnerStatus === 'offline' ? 'Offline' : 'Disponível')
+    : selectedDemoFriend?.activity ||
+      selectedDemoFriend?.customStatus ||
+      (activePartnerStatus === 'offline' ? 'Offline' : 'Disponível');
 
   return (
-    <div className="flex-1 flex overflow-hidden select-none bg-[#07080b] text-zinc-100">
-      {/* 1. Lateral Conversations Column (Width: 288px / w-72) */}
-      <div className="w-72 bg-[#090b10] border-r border-white/[0.06] flex flex-col shrink-0 select-none">
-        {/* Search & New Conversation Header */}
-        <div className="p-3.5 border-b border-white/[0.05] space-y-2.5">
-          <div className="relative flex items-center">
-            <Search className="w-3.5 h-3.5 absolute left-3 text-zinc-500 pointer-events-none" />
-            <input
-              type="text"
-              value={searchFilter}
-              onChange={(e) => setSearchFilter(e.target.value)}
-              placeholder="Filtrar conversas..."
-              className="w-full bg-[#0e1118]/80 text-zinc-200 placeholder-zinc-500 text-xs pl-8.5 pr-3 py-2 rounded-xl border border-white/[0.06] focus:border-nexus-accent/60 focus:outline-none transition-colors"
-            />
-          </div>
-
-          {isOnline && (
-            <button
-              type="button"
-              onClick={() => setShowFriendsList(!showFriendsList)}
-              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-nexus-text hover:text-white border border-nexus-accent/40 hover:border-nexus-accent/60 text-xs font-medium transition-all shadow-sm shadow-nexus-accent/20 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5 text-nexus-accent" />
-              <span>Nova Conversa</span>
-            </button>
-          )}
-        </div>
-
-        {/* Modal/Dropdown for selecting a friend to start a DM */}
-        {showFriendsList && isOnline && (
-          <div className="p-2.5 border-b border-white/[0.06] bg-[#0c0e14] space-y-1 max-h-52 overflow-y-auto animate-fadeIn">
-            <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex justify-between items-center">
-              <span>Selecione um amigo</span>
-              <button
-                type="button"
-                onClick={() => setShowFriendsList(false)}
-                className="text-zinc-500 hover:text-white p-0.5 rounded cursor-pointer"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-            {friends.length === 0 ? (
-              <p className="text-xs text-zinc-500 px-2 py-3 text-center">
-                Nenhum amigo adicionado ainda.
-              </p>
-            ) : (
-              friends.map((f) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  onClick={() => handleStartWithFriend(f.id)}
-                  className="w-full flex items-center gap-2.5 p-2 rounded-xl hover:bg-white/[0.04] text-left text-xs text-zinc-200 transition-colors cursor-pointer group"
-                >
-                  <Avatar
-                    name={f.name}
-                    avatarUrl={f.avatarUrl || (f.username === currentUser.username ? currentUser.avatarUrl : undefined)}
-                    status={f.status}
-                    size="sm"
-                    shapeClassName="rounded-xl"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-white group-hover:text-white truncate">{f.name}</p>
-                    <p className="text-[11px] text-zinc-400 font-mono">@{f.username || f.tag}</p>
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        )}
-
-        {/* Conversations List */}
-        <div className="flex-1 overflow-y-auto p-2.5 space-y-1">
-          <div className="px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex items-center justify-between">
-            <span>Conversas Diretas</span>
+    <div className="flex-1 min-w-0 flex overflow-hidden select-none bg-nexus-bg text-zinc-100">
+      <div className="flex-1 min-w-0 my-2 mr-2 ml-1.5 flex rounded-2xl border border-white/[0.07] bg-[#0B0D13] overflow-hidden shadow-2xl">
+        {/* 1. Lateral Conversations Column */}
+        <div className="w-64 xl:w-72 bg-[#0D0F16] border-r border-white/[0.06] flex flex-col shrink-0 select-none">
+          {/* Column Header */}
+          <div className="h-14 px-4 border-b border-white/[0.06] flex items-center justify-between shrink-0">
+            <h2 className="text-[15px] font-bold text-white tracking-tight">
+              Conversas
+            </h2>
             {isOnline && (
-              <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono font-normal">
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-400 font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                 Ao vivo
               </span>
             )}
           </div>
+
+          {/* Search & New Conversation Controls */}
+          <div className="p-3 border-b border-white/[0.06] space-y-2.5">
+            <div className="relative flex items-center">
+              <Search className="w-3.5 h-3.5 absolute left-3 text-zinc-500 pointer-events-none" />
+              <input
+                type="text"
+                value={searchFilter}
+                onChange={(e) => setSearchFilter(e.target.value)}
+                placeholder="Filtrar conversas..."
+                className="w-full bg-[#121520] text-zinc-200 placeholder-zinc-500 text-xs pl-8.5 pr-3 py-2 rounded-xl border border-white/[0.07] focus:border-nexus-accent/60 focus:outline-none transition-colors"
+              />
+            </div>
+
+            {isOnline && (
+              <button
+                type="button"
+                onClick={() => setShowFriendsList(!showFriendsList)}
+                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-white border border-nexus-accent/45 hover:border-nexus-accent/65 text-xs font-medium transition-all shadow-sm shadow-nexus-accent/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
+              >
+                <Plus className="w-3.5 h-3.5 text-nexus-accent" />
+                <span>Nova Conversa</span>
+              </button>
+            )}
+          </div>
+
+          {/* Modal/Dropdown for selecting a friend to start a DM */}
+          {showFriendsList && isOnline && (
+            <div className="p-2.5 border-b border-white/[0.06] bg-[#10131C] space-y-1 max-h-52 overflow-y-auto animate-fadeIn">
+              <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex justify-between items-center">
+                <span>Selecione um amigo</span>
+                <button
+                  type="button"
+                  onClick={() => setShowFriendsList(false)}
+                  className="text-zinc-500 hover:text-white p-0.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+              {friends.length === 0 ? (
+                <p className="text-xs text-zinc-500 px-2 py-3 text-center">
+                  Nenhum amigo adicionado ainda.
+                </p>
+              ) : (
+                friends.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => handleStartWithFriend(f.id)}
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl hover:bg-white/[0.04] text-left text-xs text-zinc-200 transition-colors cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
+                  >
+                    <Avatar
+                      name={f.name}
+                      avatarUrl={f.avatarUrl || (f.username === currentUser.username ? currentUser.avatarUrl : undefined)}
+                      status={maskPublicStatus(f.status)}
+                      size="sm"
+                      shapeClassName="rounded-full"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-white group-hover:text-white truncate">{f.name}</p>
+                      <p className="text-[11px] text-zinc-400 font-mono">@{f.username || f.tag}</p>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* Conversations List */}
+          <div className="flex-1 overflow-y-auto p-2.5 space-y-1">
+            <div className="px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex items-center justify-between">
+              <span>Conversas Diretas</span>
+            </div>
 
           {/* ONLINE REAL CONVERSATIONS */}
           {isOnline ? (
@@ -549,24 +602,26 @@ export const MessagesView: React.FC = () => {
                     key={conv.id}
                     type="button"
                     onClick={() => selectConversation(conv.id)}
-                    className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all cursor-pointer group ${
-                      isSelected
-                        ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white shadow-[0_0_12px_var(--nexus-accent-dim)]'
-                        : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 border border-transparent'
-                    }`}
+                    className={getConversationRowClass(isSelected)}
                   >
-                    <Avatar
-                      name={other.name}
-                      avatarUrl={effectiveAvatar}
-                      status={other.status}
-                      size="md"
-                      shapeClassName="rounded-xl"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-white group-hover:text-white truncate">
-                          {other.name}
-                        </span>
+                    {isSelected && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute left-0 top-2.5 bottom-2.5 w-[3px] rounded-r-full bg-nexus-accent shadow-[0_0_8px_var(--nexus-accent)]"
+                      />
+                    )}
+                      <Avatar
+                        name={other.name}
+                        avatarUrl={effectiveAvatar}
+                        status={maskPublicStatus(other.status)}
+                        size="md"
+                        shapeClassName="rounded-full"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[13px] font-semibold text-white group-hover:text-white truncate">
+                            {other.name}
+                          </span>
                         {timePreview && (
                           <span className="text-[10px] text-zinc-500 font-mono shrink-0 ml-1">
                             {timePreview}
@@ -596,22 +651,24 @@ export const MessagesView: React.FC = () => {
                   onClick={() => {
                     setActiveDm(friend.id);
                   }}
-                  className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all cursor-pointer group ${
-                    isSelected
-                      ? 'bg-gradient-to-r from-nexus-accent/25 via-nexus-accent/10 to-transparent border border-nexus-accent/40 text-white shadow-[0_0_12px_var(--nexus-accent-dim)]'
-                      : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 border border-transparent'
-                  }`}
+                  className={getConversationRowClass(isSelected)}
                 >
+                  {isSelected && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-0 top-2.5 bottom-2.5 w-[3px] rounded-r-full bg-nexus-accent shadow-[0_0_8px_var(--nexus-accent)]"
+                    />
+                  )}
                   <Avatar
                     name={friend.name}
                     avatarUrl={friend.avatarUrl}
-                    status={friend.status}
+                    status={maskPublicStatus(friend.status)}
                     size="md"
-                    shapeClassName="rounded-xl"
+                    shapeClassName="rounded-full"
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-white group-hover:text-white truncate">
+                      <span className="text-[13px] font-semibold text-white group-hover:text-white truncate">
                         {friend.name}
                       </span>
                       <span className="text-[10px] text-zinc-500 font-mono shrink-0 ml-1">
@@ -632,11 +689,11 @@ export const MessagesView: React.FC = () => {
 
       {/* 2. Main Conversation Pane */}
       {(isOnline && selectedOnlineConv) || (!isOnline && selectedDemoFriend) ? (
-        <div className="flex-1 flex flex-col bg-[#07080b] overflow-hidden">
+        <div className="flex-1 min-w-0 flex flex-col bg-[#0B0D13] overflow-hidden">
           {/* Header Bar */}
-          <div className="h-14 border-b border-white/[0.06] px-6 flex items-center justify-between bg-[#0d0f15]/90 backdrop-blur shrink-0 relative overflow-hidden">
+          <div className="h-14 border-b border-white/[0.06] px-6 flex items-center justify-between bg-[#0D0F16]/90 backdrop-blur shrink-0 relative overflow-hidden">
             {/* Sutil linha de acento no rodapé do cabeçalho */}
-            <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-nexus-accent/30 to-transparent pointer-events-none" />
+            <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-nexus-accent/35 to-transparent pointer-events-none" />
             <div className="absolute -top-10 left-10 w-44 h-24 bg-nexus-accent/[0.06] rounded-full blur-2xl pointer-events-none" />
 
             <div className="flex items-center gap-3.5 min-w-0 relative z-10">
@@ -644,16 +701,16 @@ export const MessagesView: React.FC = () => {
                 <Avatar
                   name={activePartnerName || 'Usuário'}
                   avatarUrl={activePartnerAvatar}
-                  status={activePartnerStatus || 'online'}
+                  status={activePartnerStatus}
                   size="md"
-                  shapeClassName="rounded-xl"
+                  shapeClassName="rounded-full"
                   className="shadow-[0_0_12px_var(--nexus-accent-dim)]"
                   showStatus={true}
                 />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center">
-                  <h3 className="text-sm font-bold text-white tracking-tight truncate">
+                  <h3 className="text-[15px] font-bold text-white tracking-tight truncate">
                     {activePartnerName}
                   </h3>
                   {activePartnerUsername && (
@@ -663,7 +720,11 @@ export const MessagesView: React.FC = () => {
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 mt-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${getStatusDotClass(
+                      activePartnerStatus
+                    )}`}
+                  />
                   <span className="text-xs text-zinc-400 font-normal truncate">
                     {activePartnerActivity}
                   </span>
@@ -676,7 +737,7 @@ export const MessagesView: React.FC = () => {
               <button
                 type="button"
                 onClick={startQuickCall}
-                className="inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-nexus-text hover:text-white text-xs font-medium border border-nexus-accent/40 hover:border-nexus-accent/60 transition-all cursor-pointer shadow-sm shadow-nexus-accent/20 active:scale-95"
+                className="inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-white text-xs font-medium border border-nexus-accent/45 hover:border-nexus-accent/65 transition-all cursor-pointer shadow-sm shadow-nexus-accent/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
                 title={`Iniciar chamada com ${activePartnerName}`}
               >
                 <Phone className="w-3.5 h-3.5 text-emerald-400" />
@@ -732,10 +793,10 @@ export const MessagesView: React.FC = () => {
                   name={activePartnerName || 'Usuário'}
                   avatarUrl={activePartnerAvatar}
                   size="xl"
-                  shapeClassName="rounded-2xl"
+                  shapeClassName="rounded-full"
                   className="mb-3 shadow-[0_0_16px_var(--nexus-accent-dim)]"
                 />
-                <h4 className="text-base font-bold text-white tracking-tight">
+                <h4 className="text-[15px] font-bold text-white tracking-tight">
                   {activePartnerName}
                 </h4>
                 <p className="text-xs text-zinc-400 mt-1 max-w-sm">
@@ -765,27 +826,21 @@ export const MessagesView: React.FC = () => {
 
                   return (
                     <React.Fragment key={msg.id}>
-                      {showDateDivider && (
-                        <div className="flex items-center my-5">
-                          <div className="flex-1 border-t border-white/[0.05]" />
-                          <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#111319] border border-white/[0.06] rounded-full">
-                            {dateKey}
-                          </span>
-                          <div className="flex-1 border-t border-white/[0.05]" />
-                        </div>
-                      )}
+                      {showDateDivider && renderDateDivider(dateKey)}
 
                       <div
-                        className={`group relative flex items-start gap-3.5 hover:bg-white/[0.02] px-3 py-1 rounded-xl transition-all ${
-                          isGroupedWithPrev ? (compactMode ? 'mt-0.5 pl-[52px]' : 'mt-1 pl-[52px]') : 'mt-3.5'
+                        className={`group relative flex items-start gap-3.5 hover:bg-white/[0.025] py-1 rounded-xl transition-all ${
+                          isGroupedWithPrev
+                            ? `${compactMode ? 'mt-0.5' : 'mt-1'} pl-[62px] pr-3`
+                            : 'mt-3.5 px-3'
                         }`}
                       >
                         {!isGroupedWithPrev && (
                           <Avatar
                             name={isAuthorMe ? currentUser.displayName : (activePartnerName || 'Usuário')}
                             avatarUrl={authorAvatar}
-                            size="sm"
-                            shapeClassName="rounded-xl"
+                            size="md"
+                            shapeClassName="rounded-full"
                             className="shrink-0 mt-0.5"
                             showStatus={false}
                           />
@@ -795,7 +850,7 @@ export const MessagesView: React.FC = () => {
                           {!isGroupedWithPrev && (
                             <div className="flex items-center gap-2 mb-1">
                               <span
-                                className={`text-xs font-semibold ${
+                                className={`text-[14px] font-bold ${
                                   isAuthorMe ? 'text-nexus-accent' : 'text-white'
                                 }`}
                               >
@@ -822,7 +877,7 @@ export const MessagesView: React.FC = () => {
                                   if (e.key === 'Enter') handleSaveEdit();
                                   if (e.key === 'Escape') handleCancelEdit();
                                 }}
-                                className="flex-1 bg-[#111319] text-xs text-white px-3 py-1.5 rounded-xl border border-nexus-accent/60 focus:outline-none"
+                                className="flex-1 bg-[#121520] text-[13.5px] text-white px-3 py-1.5 rounded-xl border border-nexus-accent/60 focus:outline-none"
                                 autoFocus
                               />
                               <button
@@ -843,7 +898,7 @@ export const MessagesView: React.FC = () => {
                           ) : (
                             <div className="flex items-center gap-2">
                               <div
-                                className={`text-[13px] leading-relaxed break-words ${
+                                className={`text-[13.5px] leading-[1.55] break-words ${
                                   isDeleted
                                     ? 'text-zinc-500 italic select-none'
                                     : 'text-zinc-100'
@@ -893,7 +948,7 @@ export const MessagesView: React.FC = () => {
 
                         {/* Action buttons (Edit / Delete) for author */}
                         {isAuthorMe && !isDeleted && !isEditing && (
-                          <div className="hidden group-hover:flex items-center gap-1 bg-[#141720] border border-white/[0.08] px-1.5 py-1 rounded-xl shadow-xl">
+                          <div className="hidden group-hover:flex items-center gap-1 bg-[#12141C] border border-white/[0.08] px-1.5 py-1 rounded-xl shadow-xl">
                             <Tooltip content="Editar mensagem">
                               <button
                                 type="button"
@@ -929,27 +984,21 @@ export const MessagesView: React.FC = () => {
 
                   return (
                     <React.Fragment key={msg.id}>
-                      {showDateDivider && (
-                        <div className="flex items-center my-5">
-                          <div className="flex-1 border-t border-white/[0.05]" />
-                          <span className="px-3.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-400 bg-[#111319] border border-white/[0.06] rounded-full">
-                            {msg.dateKey}
-                          </span>
-                          <div className="flex-1 border-t border-white/[0.05]" />
-                        </div>
-                      )}
+                      {showDateDivider && renderDateDivider(msg.dateKey)}
 
                       <div
-                        className={`group flex items-start gap-3.5 hover:bg-white/[0.02] px-3 py-1 rounded-xl transition-all ${
-                          isGroupedWithPrev ? (compactMode ? 'mt-0.5 pl-[52px]' : 'mt-1 pl-[52px]') : 'mt-3.5'
+                        className={`group flex items-start gap-3.5 hover:bg-white/[0.025] py-1 rounded-xl transition-all ${
+                          isGroupedWithPrev
+                            ? `${compactMode ? 'mt-0.5' : 'mt-1'} pl-[62px] pr-3`
+                            : 'mt-3.5 px-3'
                         }`}
                       >
                         {!isGroupedWithPrev && (
                           <Avatar
                             name={msg.authorName}
                             avatarUrl={isCurrentUser ? currentUser.avatarUrl : activePartnerAvatar}
-                            size="sm"
-                            shapeClassName="rounded-xl"
+                            size="md"
+                            shapeClassName="rounded-full"
                             className="shrink-0 mt-0.5"
                             showStatus={false}
                           />
@@ -959,7 +1008,7 @@ export const MessagesView: React.FC = () => {
                           {!isGroupedWithPrev && (
                             <div className="flex items-center gap-2 mb-1">
                               <span
-                                className={`text-xs font-semibold ${
+                                className={`text-[14px] font-bold ${
                                   isCurrentUser ? 'text-nexus-accent' : 'text-white'
                                 }`}
                               >
@@ -972,7 +1021,7 @@ export const MessagesView: React.FC = () => {
                           )}
 
                           <div className="flex items-center gap-2">
-                            <div className="text-[13px] text-zinc-100 leading-relaxed break-words">
+                            <div className="text-[13.5px] text-zinc-100 leading-[1.55] break-words">
                               {msg.content}
                             </div>
                             {isGroupedWithPrev && (
@@ -992,11 +1041,29 @@ export const MessagesView: React.FC = () => {
             </div>
           </div>
 
-          {/* Typing Composer Input Box - Centered max-w-4xl */}
-          <div className="p-4 bg-[#090b10] border-t border-white/[0.06] shrink-0 flex justify-center">
+          {/* Floating Capsule Composer - Centered max-w-4xl */}
+          <div className="px-5 pt-1.5 pb-4 bg-gradient-to-t from-[#0B0D13] via-[#0B0D13]/95 to-transparent shrink-0 flex justify-center">
             <div className="w-full max-w-4xl space-y-2">
-              <div className="flex items-center gap-2.5 bg-[#0e1118]/90 border border-white/[0.08] focus-within:border-nexus-accent/60 rounded-2xl px-4 py-2 transition-all shadow-sm">
+              <div className="flex items-center gap-2.5 bg-[#121520] border border-white/[0.08] focus-within:border-nexus-accent/60 rounded-2xl px-3 py-2 transition-all shadow-[0_8px_24px_rgba(0,0,0,0.35)]">
+                <Tooltip content={isOnline ? 'Nova conversa' : 'Escrever mensagem'} position="top">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isOnline) {
+                        setShowFriendsList((prev) => !prev);
+                      } else {
+                        composerInputRef.current?.focus();
+                      }
+                    }}
+                    aria-label={isOnline ? 'Nova conversa' : 'Escrever mensagem'}
+                    className="w-8 h-8 rounded-full bg-white/[0.06] hover:bg-white/[0.11] text-zinc-300 hover:text-white flex items-center justify-center shrink-0 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </Tooltip>
+
                 <input
+                  ref={composerInputRef}
                   type="text"
                   value={draftMessage}
                   onChange={(e) => handleDraftChange(e.target.value)}
@@ -1006,7 +1073,7 @@ export const MessagesView: React.FC = () => {
                       ? `Conversar com @${activePartnerUsername || activePartnerName}... (Pressione Enter)`
                       : `Conversar com @${selectedDemoFriend?.name}... (Pressione Enter)`
                   }
-                  className="flex-1 bg-transparent text-[13px] text-zinc-100 placeholder-zinc-500 focus:outline-none py-1"
+                  className="flex-1 bg-transparent text-[13.5px] text-zinc-100 placeholder-zinc-500 focus:outline-none py-1"
                 />
 
                 <Tooltip content="Enviar mensagem" position="top">
@@ -1014,7 +1081,8 @@ export const MessagesView: React.FC = () => {
                     type="button"
                     onClick={handleSendMessage}
                     disabled={!draftMessage.trim() || isSendingDm}
-                    className={`p-2 rounded-xl transition-all cursor-pointer ${
+                    aria-label="Enviar mensagem"
+                    className={`p-2 rounded-xl transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70 ${
                       draftMessage.trim() && !isSendingDm
                         ? 'bg-nexus-accent hover:bg-nexus-accent-hover text-white shadow-sm shadow-nexus-accent/25 active:scale-95'
                         : 'bg-white/[0.04] text-zinc-600 cursor-not-allowed'
@@ -1040,14 +1108,14 @@ export const MessagesView: React.FC = () => {
         </div>
       ) : (
         /* Empty State */
-        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-[#07080b]">
-          <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center text-zinc-400 mb-4 shadow-inner">
+        <div className="flex-1 min-w-0 flex flex-col items-center justify-center p-8 text-center bg-[#0B0D13]">
+          <div className="w-14 h-14 rounded-2xl bg-[#121520] border border-white/[0.07] flex items-center justify-center text-zinc-400 mb-4 shadow-inner">
             <MessageSquare className="w-7 h-7 text-nexus-accent" />
           </div>
-          <h3 className="text-base font-bold text-white mb-1.5">
+          <h3 className="text-[15px] font-bold text-white mb-1.5">
             Nenhuma conversa selecionada
           </h3>
-          <p className="text-xs text-zinc-400 max-w-sm leading-relaxed mb-4">
+          <p className="text-[13px] text-zinc-400 max-w-sm leading-relaxed mb-4">
             {isOnline
               ? "Selecione uma conversa ao lado ou clique em 'Nova Conversa' para falar com um amigo."
               : "Selecione um contato na lista lateral para abrir o histórico de mensagens ou iniciar uma conversa direta."}
@@ -1056,7 +1124,7 @@ export const MessagesView: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowFriendsList(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-nexus-text hover:text-white border border-nexus-accent/40 hover:border-nexus-accent/60 text-xs font-medium transition-all shadow-sm shadow-nexus-accent/20 cursor-pointer"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-nexus-accent/20 hover:bg-nexus-accent/30 text-white border border-nexus-accent/45 hover:border-nexus-accent/65 text-xs font-medium transition-all shadow-sm shadow-nexus-accent/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nexus-accent/70"
             >
               <Plus className="w-3.5 h-3.5 text-nexus-accent" />
               <span>Nova Conversa</span>
@@ -1064,6 +1132,7 @@ export const MessagesView: React.FC = () => {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 };

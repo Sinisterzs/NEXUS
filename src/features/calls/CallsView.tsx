@@ -49,12 +49,17 @@ import {
   CallLayoutMode,
   CALL_LAYOUT_PRESETS,
 } from '../../lib/callsLayout';
-
-function formatDuration(totalSeconds: number): string {
-  const mins = Math.floor(totalSeconds / 60);
-  const secs = totalSeconds % 60;
-  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-}
+import {
+  formatBitrateKbpsMetric,
+  formatCountMetric,
+  formatFpsMetric,
+  formatLatencyMsMetric,
+  formatPercentMetric,
+  formatResolutionMetric,
+  formatSafeDurationSecs,
+  pickFirstValidMetric,
+  sanitizeNonNegativeMetric,
+} from '../../lib/streamMetrics';
 
 /**
  * Subcomponente isolado e memoizado para o cronômetro da chamada.
@@ -84,7 +89,7 @@ const CallDurationBadge: React.FC<{
       >
         {voiceCallState === 'reconnecting'
           ? `Reconectando (${Math.max(1, reconnectAttempt)}/${maxReconnectAttempts})...`
-          : formatDuration(callDurationSecs)}
+          : formatSafeDurationSecs(callDurationSecs)}
       </span>
     </div>
   );
@@ -563,7 +568,7 @@ export const CallsView: React.FC = () => {
                               }
                             >
                               {entry.status === 'completed'
-                                ? `Duração: ${formatDuration(entry.durationSecs)}`
+                                ? `Duração: ${formatSafeDurationSecs(entry.durationSecs)}`
                                 : entry.status === 'missed'
                                 ? 'Não atendida'
                                 : entry.status === 'rejected'
@@ -802,11 +807,9 @@ export const CallsView: React.FC = () => {
                   RTT & Jitter
                 </span>
                 <span className="text-xs font-mono font-bold text-nexus-text block mt-0.5">
-                  {diagnostics?.rttMs !== null && diagnostics?.rttMs !== undefined
-                    ? `${diagnostics.rttMs} ms`
-                    : '—'}
-                  {diagnostics?.jitterMs !== null && diagnostics?.jitterMs !== undefined
-                    ? ` • Jitter: ${diagnostics.jitterMs} ms`
+                  {formatLatencyMsMetric(diagnostics?.rttMs, '—')}
+                  {sanitizeNonNegativeMetric(diagnostics?.jitterMs) !== null
+                    ? ` • Jitter: ${formatLatencyMsMetric(diagnostics?.jitterMs)}`
                     : ''}
                 </span>
               </div>
@@ -816,18 +819,30 @@ export const CallsView: React.FC = () => {
                 <span className="text-[9px] text-nexus-muted uppercase font-mono block">
                   Perda de Pacotes
                 </span>
-                <span
-                  className={`text-xs font-mono font-bold block mt-0.5 ${
-                    (diagnostics?.packetLossPercent ?? 0) > 3 ? 'text-amber-400' : 'text-nexus-text'
-                  }`}
-                >
-                  {diagnostics
-                    ? `${diagnostics.packetLossPercent ?? 0}% (${diagnostics.packetsLostInbound} pkts)`
-                    : '—'}
-                  {(diagnostics as any)?.framesDropped !== null && (diagnostics as any)?.framesDropped !== undefined
-                    ? ` • ${(diagnostics as any).framesDropped} qdrs`
-                    : ''}
-                </span>
+                {(() => {
+                  const lossPct = sanitizeNonNegativeMetric(diagnostics?.packetLossPercent);
+                  const packetsLost = sanitizeNonNegativeMetric(diagnostics?.packetsLostInbound);
+                  const framesDropped = sanitizeNonNegativeMetric((diagnostics as any)?.framesDropped);
+                  const lossLabel = formatPercentMetric(lossPct, '—');
+                  const pktsLabel = formatCountMetric(packetsLost, 'pkts', '—');
+                  const mainLossText =
+                    diagnostics && (lossPct !== null || packetsLost !== null)
+                      ? packetsLost !== null
+                        ? `${lossLabel} (${pktsLabel})`
+                        : lossLabel
+                      : '—';
+
+                  return (
+                    <span
+                      className={`text-xs font-mono font-bold block mt-0.5 ${
+                        (lossPct ?? 0) > 3 ? 'text-amber-400' : 'text-nexus-text'
+                      }`}
+                    >
+                      {mainLossText}
+                      {framesDropped !== null ? ` • ${formatCountMetric(framesDropped, 'qdrs')}` : ''}
+                    </span>
+                  );
+                })()}
               </div>
 
               {/* Card 4: Bitrate (Áudio / Vídeo) */}
@@ -835,14 +850,25 @@ export const CallsView: React.FC = () => {
                 <span className="text-[9px] text-nexus-muted uppercase font-mono block">
                   Bitrate (Áudio / Vídeo)
                 </span>
-                <span className="text-xs font-mono font-bold text-nexus-text block mt-0.5">
-                  {diagnostics
-                    ? `${diagnostics.audioBitrateKbps ?? 0} / ${diagnostics.videoBitrateKbps ?? 0} kbps`
-                    : '—'}
-                  {(diagnostics as any)?.bitrateRampStage && (diagnostics as any).bitrateRampStage !== 'idle'
-                    ? ` (${(diagnostics as any).bitrateRampStage})`
-                    : ''}
-                </span>
+                {(() => {
+                  const audioKbps = sanitizeNonNegativeMetric(diagnostics?.audioBitrateKbps);
+                  const videoKbps = sanitizeNonNegativeMetric(diagnostics?.videoBitrateKbps);
+                  const bitrateText =
+                    !diagnostics || (audioKbps === null && videoKbps === null)
+                      ? '—'
+                      : videoKbps !== null
+                      ? `${audioKbps !== null ? Math.round(audioKbps) : '—'} / ${formatBitrateKbpsMetric(videoKbps)}`
+                      : formatBitrateKbpsMetric(audioKbps, '—');
+
+                  return (
+                    <span className="text-xs font-mono font-bold text-nexus-text block mt-0.5">
+                      {bitrateText}
+                      {(diagnostics as any)?.bitrateRampStage && (diagnostics as any).bitrateRampStage !== 'idle'
+                        ? ` (${(diagnostics as any).bitrateRampStage})`
+                        : ''}
+                    </span>
+                  );
+                })()}
               </div>
 
               {/* Card 5: Resoluções Multi-Estágio */}
@@ -853,10 +879,14 @@ export const CallsView: React.FC = () => {
                 <span className="text-xs font-mono font-bold text-nexus-text truncate block mt-0.5">
                   {(() => {
                     const d = diagnostics as any;
-                    const req = d?.requestedWidth ? `${d.requestedWidth}x${d.requestedHeight}` : null;
-                    const cap = d?.capturedWidth ? `${d.capturedWidth}x${d.capturedHeight}` : screenEffectiveWidth ? `${screenEffectiveWidth}x${screenEffectiveHeight}` : null;
-                    const enc = d?.encodedWidth ? `${d.encodedWidth}x${d.encodedHeight}` : null;
-                    const rec = d?.receivedWidth ? `${d.receivedWidth}x${d.receivedHeight}` : diagnostics?.videoWidth ? `${diagnostics.videoWidth}x${diagnostics.videoHeight}` : null;
+                    const req = formatResolutionMetric(d?.requestedWidth, d?.requestedHeight, 'x', '');
+                    const cap =
+                      formatResolutionMetric(d?.capturedWidth, d?.capturedHeight, 'x', '') ||
+                      formatResolutionMetric(screenEffectiveWidth, screenEffectiveHeight, 'x', '');
+                    const enc = formatResolutionMetric(d?.encodedWidth, d?.encodedHeight, 'x', '');
+                    const rec =
+                      formatResolutionMetric(d?.receivedWidth, d?.receivedHeight, 'x', '') ||
+                      formatResolutionMetric(diagnostics?.videoWidth, diagnostics?.videoHeight, 'x', '');
 
                     if (!cap && !rec) return 'Somente Voz';
                     return [
@@ -879,22 +909,22 @@ export const CallsView: React.FC = () => {
                 <span className="text-xs font-mono font-bold text-emerald-400 truncate block mt-0.5">
                   {(() => {
                     const d = diagnostics as any;
-                    const cap = d?.capturedFps ?? null;
-                    const sent = d?.sentFps ?? d?.encodedFps ?? null;
-                    const rec = d?.receivedFps ?? null;
-                    const dec = d?.decodedFps ?? null;
-                    const eff = d?.videoFps ?? null;
+                    const cap = sanitizeNonNegativeMetric(d?.capturedFps);
+                    const sent = pickFirstValidMetric([d?.sentFps, d?.encodedFps]);
+                    const rec = sanitizeNonNegativeMetric(d?.receivedFps);
+                    const dec = sanitizeNonNegativeMetric(d?.decodedFps);
+                    const eff = sanitizeNonNegativeMetric(d?.videoFps);
 
                     if (cap === null && sent === null && rec === null && dec === null && eff === null) {
                       return hasAnyScreenStage ? 'Medindo FPS...' : 'Somente Voz';
                     }
 
                     const items = [
-                      cap !== null && `Cap: ${Math.round(cap)}`,
-                      sent !== null && `Env: ${Math.round(sent)}`,
-                      rec !== null && `Rec: ${Math.round(rec)}`,
-                      dec !== null && `Dec: ${Math.round(dec)}`,
-                      eff !== null && `Efet: ${Math.round(eff)}`,
+                      cap !== null && `Cap: ${formatFpsMetric(cap, '')}`,
+                      sent !== null && `Env: ${formatFpsMetric(sent, '')}`,
+                      rec !== null && `Rec: ${formatFpsMetric(rec, '')}`,
+                      dec !== null && `Dec: ${formatFpsMetric(dec, '')}`,
+                      eff !== null && `Efet: ${formatFpsMetric(eff, '')}`,
                     ].filter(Boolean);
 
                     return items.join(' | ') || 'Medindo...';
@@ -1258,37 +1288,37 @@ export const CallsView: React.FC = () => {
                   {(() => {
                     const d = diagnostics as any;
                     if (showingLocalVideo) {
-                      const w = screenEffectiveWidth || d?.videoWidth;
-                      const h = screenEffectiveHeight || d?.videoHeight;
-                      const cap = d?.capturedFps;
-                      const sent = d?.sentFps ?? d?.encodedFps;
-                      if (!w || !h) return `Preset: ${screenShareQuality.toUpperCase()}`;
-                      if (sent !== null && sent !== undefined) {
-                        return `${w}×${h} • Cap: ${cap !== null && cap !== undefined ? Math.round(cap) : '—'} | Env: ${Math.round(sent)} FPS`;
+                      const resolutionLabel =
+                        formatResolutionMetric(screenEffectiveWidth, screenEffectiveHeight, '×', '') ||
+                        formatResolutionMetric(d?.videoWidth, d?.videoHeight, '×', '');
+                      const cap = sanitizeNonNegativeMetric(d?.capturedFps);
+                      const sent = pickFirstValidMetric([d?.sentFps, d?.encodedFps]);
+                      if (!resolutionLabel) return `Preset: ${screenShareQuality.toUpperCase()}`;
+                      if (sent !== null) {
+                        return `${resolutionLabel} • Cap: ${formatFpsMetric(cap, '', '—')} | Env: ${formatFpsMetric(sent, 'FPS')}`;
                       }
-                      if (cap !== null && cap !== undefined) {
-                        return `${w}×${h} • Cap: ${Math.round(cap)} FPS`;
+                      if (cap !== null) {
+                        return `${resolutionLabel} • Cap: ${formatFpsMetric(cap, 'FPS')}`;
                       }
-                      return `${w}×${h} • Medindo FPS...`;
+                      return `${resolutionLabel} • Medindo FPS...`;
                     }
 
                     if (showingRemoteVideo) {
-                      const w = d?.videoWidth;
-                      const h = d?.videoHeight;
-                      const dec = d?.decodedFps;
-                      const rec = d?.receivedFps;
-                      const eff = d?.videoFps;
-                      if (!w || !h) return 'Aguardando vídeo...';
-                      if (dec !== null && dec !== undefined) {
-                        return `${w}×${h} • ${Math.round(dec)} FPS (Dec)`;
+                      const resolutionLabel = formatResolutionMetric(d?.videoWidth, d?.videoHeight, '×', '');
+                      const dec = sanitizeNonNegativeMetric(d?.decodedFps);
+                      const rec = sanitizeNonNegativeMetric(d?.receivedFps);
+                      const eff = sanitizeNonNegativeMetric(d?.videoFps);
+                      if (!resolutionLabel) return 'Aguardando vídeo...';
+                      if (dec !== null) {
+                        return `${resolutionLabel} • ${formatFpsMetric(dec, 'FPS')} (Dec)`;
                       }
-                      if (rec !== null && rec !== undefined) {
-                        return `${w}×${h} • ${Math.round(rec)} FPS (Rec)`;
+                      if (rec !== null) {
+                        return `${resolutionLabel} • ${formatFpsMetric(rec, 'FPS')} (Rec)`;
                       }
-                      if (eff !== null && eff !== undefined) {
-                        return `${w}×${h} • ${Math.round(eff)} FPS`;
+                      if (eff !== null) {
+                        return `${resolutionLabel} • ${formatFpsMetric(eff, 'FPS')}`;
                       }
-                      return `${w}×${h} • Medindo FPS...`;
+                      return `${resolutionLabel} • Medindo FPS...`;
                     }
 
                     return `Preset: ${screenShareQuality.toUpperCase()}`;

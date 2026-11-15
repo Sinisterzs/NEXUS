@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   X,
   UserPlus,
@@ -31,6 +31,17 @@ export const AddFriendModal: React.FC = () => {
   const [usernameInput, setUsernameInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; isError: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!isAddFriendModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isSending) {
+        closeAddFriendModal();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAddFriendModalOpen, isSending, closeAddFriendModal]);
 
   if (!isAddFriendModalOpen) return null;
 
@@ -71,8 +82,16 @@ export const AddFriendModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150"
+      onClick={() => {
+        if (!isSending) closeAddFriendModal();
+      }}
+    >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-friend-modal-title"
         className="w-full max-w-lg bg-nexus-surface border border-nexus-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
         onClick={(e) => e.stopPropagation()}
       >
@@ -80,12 +99,16 @@ export const AddFriendModal: React.FC = () => {
         <div className="flex items-center justify-between px-5 py-4 border-b border-nexus-border bg-nexus-panel/50">
           <div className="flex items-center gap-2.5">
             <UserPlus className="w-5 h-5 text-nexus-accent" />
-            <h3 className="text-sm font-bold text-nexus-text">Gerenciar Amigos & Solicitações</h3>
+            <h3 id="add-friend-modal-title" className="text-sm font-bold text-nexus-text">
+              Gerenciar Amigos & Solicitações
+            </h3>
           </div>
           <button
+            type="button"
             onClick={closeAddFriendModal}
-            className="p-1 rounded-md text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface transition-nexus"
+            className="p-1 rounded-md text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface transition-nexus cursor-pointer"
             title="Fechar"
+            aria-label="Fechar"
           >
             <X className="w-4 h-4" />
           </button>
@@ -290,14 +313,18 @@ export const AddFriendModal: React.FC = () => {
 
                     <div className="flex items-center gap-2 shrink-0">
                       <button
+                        type="button"
                         onClick={() => acceptFriendRequest(req.id)}
+                        aria-label={`Aceitar pedido de ${req.displayName}`}
                         className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition-nexus flex items-center gap-1 shadow-xs"
                       >
                         <Check className="w-3.5 h-3.5" />
                         <span>Aceitar</span>
                       </button>
                       <button
+                        type="button"
                         onClick={() => rejectFriendRequest(req.id)}
+                        aria-label={`Recusar pedido de ${req.displayName}`}
                         className="px-3 py-1.5 rounded-lg bg-nexus-surface hover:bg-rose-500/20 text-rose-400 border border-nexus-border text-xs font-medium transition-nexus flex items-center gap-1"
                       >
                         <Ban className="w-3.5 h-3.5" />
@@ -341,7 +368,9 @@ export const AddFriendModal: React.FC = () => {
                     </div>
 
                     <button
+                      type="button"
                       onClick={() => cancelFriendRequest(req.id)}
+                      aria-label={`Cancelar pedido para ${req.displayName}`}
                       className="px-3 py-1.5 rounded-lg bg-nexus-surface hover:bg-nexus-border text-nexus-muted hover:text-nexus-text text-xs font-medium border border-nexus-border transition-nexus flex items-center gap-1"
                     >
                       <X className="w-3.5 h-3.5" />

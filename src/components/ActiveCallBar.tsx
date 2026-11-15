@@ -14,12 +14,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { callService } from '../services/CallService';
 import { Avatar } from './Avatar';
 import { Tooltip } from './Tooltip';
-
-function formatDuration(totalSeconds: number): string {
-  const mins = Math.floor(totalSeconds / 60);
-  const secs = totalSeconds % 60;
-  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-}
+import { formatSafeDurationSecs } from '../lib/streamMetrics';
 
 export const ActiveCallBar: React.FC = () => {
   const voiceCallState = useAppStore((state) => state.voiceCallState);
@@ -61,7 +56,7 @@ export const ActiveCallBar: React.FC = () => {
       ? 'Chamando...'
       : voiceCallState === 'connecting'
       ? 'Conectando...'
-      : formatDuration(callDurationSecs);
+      : formatSafeDurationSecs(callDurationSecs);
 
   // 1. Modo Compacto na Barra Lateral Recolhida (w-16 / 64px)
   if (isSidebarCollapsed) {

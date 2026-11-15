@@ -67,6 +67,17 @@ export const CreateJoinCommunityModal: React.FC<CreateJoinCommunityModalProps> =
     }
   }, [isOpen, initialTab]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isSubmitting) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isSubmitting, onClose]);
+
   if (!isOpen) return null;
 
   const computedInitials = initials.trim() || deriveInitials(name);
@@ -152,6 +163,9 @@ export const CreateJoinCommunityModal: React.FC<CreateJoinCommunityModalProps> =
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-join-community-modal-title"
         className="w-full max-w-lg bg-nexus-surface border border-nexus-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]"
         onClick={(e) => e.stopPropagation()}
       >
@@ -159,11 +173,14 @@ export const CreateJoinCommunityModal: React.FC<CreateJoinCommunityModalProps> =
         <div className="flex items-center justify-between px-5 py-4 border-b border-nexus-border bg-nexus-panel/50">
           <div className="flex items-center gap-2.5">
             <Users className="w-5 h-5 text-nexus-accent" />
-            <h3 className="text-sm font-bold text-nexus-text">Comunidades NEXUS</h3>
+            <h3 id="create-join-community-modal-title" className="text-sm font-bold text-nexus-text">
+              Comunidades NEXUS
+            </h3>
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fechar"
             className="p-1 rounded-md text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface transition-colors cursor-pointer"
             title="Fechar"
           >
