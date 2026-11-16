@@ -144,6 +144,9 @@ impl CallService {
         caller_id: Uuid,
         callee_id: Uuid,
     ) -> Result<CallSession, AppError> {
+        let policy = crate::services::SocialPolicyService::new(self.auth_service.pool().clone());
+        self.check_private_call_policy(&policy, caller_id, callee_id)
+            .await?;
         if caller_id == callee_id {
             return Err(AppError::BadRequest(
                 "Não é possível chamar a si mesmo.".to_string(),
@@ -308,6 +311,17 @@ impl CallService {
 
     /// Aceita um convite de chamada recebido
     pub async fn accept(&self, user_id: Uuid, call_id: Uuid) -> Result<CallSession, AppError> {
+        let caller_id_opt = {
+            let state = self.state.read().await;
+            state.calls.get(&call_id).map(|s| s.caller_id)
+        };
+        if let Some(caller_id) = caller_id_opt {
+            let policy =
+                crate::services::SocialPolicyService::new(self.auth_service.pool().clone());
+            self.check_private_call_policy(&policy, caller_id, user_id)
+                .await?;
+        }
+
         let session = {
             let mut state = self.state.write().await;
             let s = state.calls.get_mut(&call_id).ok_or_else(|| {
@@ -782,5 +796,40 @@ impl CallService {
             );
             self.presence_mgr.send_to_user(peer_id, &end_event).await;
         }
+    }
+}
+
+impl CallService {
+    /// Evaluates private call policy when enforcement is enabled.
+    /// Preserves existing behavior when `policy.is_enforcement_enabled()` is false.
+    pub async fn check_private_call_policy(
+        &self,
+        policy: &crate::services::SocialPolicyService,
+        actor_id: Uuid,
+        target_id: Uuid,
+    ) -> Result<(), AppError> {
+        if !policy.is_enforcement_enabled() {
+            return Ok(());
+        }
+
+        match policy.can_start_private_call(actor_id, target_id).await? {
+            crate::services::social_policy::SocialPermissionDecision::Allowed => Ok(()),
+            _ => Err(AppError::Forbidden(
+                "Não é possível iniciar chamada privada com este usuário.".to_string(),
+            )),
+        }
+    }
+
+    /// Terminates any active call between `user_a` and `user_b` (e.g. after block or unfriend).
+    pub async fn terminate_call_between(&self, user_a: Uuid, user_b: Uuid) -> Option<Uuid> {
+        if let Some(call) = self.active_call_for_user(user_a).await {
+            if (call.caller_id == user_a && call.callee_id == user_b)
+                || (call.caller_id == user_b && call.callee_id == user_a)
+            {
+                let _ = self.end(user_a, call.id).await;
+                return Some(call.id);
+            }
+        }
+        None
     }
 }

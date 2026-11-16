@@ -1,4 +1,5 @@
 import { DiagnosticsPrivacy } from '../../components/DiagnosticsPrivacy';
+import { SocialPrivacySettings } from './SocialPrivacySettings';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   User,
@@ -1460,6 +1461,7 @@ export const SettingsView: React.FC = () => {
         {activeSection === 'privacy' && (
           <div className="space-y-6">
             <DiagnosticsPrivacy />
+            <SocialPrivacySettings backendUrl="" sessionToken={null} />
             <div>
               <h2 className="text-base font-bold text-nexus-text">Privacidade & Proteção</h2>
               <p className="text-xs text-nexus-muted">

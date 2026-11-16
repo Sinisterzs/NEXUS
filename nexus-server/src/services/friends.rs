@@ -47,6 +47,20 @@ impl FriendService {
         sender_id: Uuid,
         target: &str,
     ) -> Result<FriendRequestDto, AppError> {
+        let policy = crate::services::SocialPolicyService::new(self.repo.pool().clone());
+        if policy.is_enforcement_enabled() {
+            if let Ok(Some(target_id)) = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1",
+            )
+            .bind(target.trim())
+            .fetch_optional(self.repo.pool())
+            .await
+            {
+                self.check_friend_request_policy(&policy, sender_id, target_id)
+                    .await?;
+            }
+        }
+
         let (req_dto, auto_accepted, maybe_friend, receiver_id) =
             self.repo.send_request(sender_id, target).await?;
 
@@ -254,5 +268,27 @@ impl FriendService {
         }
 
         Ok(presence)
+    }
+}
+
+impl FriendService {
+    /// Evaluates social policy for sending a friend request when enforcement is enabled.
+    /// Preserves existing behavior when `policy.is_enforcement_enabled()` is false.
+    pub async fn check_friend_request_policy(
+        &self,
+        policy: &crate::services::SocialPolicyService,
+        actor_id: Uuid,
+        target_id: Uuid,
+    ) -> Result<(), AppError> {
+        if !policy.is_enforcement_enabled() {
+            return Ok(());
+        }
+
+        match policy.can_send_friend_request(actor_id, target_id).await? {
+            crate::services::social_policy::SocialPermissionDecision::Allowed => Ok(()),
+            _ => Err(AppError::Forbidden(
+                "Não é possível enviar solicitação para este usuário.".to_string(),
+            )),
+        }
     }
 }

@@ -24,6 +24,7 @@ import { ChatMessage, DbMessage, DirectMessageSummary, DirectMessageDto, UserSta
 import { messageRepository } from '../../repositories/MessageRepository';
 import { conversationRepository } from '../../repositories/ConversationRepository';
 import { callService } from '../../services/CallService';
+import { DmRequestsPanel } from '../dm/DmRequestsPanel';
 
 function maskPublicStatus(status?: UserStatus): Exclude<UserStatus, 'invisible'> {
   if (!status || status === 'invisible') {
@@ -157,6 +158,7 @@ export const MessagesView: React.FC = () => {
   const [dmsList] = useState<DirectMessageSummary[]>(mockDirectMessages);
 
   // Shared UI state
+  const [showRequests, setShowRequests] = useState(false);
   const [searchFilter, setSearchFilter] = useState('');
   const [draftMessage, setDraftMessage] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -480,15 +482,29 @@ export const MessagesView: React.FC = () => {
           {/* Column Header */}
           <div className="h-14 px-4 border-b border-white/[0.06] flex items-center justify-between shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight">
-              Conversas
+              {showRequests ? 'Solicitações' : 'Conversas'}
             </h2>
-            {isOnline && (
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-400 font-mono">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Ao vivo
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowRequests((v) => !v)}
+                className="px-2 py-1 rounded-md border border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.08] text-[11px] text-zinc-200"
+              >
+                {showRequests ? 'Conversas' : 'Solicitações'}
+              </button>
+              {isOnline && (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-400 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  Ao vivo
+                </span>
+              )}
+            </div>
           </div>
+          {showRequests && (
+            <div className="p-3 overflow-y-auto flex-1">
+              <DmRequestsPanel backendUrl="" sessionToken={null} />
+            </div>
+          )}
 
           {/* Search & New Conversation Controls */}
           <div className="p-3 border-b border-white/[0.06] space-y-2.5">

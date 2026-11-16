@@ -2,8 +2,12 @@ pub mod friends;
 pub use friends::FriendRepository;
 pub mod dm;
 pub use dm::DmRepository;
+pub mod dm_requests;
+pub use dm_requests::DmRequestRepository;
 pub mod communities;
 pub use communities::CommunityRepository;
+pub mod legal;
+pub use legal::LegalRepository;
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};

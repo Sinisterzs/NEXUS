@@ -666,6 +666,8 @@ pub struct GatewayTicketResponse {
 }
 
 pub mod communities;
+pub mod legal;
+pub use legal::*;
 pub use communities::*;
 
 #[cfg(test)]

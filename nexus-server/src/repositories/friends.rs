@@ -17,6 +17,10 @@ impl FriendRepository {
         Self { pool }
     }
 
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Check if two users are currently friends
     pub async fn is_friend(&self, user_a_id: Uuid, user_b_id: Uuid) -> Result<bool, AppError> {
         let exists = sqlx::query_scalar!(

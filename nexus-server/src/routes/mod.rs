@@ -460,9 +460,60 @@ pub fn create_router_with_identity(
             header::ACCEPT,
         ]);
 
+    let legal_repo = crate::repositories::LegalRepository::new(auth_service.pool().clone());
+    let legal_public_routes = Router::new()
+        .route("/current", get(handlers::legal::get_current_legal_documents))
+        .with_state(legal_repo.clone());
+    let legal_protected_routes = Router::new()
+        .route("/accept", post(handlers::legal::accept_legal_document))
+        .route(
+            "/age-declaration",
+            post(handlers::legal::record_age_declaration),
+        )
+        .route("/status", get(handlers::legal::get_legal_status))
+        .with_state(legal_repo)
+        .layer(axum::middleware::from_fn_with_state(
+            auth_service.clone(),
+            auth_middleware,
+        ));
+    let legal_routes = Router::new()
+        .merge(legal_public_routes)
+        .merge(legal_protected_routes);
+
+    let social_privacy_state = handlers::social_privacy::SocialPrivacyState {
+        policy_service: crate::services::SocialPolicyService::new(auth_service.pool().clone()),
+        dm_request_repo: crate::repositories::DmRequestRepository::new(auth_service.pool().clone()),
+    };
+    let social_privacy_routes = Router::new()
+        .route(
+            "/users/me/privacy",
+            get(handlers::social_privacy::get_my_privacy_preferences)
+                .put(handlers::social_privacy::update_my_privacy_preferences),
+        )
+        .route(
+            "/dm/requests",
+            get(handlers::social_privacy::list_dm_requests)
+                .post(handlers::social_privacy::create_dm_request),
+        )
+        .route(
+            "/dm/requests/:id/accept",
+            post(handlers::social_privacy::accept_dm_request),
+        )
+        .route(
+            "/dm/requests/:id/decline",
+            post(handlers::social_privacy::decline_dm_request),
+        )
+        .with_state(social_privacy_state)
+        .layer(axum::middleware::from_fn_with_state(
+            auth_service.clone(),
+            auth_middleware,
+        ));
+
     Router::new()
         .merge(system_routes)
+        .nest("/v1", social_privacy_routes)
         .nest("/v1/diagnostics", diagnostics_routes)
+        .nest("/v1/legal", legal_routes)
         .nest("/v1/auth", auth_routes)
         .nest("/v1/users", users_routes)
         .nest("/v1/friends", friends_routes)

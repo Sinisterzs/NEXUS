@@ -86,6 +86,29 @@ impl DmService {
             return Err(AppError::Forbidden("Não é possível iniciar conversa com um usuário bloqueado.".into()));
         }
 
+        let policy = crate::services::SocialPolicyService::new(self.dm_repo.pool().clone());
+        match self.check_dm_policy(&policy, user_id, target_id).await? {
+            crate::services::social_policy::SocialPermissionDecision::Allowed => {}
+            crate::services::social_policy::SocialPermissionDecision::RequestRequired => {
+                let req_repo = crate::repositories::DmRequestRepository::new(self.dm_repo.pool().clone());
+                let accepted = req_repo
+                    .get_status_between(user_id, target_id)
+                    .await?
+                    .map(|r| r.status == "accepted")
+                    .unwrap_or(false);
+                if !accepted {
+                    return Err(AppError::Forbidden(
+                        "DM_REQUEST_REQUIRED: Solicitação de mensagem necessária antes de iniciar conversa.".into(),
+                    ));
+                }
+            }
+            crate::services::social_policy::SocialPermissionDecision::Denied => {
+                return Err(AppError::Forbidden(
+                    "CONTACT_NOT_ALLOWED: Não é possível iniciar conversa com este usuário.".into(),
+                ));
+            }
+        }
+
         let conv = self.dm_repo.get_or_create_conversation(user_id, target_id).await?;
 
         // Retrieve other user's FriendDto
@@ -169,6 +192,29 @@ impl DmService {
 
         let recipient_id = self.dm_repo.get_other_participant(conv_id, sender_id).await?
             .ok_or_else(|| AppError::BadRequest("Conversa inválida ou sem participante.".into()))?;
+
+        let policy = crate::services::SocialPolicyService::new(self.dm_repo.pool().clone());
+        match self.check_dm_policy(&policy, sender_id, recipient_id).await? {
+            crate::services::social_policy::SocialPermissionDecision::Allowed => {}
+            crate::services::social_policy::SocialPermissionDecision::RequestRequired => {
+                let req_repo = crate::repositories::DmRequestRepository::new(self.dm_repo.pool().clone());
+                let accepted = req_repo
+                    .get_status_between(sender_id, recipient_id)
+                    .await?
+                    .map(|r| r.status == "accepted")
+                    .unwrap_or(false);
+                if !accepted {
+                    return Err(AppError::Forbidden(
+                        "DM_REQUEST_REQUIRED: Solicitação de mensagem necessária antes de enviar mensagens.".into(),
+                    ));
+                }
+            }
+            crate::services::social_policy::SocialPermissionDecision::Denied => {
+                return Err(AppError::Forbidden(
+                    "CONTACT_NOT_ALLOWED: Não é possível enviar mensagem para este usuário.".into(),
+                ));
+            }
+        }
 
         // 1. Block check
         if self.friend_repo.is_blocked(sender_id, recipient_id).await? {
@@ -392,5 +438,21 @@ impl DmService {
     /// Validate and consume gateway ticket
     pub async fn consume_gateway_ticket(&self, ticket: &str) -> Result<Option<Uuid>, AppError> {
         self.dm_repo.consume_gateway_ticket(ticket).await
+    }
+}
+
+impl DmService {
+    /// Evaluates DM social policy when `SOCIAL_POLICY_ENFORCEMENT_ENABLED` is true.
+    /// Preserves existing DM behavior when enforcement is disabled (default).
+    pub async fn check_dm_policy(
+        &self,
+        policy: &crate::services::SocialPolicyService,
+        actor_id: Uuid,
+        target_id: Uuid,
+    ) -> Result<crate::services::social_policy::SocialPermissionDecision, AppError> {
+        if !policy.is_enforcement_enabled() {
+            return Ok(crate::services::social_policy::SocialPermissionDecision::Allowed);
+        }
+        policy.can_start_dm(actor_id, target_id).await
     }
 }

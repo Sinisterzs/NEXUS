@@ -21,3 +21,5 @@ pub use google_oauth::{GoogleIdTokenClaims, GoogleJwkKey, GoogleJwkSet, GoogleOA
 pub use password_reset::PasswordResetService;
 pub use presence::PresenceManager;
 pub use rooms::RoomService;
+pub mod social_policy;
+pub use social_policy::SocialPolicyService;
