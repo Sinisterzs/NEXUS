@@ -126,3 +126,28 @@ test('Nightly workflow is valid YAML and preserves prerelease/Stable boundaries'
     assert.ok(!step.run?.includes('--features test-lab'));
   }
 });
+
+test('Nightly CI covers approved desktop regressions and builds the normal signed Release', async () => {
+  const workflow = yaml.load(await readFile('.github/workflows/nightly.yml', 'utf8'));
+  const steps = workflow.jobs['build-and-publish-nightly'].steps;
+  const frontend = steps.find(step => step.name === 'Run Unit Tests and Typecheck').run;
+  for (const file of [
+    'avatar_service.test.ts', 'profile_onboarding.test.ts', 'update_policy.test.ts',
+    'compatibility_contract.test.ts', 'updater_integration_up4.test.ts',
+    'splash_updater_demo.test.ts', 'startup_compatibility.test.ts', 'up8_client_profile.test.mjs',
+  ]) {
+    assert.ok(frontend.includes(`tests/${file}`), `${file} must run explicitly in Nightly CI`);
+    await readFile(`tests/${file}`);
+  }
+  assert.ok(frontend.includes('npm run test:screen-lifecycle'));
+  const rust = steps.find(step => step.name === 'Validate Screen Transport and Updater (Rust)').run;
+  for (const filter of ['auth::tests', 'network::tests', 'db::tests', 'deeplink::tests', 'updater::tests']) {
+    assert.ok(rust.includes(filter), `${filter} must run in Nightly CI`);
+  }
+  assert.doesNotMatch(rust, /--skip\b/);
+  const native = steps.find(step => step.name === 'Build Native Windows Release with Tauri (NSIS)');
+  assert.equal(native.run, 'npx tauri build --bundles nsis');
+  assert.ok(native.env.TAURI_SIGNING_PRIVATE_KEY.includes('secrets.TAURI_SIGNING_PRIVATE_KEY'));
+  assert.ok(steps.some(step => step.run?.includes('verify-nightly-distribution.cjs')));
+  assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch']);
+});
