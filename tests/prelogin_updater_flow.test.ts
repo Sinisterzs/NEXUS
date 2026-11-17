@@ -118,6 +118,18 @@ test('Prelogin Updater - Canal Stable Sem Atualização (Up to Date)', async () 
   assert.equal(backend.downloadedCalled, false, 'Não deve baixar nada');
 });
 
+test('Nightly never auto-installs a newer Stable even with a persisted Stable preference', async () => {
+  const backend = new MockPreloginBackend(async () => ({
+    updateAvailable: true, currentVersion: '0.4.0-nightly.8', version: '0.4.0', channel: 'stable',
+  }));
+  const service = new PreloginUpdaterService(backend);
+  let proceeded = false;
+  await service.runStartupSequence({ channelOverride: 'stable', onProceed: () => { proceeded = true; } });
+  assert.equal(service.getState().status, 'update_found');
+  assert.equal(backend.downloadedCalled, false);
+  assert.equal(proceeded, true);
+});
+
 test('Prelogin Updater - Canal Nightly/Beta com Atualização (Confirmação com Changelog)', async () => {
   const history: PreloginStartupState[] = [];
   const backend = new MockPreloginBackend(async (channel) => ({

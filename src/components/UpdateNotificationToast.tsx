@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Download, RefreshCw, X, Sparkles } from 'lucide-react';
 import { updateService, UpdateState } from '../services/UpdateService';
+import { updatePolicyService } from '../services/UpdatePolicyService';
+import { APP_VERSION } from '../version';
 
 export const UpdateNotificationToast: React.FC = () => {
   const [state, setState] = useState<UpdateState>(updateService.getState());
@@ -28,6 +30,14 @@ export const UpdateNotificationToast: React.FC = () => {
   const { updateInfo, downloadProgress, status } = state;
   const version = updateInfo?.version || 'nova';
 
+  if (
+    status === 'available' &&
+    updateInfo?.version &&
+    !updatePolicyService.shouldShowNightlyNotification(APP_VERSION, updateInfo.version, false)
+  ) {
+    return null;
+  }
+
   const handleUpdate = async () => {
     try {
       await updateService.downloadAndInstall();
@@ -37,6 +47,9 @@ export const UpdateNotificationToast: React.FC = () => {
   };
 
   const handleDismiss = () => {
+    if (updateInfo?.version) {
+      updatePolicyService.dismissNightlyVersion(updateInfo.version);
+    }
     updateService.dismissUpdate();
   };
 

@@ -6,6 +6,11 @@
  */
 
 import { APP_VERSION, isPrereleaseVersion } from '../version.ts';
+import {
+  fetchBackendCompatibility,
+  isUpdateAllowedForChannel,
+  isVersionCompatible,
+} from './UpdatePolicyService.ts';
 
 export type PreloginStartupState =
   | 'starting'
@@ -16,6 +21,7 @@ export type PreloginStartupState =
   | 'restarting'
   | 'up_to_date'
   | 'connection_error'
+  | 'update_required'
   | 'install_error';
 
 export interface PreloginUpdateInfo {
@@ -309,6 +315,7 @@ export class PreloginUpdaterService {
       return;
     }
     this.isBusy = true;
+    let compatible = true;
 
     try {
       this.setState({
@@ -341,10 +348,21 @@ export class PreloginUpdaterService {
         channel,
       });
 
+      const compat = await fetchBackendCompatibility();
+      compatible = isVersionCompatible(APP_VERSION, channel, compat);
+
       let checkResult: PreloginCheckResult;
       try {
         checkResult = await this.backend.checkPrelogin(channel);
       } catch (networkErr: any) {
+        if (!compatible) {
+          this.setState({
+            status: 'update_required',
+            errorMessage: 'Esta versão do NEXUS não é mais compatível com o servidor. Atualize para continuar.',
+          });
+          this.isBusy = false;
+          return;
+        }
         console.warn('[PreloginUpdaterService] Checagem offline ou indisponível:', networkErr);
         this.setState({
           status: 'connection_error',
@@ -353,16 +371,29 @@ export class PreloginUpdaterService {
             (typeof networkErr === 'string' ? networkErr : 'Não foi possível verificar atualizações.'),
         });
         this.isBusy = false;
+        options?.onProceed?.();
         return;
       }
 
       this.activeCheckResult = checkResult;
+      // The native package version is authoritative for checks and compatibility.
+      const currentVersion = checkResult.currentVersion || APP_VERSION;
+      compatible = isVersionCompatible(currentVersion, channel, compat);
+      this.setState({ currentVersion });
 
       if (
         !checkResult.updateAvailable ||
         !checkResult.version ||
-        (channel === 'stable' && isPrereleaseVersion(checkResult.version))
+        !isUpdateAllowedForChannel(currentVersion, checkResult.version, channel)
       ) {
+        if (!compatible) {
+          this.setState({
+            status: 'update_required',
+            errorMessage: 'Esta versão do NEXUS não é mais compatível com o servidor. Atualize para continuar.',
+          });
+          this.isBusy = false;
+          return;
+        }
         this.setState({
           status: 'up_to_date',
           errorMessage: null,
@@ -384,29 +415,33 @@ export class PreloginUpdaterService {
         rawJson: checkResult.rawJson,
       };
 
-      if (channel === 'stable') {
-        // Passo 2: No canal Stable baixa automaticamente com progresso e reinicia
+      if ((channel === 'stable' && !isPrereleaseVersion(currentVersion)) || !compatible) {
+        // Passo 2: No canal Stable (ou atualização obrigatória) baixa automaticamente e reinicia
         this.setState({
           status: 'downloading',
           updateInfo,
           downloadProgress: 0,
         });
         this.isBusy = false;
-        await this.startDownloadAndInstall(checkResult, options?.onProceed);
+        await this.startDownloadAndInstall(checkResult, compatible ? options?.onProceed : undefined);
       } else {
-        // Passo 3: No canal Nightly/Beta exibe confirmação com changelog
+        // Passo 3: No canal Nightly/Beta libera a entrada e deixa UpdateNotificationToast notificar
         this.setState({
           status: 'update_found',
           updateInfo,
         });
         this.isBusy = false;
+        if (options?.onProceed) {
+          options.onProceed();
+        }
       }
     } catch (err: any) {
       this.setState({
-        status: 'connection_error',
+        status: compatible ? 'connection_error' : 'update_required',
         errorMessage: err?.message || 'Falha na inicialização do atualizador.',
       });
       this.isBusy = false;
+      if (compatible) options?.onProceed?.();
     }
   }
 
@@ -467,6 +502,7 @@ export class PreloginUpdaterService {
           installErr?.message ||
           (typeof installErr === 'string' ? installErr : 'Falha ao baixar ou aplicar os arquivos da atualização.'),
       });
+      _onProceed?.();
     }
   }
 
