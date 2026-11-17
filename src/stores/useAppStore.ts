@@ -728,17 +728,14 @@ const getInitialTab = (): MainTab => {
 function createAuthenticatedState(
   state: AppState,
   user: AuthUserProfile,
-  accountAvatarUrl?: string,
+  _accountAvatarUrl?: string,
   accountPrefs?: PersistedPreferences
 ) {
   const normUser = normalizeAuthUser(user);
   const previousAccountId = state.onlineUser?.id;
   const isDifferentAccount = previousAccountId !== normUser.id;
-  const resolvedAvatar =
-    accountAvatarUrl ||
-    normUser.avatarUrl ||
-    (!isDifferentAccount ? state.currentUser?.avatarUrl : undefined) ||
-    (!isDifferentAccount ? state.settings?.profile?.avatarUrl : undefined);
+  // The authenticated server profile is authoritative, including avatar removal.
+  const resolvedAvatar = normUser.avatarUrl;
 
   syncAccountRepositories(normUser.id);
 
@@ -805,6 +802,7 @@ function createAuthenticatedState(
 
   return {
     authStatus: 'authenticated' as const,
+    pendingProfileOnboarding: profileOnboardingService.isPending(normUser.id),
     authMode: 'authenticated' as const,
     onlineUser: {
       ...normUser,
@@ -1326,6 +1324,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await settingsRepository.flushSave();
       const user = await authRepository.register(username, email, password, displayName);
       const accPrefs = await settingsRepository.loadPreferences(user.id);
+      profileOnboardingService.markPending(user.id);
       ui30ReauthService.markCompleted();
       set((state) => ({ ...createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs), ui30ReauthRequired: false }));
 

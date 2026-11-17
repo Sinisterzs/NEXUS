@@ -9,6 +9,7 @@ import {
   Lock,
   Check,
   Camera,
+  Trash2,
   Mic,
   Shield,
   LogIn,
@@ -41,6 +42,7 @@ import {
   calibrateSensitivityFromNoise,
 } from '../../lib/voiceActivity.ts';
 import { Avatar } from '../../components/Avatar';
+import { avatarService } from '../../services/AvatarService';
 import { APP_VERSION, getInstalledVersionInfo } from '../../version';
 
 type SettingsSection = 'profile' | 'appearance' | 'audioVideo' | 'notifications' | 'privacy' | 'network' | 'about';
@@ -381,26 +383,49 @@ export const SettingsView: React.FC = () => {
     setTimeout(() => setSaveBanner(false), 2000);
   };
 
-  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || isSavingProfile) return;
+    setIsSavingProfile(true);
 
-    if (file.size > 5 * 1024 * 1024) {
-      setProfileFeedback({ text: 'A imagem deve ter no máximo 5MB.', isError: true });
-      return;
+    const previousAvatarUrl = profileForm.avatarUrl || currentUser.avatarUrl;
+    const tempPreviewUrl = URL.createObjectURL(file);
+    setProfileForm((prev) => ({ ...prev, avatarUrl: tempPreviewUrl }));
+    setProfileFeedback(null);
+
+    try {
+      const officialAvatarUrl = await avatarService.uploadAvatar(file);
+      setProfileForm((prev) => ({ ...prev, avatarUrl: officialAvatarUrl }));
+      await updateProfile({ avatarUrl: officialAvatarUrl });
+      await saveProfile({ avatarUrl: officialAvatarUrl });
+      showSaveSuccess();
+    } catch (err) {
+      setProfileForm((prev) => ({ ...prev, avatarUrl: previousAvatarUrl }));
+      setProfileFeedback({
+        text: err instanceof Error ? err.message : 'Não foi possível enviar a foto de perfil.',
+        isError: true,
+      });
+    } finally {
+      setIsSavingProfile(false);
+      URL.revokeObjectURL(tempPreviewUrl);
+      if (avatarInputRef.current) avatarInputRef.current.value = '';
     }
+  };
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      if (dataUrl) {
-        setProfileForm((prev) => ({ ...prev, avatarUrl: dataUrl }));
-        updateProfile({ avatarUrl: dataUrl });
-        saveProfile({ avatarUrl: dataUrl });
-        showSaveSuccess();
-      }
-    };
-    reader.readAsDataURL(file);
+  const handleRemoveAvatar = async () => {
+    if (isSavingProfile) return;
+    setIsSavingProfile(true);
+    setProfileFeedback(null);
+    try {
+      await avatarService.deleteAvatar();
+      await saveProfile({ avatarUrl: '' });
+      setProfileForm((previous) => ({ ...previous, avatarUrl: '' }));
+      showSaveSuccess();
+    } catch (error) {
+      setProfileFeedback({ text: error instanceof Error ? error.message : 'Não foi possível remover a foto.', isError: true });
+    } finally {
+      setIsSavingProfile(false);
+    }
   };
 
   const handleSaveProfile = async () => {
@@ -614,10 +639,17 @@ export const SettingsView: React.FC = () => {
                     type="button"
                     onClick={() => avatarInputRef.current?.click()}
                     title="Alterar foto de perfil"
+                    disabled={isSavingProfile}
                     className="absolute -bottom-1 -right-1 p-1.5 rounded-full bg-nexus-panel border border-nexus-border text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface transition-nexus cursor-pointer shadow-sm"
                   >
                     <Camera className="w-3.5 h-3.5" />
                   </button>
+                  {authMode === 'authenticated' && (profileForm.avatarUrl || currentUser.avatarUrl) && (
+                    <button type="button" disabled={isSavingProfile} onClick={() => void handleRemoveAvatar()}
+                      className="mt-2 flex items-center gap-1 text-xs text-nexus-muted hover:text-nexus-text disabled:opacity-50">
+                      <Trash2 className="w-3 h-3" /> Remover foto
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex-1 space-y-1">

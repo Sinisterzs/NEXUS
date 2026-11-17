@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Camera, Loader2, Trash2, User } from 'lucide-react';
 import { useAppStore } from '../../stores/useAppStore';
+import { WindowControls } from '../../components/WindowControls';
+import { avatarService } from '../../services/AvatarService';
 
 interface ProfileOnboardingViewProps {
   username: string;
@@ -25,7 +27,7 @@ export function ProfileOnboardingView({
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const updateProfile = useAppStore((state) => state.updateProfile);
+  const saveProfile = useAppStore((state) => state.saveProfile);
 
   useEffect(() => {
     return () => {
@@ -61,21 +63,18 @@ export function ProfileOnboardingView({
     setSaving(true);
     setError(null);
     try {
-      if (selectedFile && backendUrl && sessionToken) {
-        const res = await fetch(`${backendUrl.replace(/\/+$/, '')}/v1/users/me/avatar`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${sessionToken}`,
-            'Content-Type': selectedFile.type,
-          },
-          body: await selectedFile.arrayBuffer(),
+      let uploadedAvatarUrl: string | undefined;
+      if (selectedFile) {
+        uploadedAvatarUrl = await avatarService.uploadAvatar(selectedFile, {
+          apiBaseUrl: backendUrl,
+          token: sessionToken,
         });
-        if (!res.ok) {
-          throw new Error('Não foi possível enviar a foto de perfil.');
-        }
       }
-      if (trimmed && trimmed !== username) {
-        await updateProfile({ displayName: trimmed });
+      if (uploadedAvatarUrl || (trimmed && trimmed !== username)) {
+        await saveProfile({
+          ...(trimmed && trimmed !== username ? { displayName: trimmed } : {}),
+          ...(uploadedAvatarUrl ? { avatarUrl: uploadedAvatarUrl } : {}),
+        });
       }
       onComplete();
     } catch (err) {
@@ -90,7 +89,16 @@ export function ProfileOnboardingView({
   };
 
   return (
-    <div className="space-y-5 text-zinc-100">
+    <div className="relative flex flex-col items-center justify-center min-h-screen w-screen bg-black text-zinc-100 p-4 sm:p-6 overflow-y-auto select-none">
+      <div
+        data-tauri-drag-region
+        className="absolute top-0 left-0 right-0 h-9 flex items-center justify-end px-3 z-50"
+      >
+        <WindowControls />
+      </div>
+
+      <div className="w-full max-w-md rounded-2xl border border-zinc-800/80 bg-zinc-950 p-6 sm:p-8 shadow-2xl max-h-[calc(100vh-3rem)] overflow-y-auto">
+        <div className="space-y-5 text-zinc-100">
       <div className="text-center space-y-1.5">
         <h2 className="text-xl font-bold text-white">Seu perfil, sua identidade.</h2>
         <p className="text-xs text-zinc-400">
@@ -169,10 +177,12 @@ export function ProfileOnboardingView({
           type="button"
           disabled={saving}
           onClick={onComplete}
-          className="w-full px-4 py-2 rounded-lg border border-zinc-800 bg-transparent hover:bg-zinc-900 text-xs text-zinc-400 hover:text-zinc-200"
+          className="w-full px-4 py-2 rounded-lg border border-zinc-800 bg-transparent hover:bg-zinc-900 text-xs text-zinc-400 hover:text-zinc-200 cursor-pointer"
         >
           Pular por enquanto
         </button>
+      </div>
+        </div>
       </div>
     </div>
   );

@@ -14,10 +14,10 @@ import { CommunitiesView } from '../features/communities/CommunitiesView';
 import { CallsView } from '../features/calls/CallsView';
 import { SettingsView } from '../features/settings/SettingsView';
 import { AuthView } from '../features/auth/AuthView';
+import { ProfileOnboardingView } from '../features/auth/ProfileOnboardingView';
 import { MinimalSplashView } from '../features/startup/MinimalSplashView';
-import { ServerOfflineView } from '../features/auth/ServerOfflineView';
 import { ServerApprovalView } from '../features/auth/ServerApprovalView';
-import { PreloginStartupView } from '../features/startup/PreloginStartupView';
+import { preloginUpdaterService } from '../services/PreloginUpdaterService';
 import { useAppStore } from '../stores/useAppStore';
 import { callService } from '../services/CallService';
 import { gatewayClient } from '../services/GatewayClient';
@@ -43,6 +43,16 @@ export const App: React.FC = () => {
   const [rustBackendReady, setRustBackendReady] = useState(false);
   const [startupTimedOut, setStartupTimedOut] = useState(false);
   const [preloginCompleted, setPreloginCompleted] = useState(false);
+  const [preloginState, setPreloginState] = useState(preloginUpdaterService.getState());
+  const pendingProfileOnboarding = useAppStore((s) => s.pendingProfileOnboarding);
+
+  useEffect(() => {
+    const unsub = preloginUpdaterService.addListener(setPreloginState);
+    preloginUpdaterService.runStartupSequence({
+      onProceed: () => setPreloginCompleted(true),
+    });
+    return unsub;
+  }, []);
   const [closeConfirmSummary, setCloseConfirmSummary] = useState<ActiveMediaSessionSummary | null>(
     null
   );
@@ -138,7 +148,7 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (Boolean((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) && typeof window !== 'undefined') {
       (window as any).__NEXUS_STORE__ = useAppStore;
     }
     // Global voice call coordinator initialization (idempotent)
@@ -189,8 +199,34 @@ export const App: React.FC = () => {
 
   const renderScreen = () => {
     // 0. Pre-login Auto Updater (executa ANTES de qualquer tentativa de restauração de sessão ou AuthView)
+    if (
+      Boolean((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) &&
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('splashDemo') === '1'
+    ) {
+      return <MinimalSplashView demoMode />;
+    }
+
+    if (preloginState.status === 'update_required' || (preloginState.status === 'install_error' && !preloginCompleted)) {
+      return (
+        <MinimalSplashView
+          updateRequired
+          statusText={preloginState.errorMessage || undefined}
+          onUpdateNow={
+            preloginState.updateInfo
+              ? () => void preloginUpdaterService.runStartupSequence({ onProceed: () => setPreloginCompleted(true) })
+              : undefined
+          }
+          onRetry={() => void preloginUpdaterService.runStartupSequence({ onProceed: () => setPreloginCompleted(true) })}
+          onCloseApp={() => {
+            void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().close());
+          }}
+        />
+      );
+    }
+
     if (!preloginCompleted) {
-      return <PreloginStartupView onComplete={() => setPreloginCompleted(true)} />;
+      return <MinimalSplashView isConnectionPending />;
     }
 
     // 1. Splash / Carregamento Inicial (com timeout de segurança recuperável para evitar loading infinito)
@@ -255,12 +291,29 @@ export const App: React.FC = () => {
         networkStatus.server_reachability === 'server_unreachable') &&
       !onlineUser
     ) {
-      return <ServerOfflineView />;
+      return (
+        <MinimalSplashView
+          isConnectionPending
+          statusText="Servidor indisponível no momento."
+          onRetry={() => window.location.reload()}
+          retryLabel="Tentar novamente"
+        />
+      );
     }
 
     // 4. Sem autenticação (primeiro acesso, sem sessão ou sessão expirada/deslogado)
     if (authStatus === 'unauthenticated' || !onlineUser) {
       return <AuthView />;
+    }
+
+    // 5. Onboarding de perfil obrigatório após cadastro novo (antes de liberar a Home)
+    if (pendingProfileOnboarding) {
+      return (
+        <ProfileOnboardingView
+          username={onlineUser.username}
+          onComplete={() => useAppStore.getState().completeProfileOnboarding()}
+        />
+      );
     }
 
     return (

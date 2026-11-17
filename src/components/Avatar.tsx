@@ -3,6 +3,7 @@ import { UserStatus } from '../lib/types';
 import { StatusIndicator } from './StatusIndicator';
 import { useAppStore } from '../stores/useAppStore';
 import { cn } from '../lib/utils';
+import { resolveAvatarUrl } from '../lib/avatarUrl';
 
 export interface AvatarProps {
   name: string;
@@ -53,6 +54,7 @@ export function sanitizeAvatarUrl(url?: string | null): string | undefined {
   // Permitted schemes: HTTPS, local dev HTTP, or relative paths
   if (
     trimmed.startsWith('https://') ||
+    trimmed.startsWith('blob:') ||
     trimmed.startsWith('http://localhost') ||
     trimmed.startsWith('http://127.0.0.1') ||
     /^\/(?!\/)/.test(trimmed)
@@ -73,7 +75,10 @@ export const Avatar: React.FC<AvatarProps> = ({
   showStatus = true,
 }) => {
   const [imgError, setImgError] = useState(false);
-  const safeAvatarUrl = sanitizeAvatarUrl(avatarUrl);
+  const serverUrl = useAppStore((state) => state.networkStatus?.server_url || 'https://nexus-api.dynv6.net');
+  const safeAvatarUrl = sanitizeAvatarUrl(
+    avatarUrl?.startsWith('/') ? resolveAvatarUrl(avatarUrl, serverUrl) : avatarUrl,
+  );
 
   useEffect(() => {
     setImgError(false);
