@@ -133,6 +133,10 @@ pub fn create_router_with_identity(
     let users_routes = Router::new()
         .route("/me", get(handlers::users::get_me))
         .route("/me", patch(handlers::users::update_me))
+        .route(
+            "/me/avatar",
+            post(handlers::users::upload_my_avatar).delete(handlers::users::delete_my_avatar),
+        )
         .route("/me/presence", get(handlers::friends::get_presence))
         .route("/me/presence", patch(handlers::friends::update_presence))
         .route("/me/presence", put(handlers::friends::update_presence))
@@ -511,6 +515,7 @@ pub fn create_router_with_identity(
 
     Router::new()
         .merge(system_routes)
+        .route("/v1/avatars/:filename", get(handlers::users::get_avatar))
         .nest("/v1", social_privacy_routes)
         .nest("/v1/diagnostics", diagnostics_routes)
         .nest("/v1/legal", legal_routes)

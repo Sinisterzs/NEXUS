@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { mapGoogleAuthError, isAccountRecoveryCandidateError } from '../../lib/authErrorMapping';
 import { authRepository } from '../../repositories/AuthRepository';
 import { PasswordRecoveryView } from './PasswordRecoveryView';
+import { ProfileOnboardingView } from './ProfileOnboardingView';
 import { AuthConsentPreview, AuthField, AuthProgress, GoogleIcon, NexusMark, PasswordRequirements } from './AuthPrimitives';
 import './auth.css';
 
@@ -45,6 +46,13 @@ export function AuthPanel({ context = 'view', enabled = true, onAuthenticated }:
   const [recoveryMode, setRecoveryMode] = useState(false);
   const [recoveryInitialToken, setRecoveryInitialToken] = useState('');
   const [offerRecovery, setOfferRecovery] = useState(false);
+  const [onboardingUsername, setOnboardingUsername] = useState<string | null>(() => {
+    try {
+      return globalThis.localStorage?.getItem('nexus_profile_onboarding_pending') || null;
+    } catch {
+      return null;
+    }
+  });
 
   const loginOnline = useAppStore((state) => state.loginOnline);
   const registerOnline = useAppStore((state) => state.registerOnline);
@@ -192,8 +200,14 @@ export function AuthPanel({ context = 'view', enabled = true, onAuthenticated }:
         regDisplayName.trim() || undefined
       );
       if (success) {
-        setSuccessMessage('Conta criada com sucesso! Conectando...');
-        finish('register');
+        setSuccessMessage(null);
+        const uname = regUsername.trim();
+        try {
+          globalThis.localStorage?.setItem('nexus_profile_onboarding_pending', uname);
+        } catch {
+          // ignore storage errors
+        }
+        setOnboardingUsername(uname);
       }
     } catch (err: any) {
       setLocalError(err?.message || 'Falha ao registrar conta.');
@@ -251,7 +265,20 @@ export function AuthPanel({ context = 'view', enabled = true, onAuthenticated }:
         <p>{recoveryMode ? 'Volte a se conectar com a sua comunidade.' : tab === 'login' ? 'Entre na sua conta para continuar' : 'Sua comunidade começa aqui'}</p>
       </div>
       <AuthProgress message={!recoveryMode && busy ? (isGoogleLoading ? 'Aguardando autorização no navegador...' : tab === 'login' ? 'Autenticando...' : 'Criando conta...') : ''} />
-      {recoveryMode ? <PasswordRecoveryView onBackToLogin={closeRecovery} initialEmail={loginInput}
+      {onboardingUsername ? (
+        <ProfileOnboardingView
+          username={onboardingUsername}
+          onComplete={() => {
+            try {
+              globalThis.localStorage?.removeItem('nexus_profile_onboarding_pending');
+            } catch {
+              // ignore
+            }
+            setOnboardingUsername(null);
+            finish('register');
+          }}
+        />
+      ) : recoveryMode ? <PasswordRecoveryView onBackToLogin={closeRecovery} initialEmail={loginInput}
         initialStep={recoveryInitialToken ? 'reset_password' : 'forgot_request'} initialToken={recoveryInitialToken} /> : <>
         {currentError && <div className="auth-notice" role="alert" tabIndex={-1} ref={errorRef}>
           <AlertCircle aria-hidden="true" /><div>{currentError}

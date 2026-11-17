@@ -2,6 +2,7 @@ import {syntheticPeerDiagnostics,isSyntheticCandidate} from '../services/Synthet
 import { diagnosticsService } from '../services/DiagnosticsService';
 import { create } from 'zustand';
 import { ui30ReauthService } from '../services/Ui30ReauthService';
+import { profileOnboardingService } from '../services/ProfileOnboardingService';
 import {
   MainTab,
   UserProfile,
@@ -548,6 +549,8 @@ interface AppState {
   checkSession: () => Promise<void>;
   loginOnline: (login: string, password: string) => Promise<boolean>;
   ui30ReauthRequired: boolean;
+  pendingProfileOnboarding: boolean;
+  completeProfileOnboarding: () => void;
   registerOnline: (
     username: string,
     email: string,
@@ -852,6 +855,12 @@ let isCheckingSessionInProgress = false;
 export const useAppStore = create<AppState>((set, get) => ({
   isInitialized: false,
   ui30ReauthRequired: false,
+  pendingProfileOnboarding: false,
+  completeProfileOnboarding: () => {
+    const uid = get().onlineUser?.id;
+    if (uid) profileOnboardingService.clearPending(uid);
+    set({ pendingProfileOnboarding: false });
+  },
   authStatus: 'initializing',
   authMode: 'checking',
   onlineUser: null,
@@ -1194,7 +1203,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (user) {
         await settingsRepository.flushSave();
         const accPrefs = await settingsRepository.loadPreferences(user.id);
-        set((state) => createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs));
+        const onboardingPending = profileOnboardingService.isPending(user.id);
+        set((state) => ({
+          ...createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs),
+          pendingProfileOnboarding: onboardingPending,
+        }));
 
         // Initialize social friends, communities & real-time presence
         get().loadFriends();

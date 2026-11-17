@@ -23,3 +23,5 @@ pub use presence::PresenceManager;
 pub use rooms::RoomService;
 pub mod social_policy;
 pub use social_policy::SocialPolicyService;
+pub mod avatar_storage;
+pub use avatar_storage::LocalVolumeAvatarStorage;

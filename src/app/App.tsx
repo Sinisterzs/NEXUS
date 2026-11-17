@@ -14,6 +14,7 @@ import { CommunitiesView } from '../features/communities/CommunitiesView';
 import { CallsView } from '../features/calls/CallsView';
 import { SettingsView } from '../features/settings/SettingsView';
 import { AuthView } from '../features/auth/AuthView';
+import { MinimalSplashView } from '../features/startup/MinimalSplashView';
 import { ServerOfflineView } from '../features/auth/ServerOfflineView';
 import { ServerApprovalView } from '../features/auth/ServerApprovalView';
 import { PreloginStartupView } from '../features/startup/PreloginStartupView';
@@ -240,21 +241,7 @@ export const App: React.FC = () => {
         );
       }
 
-      return (
-        <div className="relative flex flex-col items-center justify-center h-screen w-screen bg-nexus-bg text-nexus-text select-none">
-          <div
-            data-tauri-drag-region
-            className="absolute top-0 left-0 right-0 h-9 flex items-center justify-end px-3 z-50 bg-nexus-bg/60 backdrop-blur-md border-b border-nexus-border/30"
-          >
-            <WindowControls />
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-nexus-accent flex items-center justify-center text-white font-extrabold text-xl shadow-lg mb-3 animate-pulse">
-            N
-          </div>
-          <p className="text-xs font-semibold text-nexus-text">Iniciando NEXUS...</p>
-          <p className="text-[10px] text-nexus-muted mt-1 font-mono">Restaurando sessão e verificando conectividade</p>
-        </div>
-      );
+      return <MinimalSplashView />;
     }
 
     // 2. Servidor pendente de aprovação criptográfica de identidade (TOFU)
