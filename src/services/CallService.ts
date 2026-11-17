@@ -1,4 +1,4 @@
-import { SCREEN_DEDICATED_REQUIRED, SCREEN_P2P_ERROR } from './ScreenP2PPolicy.ts';
+import { SCREEN_DEDICATED_REQUIRED, SCREEN_P2P_ERROR, assertScreenCandidate } from './ScreenP2PPolicy.ts';
 /**
  * NEXUS - 1:1 Voice & Screen Call Coordinator (Calls & Streaming 2.0)
  * Coordena a sinalização WebSocket via GatewayClient e o motor de mídia WebRtcService,
@@ -18,7 +18,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { callHistoryRepository } from '../repositories/CallHistoryRepository';
 import { soundEffects } from '../lib/soundEffects';
 import { screenCaptureService } from './ScreenCaptureService';
-import { screenSessionId } from './screenReceiverLifecycle';
+import { screenSessionId, screenCandidateSessionId } from './screenReceiverLifecycle';
 import { audioDeviceService } from './AudioDeviceService';
 import {
   NativeCaptureStatus,
@@ -62,7 +62,10 @@ export class CallService {
   private nativeStartRequest = 0;
   private nativeScreenShareId: string | null = null;
   private nativeScreenOfferSent = false;
+  private nativeScreenAddingPeer = false;
   private nativeScreenPendingIce: RTCIceCandidateInit[] = [];
+  private nativeScreenPendingRemoteIce: RTCIceCandidateInit[] = [];
+  private nativeScreenRetryLimit: { at: number; count: number } | null = null;
   private nativeScreenUnlisten: (() => void) | null = null;
 
   public configureTimeouts(options: {
@@ -427,6 +430,17 @@ export class CallService {
                 );
               }
             });
+            this.webRtc.setScreenIceRestartCallback((sessionId) => {
+              const s = useAppStore.getState();
+              if (s.activeCallId === data.callId && s.activeCallPeer?.id) {
+                gatewayClient.sendCallWebrtcIceCandidate(
+                  data.callId,
+                  s.activeCallPeer.id,
+                  { candidate: '', nexusScreenSessionId: sessionId, nexusScreenAction: 'retry' } as RTCIceCandidateInit,
+                  'screen'
+                );
+              }
+            });
             const screenAnswerSdp = await this.webRtc.handleRemoteScreenOffer(data.sdp);
             if (!screenAnswerSdp) return;
             const latestStore = useAppStore.getState();
@@ -493,7 +507,11 @@ export class CallService {
         try {
           if (data.stream_kind === 'screen') {
             if (this.nativeScreenActive) {
-              await screenCaptureService.handleNativeScreenAnswer(data.senderId, data.sdp);
+              await screenCaptureService.handleNativeScreenAnswer(
+                data.senderId,
+                data.sdp,
+                this.nativeScreenShareId ?? undefined
+              );
             }
             return;
           }
@@ -534,18 +552,80 @@ export class CallService {
         }
 
         if (data.stream_kind === 'screen') {
-          if (this.nativeScreenActive && data.candidate?.candidate) {
-            screenCaptureService
-              .handleNativeScreenIce(
-                data.senderId,
-                data.candidate.candidate,
-                data.candidate.sdpMid ?? null,
-                data.candidate.sdpMLineIndex ?? null
-              )
-              .catch(() => { useAppStore.setState({screenShareError:SCREEN_P2P_ERROR}); });
+          const cand = data.candidate;
+          if (!cand) return;
+          const candId = screenCandidateSessionId(cand);
+          const action = (cand as RTCIceCandidateInit & { nexusScreenAction?: unknown }).nexusScreenAction;
+          if (action === 'retry' || action === 'ice_restart') {
+            if (cand.candidate || !this.nativeScreenActive || (candId && this.nativeScreenShareId && candId !== this.nativeScreenShareId)) {
+              return;
+            }
+            const limit = this.nativeScreenRetryLimit;
+            if (limit && (Date.now() - limit.at < 10000 || limit.count >= 3)) return;
+            this.nativeScreenRetryLimit = { at: Date.now(), count: (limit?.count ?? 0) + 1 };
+            const iceServers = this.webRtc ? await this.webRtc.fetchIceServers().catch(() => undefined) : undefined;
+            const latest = useAppStore.getState();
+            if (!this.nativeScreenActive || latest.activeCallId !== data.callId || latest.activeCallPeer?.id !== data.senderId) return;
+            this.nativeScreenAddingPeer = true;
+            this.nativeScreenOfferSent = false;
+            try {
+              const offer = await screenCaptureService.addNativeScreenPeer(data.senderId, iceServers);
+              if (this.nativeScreenActive && offer?.sdp && useAppStore.getState().activeCallId === data.callId) {
+                this.nativeScreenShareId = screenSessionId(offer.sdp);
+                gatewayClient.sendCallWebrtcOffer(data.callId, data.senderId, offer.sdp, 'screen');
+                this.nativeScreenOfferSent = true;
+                for (const c of this.nativeScreenPendingIce) {
+                  gatewayClient.sendCallWebrtcIceCandidate(data.callId, data.senderId, c, 'screen');
+                }
+                this.nativeScreenPendingIce = [];
+              }
+            } catch {
+              useAppStore.setState({ screenShareError: SCREEN_P2P_ERROR });
+            } finally {
+              this.nativeScreenAddingPeer = false;
+            }
+            return;
           }
+
+          const receiverId = this.webRtc?.getRemoteScreenSessionId() ?? null;
+          if (candId && receiverId && candId === receiverId) {
+            if (this.webRtc) {
+              await this.webRtc.addScreenReceiverIceCandidate(cand).catch(() => { useAppStore.setState({screenShareError:SCREEN_P2P_ERROR}); });
+            }
+            return;
+          }
+
+          if (this.nativeScreenStarting || this.nativeScreenAddingPeer) {
+            try { assertScreenCandidate(cand); } catch {
+              useAppStore.setState({ screenShareError: SCREEN_P2P_ERROR });
+              return;
+            }
+            if (this.nativeScreenPendingRemoteIce.length < 256) {
+              this.nativeScreenPendingRemoteIce.push(cand);
+            }
+            return;
+          }
+
+          if (this.nativeScreenActive) {
+            if (!candId || !this.nativeScreenShareId || candId === this.nativeScreenShareId) {
+              screenCaptureService
+                .handleNativeScreenIce(
+                  data.senderId,
+                  cand.candidate ?? '',
+                  cand.sdpMid ?? null,
+                  cand.sdpMLineIndex ?? null,
+                  this.nativeScreenShareId ?? undefined
+                )
+                .catch(() => { useAppStore.setState({screenShareError:SCREEN_P2P_ERROR}); });
+              if (!candId && this.webRtc?.hasActiveScreenReceiver()) {
+                await this.webRtc.addScreenReceiverIceCandidate(cand).catch(() => { useAppStore.setState({screenShareError:SCREEN_P2P_ERROR}); });
+              }
+            }
+            return;
+          }
+
           if (this.webRtc) {
-            await this.webRtc.addScreenReceiverIceCandidate(data.candidate).catch(() => { useAppStore.setState({screenShareError:SCREEN_P2P_ERROR}); });
+            await this.webRtc.addScreenReceiverIceCandidate(cand).catch(() => { useAppStore.setState({screenShareError:SCREEN_P2P_ERROR}); });
           }
           return;
         }
@@ -1142,13 +1222,35 @@ export class CallService {
         screenShareError: null,
       });
 
-      const offer = await screenCaptureService.addNativeScreenPeer(peerId, iceServers);
+      this.nativeScreenAddingPeer = true;
+      let offer;
+      try {
+        offer = await screenCaptureService.addNativeScreenPeer(peerId, iceServers);
+      } finally {
+        this.nativeScreenAddingPeer = false;
+      }
       if (alive() && this.nativeScreenActive && offer?.sdp) {
         this.nativeScreenShareId = screenSessionId(offer.sdp);
         gatewayClient.sendCallWebrtcOffer(callId, peerId, offer.sdp, 'screen');
         this.nativeScreenOfferSent = true;
         for (const candidate of this.nativeScreenPendingIce) gatewayClient.sendCallWebrtcIceCandidate(callId, peerId, candidate, 'screen');
         this.nativeScreenPendingIce = [];
+        const pendingRemote = this.nativeScreenPendingRemoteIce;
+        this.nativeScreenPendingRemoteIce = [];
+        for (const candidate of pendingRemote) {
+          const cid = screenCandidateSessionId(candidate);
+          if (cid && this.nativeScreenShareId && cid !== this.nativeScreenShareId) continue;
+          await screenCaptureService.handleNativeScreenIce(
+            peerId,
+            candidate.candidate ?? '',
+            candidate.sdpMid ?? null,
+            candidate.sdpMLineIndex ?? null,
+            this.nativeScreenShareId ?? undefined
+          ).catch(() => { useAppStore.setState({ screenShareError: SCREEN_P2P_ERROR }); });
+          if (!alive()) break;
+        }
+      } else if (!alive()) {
+        this.nativeScreenPendingRemoteIce = [];
       }
       return alive() ? status : null;
     } catch (err: any) {
@@ -1419,9 +1521,12 @@ export class CallService {
   private teardownNativeScreenState(): void {
     this.nativeScreenGeneration++;
     this.nativeScreenStarting = false;
+    this.nativeScreenAddingPeer = false;
     this.nativeScreenShareId = null;
     this.nativeScreenOfferSent = false;
     this.nativeScreenPendingIce = [];
+    this.nativeScreenPendingRemoteIce = [];
+    this.nativeScreenRetryLimit = null;
     this.nativeScreenActive = false;
     if (this.nativeScreenUnlisten) {
       try {

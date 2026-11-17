@@ -10,8 +10,8 @@ import { screenIceServers, assertScreenCandidate, assertScreenSdp, assertVoiceOn
  */
 
 import { audioDeviceService } from './AudioDeviceService.ts';
-import { startScreenReceiveDiagnostics, screenReceiverContext, logScreenReceiverTermination } from './ScreenReceiveDiagnostics.ts';
-import { detachScreenElements, releaseScreenStream, screenSessionId, screenCandidateSessionId, tagScreenCandidate, screenAnswerSessionId, tagScreenAnswer, screenCandidateInit } from './screenReceiverLifecycle.ts';
+import { startScreenReceiveDiagnostics, screenReceiverContext, logScreenReceiverTermination, createScreenReceiveCounters, recordAddIceCandidateOutcome, applyScreenIceCandidate, type ScreenReceiveCounters } from './ScreenReceiveDiagnostics.ts';
+import { detachScreenElements, releaseScreenStream, screenSessionId, screenCandidateSessionId, tagScreenCandidate, screenAnswerSessionId, tagScreenAnswer } from './screenReceiverLifecycle.ts';
 import { screenCaptureService, applyTrackContentHint } from './ScreenCaptureService.ts';
 import { processAnalyserFrame, type VoiceActivityDetector } from '../lib/voiceActivity.ts';
 import type {
@@ -104,12 +104,15 @@ interface ScreenReceiverSession {
   offerSessionId: string | null;
   lastOfferSdp?: string;
   answerSdp?: string;
-  diagnostics: Record<string, number>;
+  diagnostics: ScreenReceiveCounters;
   stopDiagnostics: () => void;
   peerUserId: string;
   pc: RTCPeerConnection;
   stream: MediaStream;
   pendingCandidates: RTCIceCandidateInit[];
+  seenCandidates: Set<string>;
+  iceDisconnectTimer: ReturnType<typeof setTimeout> | null;
+  iceRestartAttempts: number;
   signalingChain: Promise<void>;
 }
 
@@ -226,6 +229,8 @@ export class MeshRoomService {
   private nativeScreenRetryLimits = new Map<string, { at: number; count: number }>();
   private nativeScreenOfferIds = new Map<string, string>();
   private nativeScreenPendingIce = new Map<string, RTCIceCandidateInit[]>();
+  private nativeScreenAddingPeers = new Set<string>();
+  private nativeScreenPendingRemoteIce = new Map<string, RTCIceCandidateInit[]>();
   private nativeScreenPeerVersions = new Map<string, number>();
   private nativeUnlisten: (() => void) | null = null;
   private adaptiveBitrateBps = 2_500_000;
@@ -411,6 +416,8 @@ export class MeshRoomService {
     this.nativeScreenPeerVersions.set(peerUserId, (this.nativeScreenPeerVersions.get(peerUserId) ?? 0) + 1);
     this.nativeScreenReadyPeers.delete(peerUserId);
     this.nativeScreenPendingIce.delete(peerUserId);
+    this.nativeScreenAddingPeers.delete(peerUserId);
+    this.nativeScreenPendingRemoteIce.delete(peerUserId);
     this.nativeScreenOfferIds.delete(peerUserId);
     this.departedPeers.add(peerUserId);
     this.closeRemoteScreen(peerUserId, 'participant_left');
@@ -1490,6 +1497,8 @@ export class MeshRoomService {
     this.nativeScreenActive = false;
     this.nativeScreenReadyPeers.clear();
     this.nativeScreenPendingIce.clear();
+    this.nativeScreenAddingPeers.clear();
+    this.nativeScreenPendingRemoteIce.clear();
     this.nativeScreenOfferIds.clear();
     this.nativeScreenRetryLimits.clear();
     this.nativeScreenPeerVersions.clear();
@@ -1513,6 +1522,7 @@ export class MeshRoomService {
     this.nativeScreenPeerVersions.set(peerUserId, peerVersion);
     this.nativeScreenReadyPeers.delete(peerUserId);
     this.nativeScreenPendingIce.delete(peerUserId);
+    this.nativeScreenAddingPeers.add(peerUserId);
     const alive = () => this.isActive && this.nativeScreenActive && generation === this.nativeScreenGeneration &&
       peerVersion === this.nativeScreenPeerVersions.get(peerUserId) && !this.departedPeers.has(peerUserId);
     let offer;
@@ -1520,6 +1530,10 @@ export class MeshRoomService {
     catch (error) {
       if (!alive()) return;
       throw error;
+    } finally {
+      if (peerVersion === this.nativeScreenPeerVersions.get(peerUserId)) {
+        this.nativeScreenAddingPeers.delete(peerUserId);
+      }
     }
     if (alive() && offer?.sdp) {
       const id = screenSessionId(offer.sdp);
@@ -1531,6 +1545,22 @@ export class MeshRoomService {
         this.callbacks?.onSendIceCandidate(peerUserId, tagScreenCandidate(candidate, id), 'screen');
       }
       this.nativeScreenPendingIce.delete(peerUserId);
+      const pendingRemote = this.nativeScreenPendingRemoteIce.get(peerUserId) ?? [];
+      this.nativeScreenPendingRemoteIce.delete(peerUserId);
+      for (const candidate of pendingRemote) {
+        const cid = screenCandidateSessionId(candidate);
+        if (cid && id && cid !== id) continue;
+        await screenCaptureService.handleNativeScreenIce(
+          peerUserId,
+          candidate.candidate ?? '',
+          candidate.sdpMid ?? null,
+          candidate.sdpMLineIndex ?? null,
+          id ?? undefined
+        ).catch(() => { console.warn('[ScreenSender] remote_ice_apply_failed'); });
+        if (!alive()) return;
+      }
+    } else if (!alive()) {
+      this.nativeScreenPendingRemoteIce.delete(peerUserId);
     }
   }
 
@@ -1613,12 +1643,15 @@ export class MeshRoomService {
       startedAt: Date.now(),
       diagnosticContext: screenReceiverContext(peerUserId, this.selfUserId ?? '', this.screenReceiverOfferIds.get(peerUserId) ?? null, version, room),
       offerSessionId: null,
-      diagnostics: { offersApplied: 0, answersSent: 0, iceQueued: 0, iceApplied: 0, iceRejected: 0, iceStale: 0 },
+      diagnostics: createScreenReceiveCounters(),
       stopDiagnostics: () => {},
       peerUserId,
       pc,
       stream: new MediaStream(),
       pendingCandidates: this.earlyScreenCandidates.get(peerUserId) ?? [],
+      seenCandidates: new Set(),
+      iceDisconnectTimer: null,
+      iceRestartAttempts: 0,
       signalingChain: Promise.resolve(),
     };
     this.screenReceiverPeers.set(peerUserId, session);
@@ -1640,6 +1673,9 @@ export class MeshRoomService {
                 sdpMLineIndex: event.candidate.sdpMLineIndex,
               };
         this.callbacks?.onSendIceCandidate(peerUserId, tagScreenCandidate(init, session.offerSessionId), 'screen');
+      } else {
+        session.diagnostics.endOfCandidatesLocal = true;
+        this.callbacks?.onSendIceCandidate(peerUserId, tagScreenCandidate({ candidate: '' }, session.offerSessionId), 'screen');
       }
     };
 
@@ -1675,6 +1711,24 @@ export class MeshRoomService {
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
+      const state = pc.iceConnectionState;
+      if (state === 'disconnected') {
+        if (!session.iceDisconnectTimer) {
+          session.iceDisconnectTimer = setTimeout(() => {
+            session.iceDisconnectTimer = null;
+            this.requestScreenIceRestart(peerUserId, session);
+          }, this.iceDisconnectTimeoutMs);
+        }
+      } else if (state === 'connected' || state === 'completed' || state === 'failed' || state === 'closed') {
+        if (session.iceDisconnectTimer) {
+          clearTimeout(session.iceDisconnectTimer);
+          session.iceDisconnectTimer = null;
+        }
+      }
+    };
+
     pc.onconnectionstatechange = () => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
       if (pc.connectionState === 'failed') this.failRemoteScreen(peerUserId, 'Não foi possível estabelecer a conexão direta para esta tela. Tente novamente.', 'pc_failed');
@@ -1688,6 +1742,40 @@ export class MeshRoomService {
     finally {
       if (this.screenReceiverCreations.get(peerUserId) === creation) this.screenReceiverCreations.delete(peerUserId);
     }
+  }
+
+  private requestScreenIceRestart(peerUserId: string, session: ScreenReceiverSession): void {
+    if (
+      !this.isActive ||
+      this.departedPeers.has(peerUserId) ||
+      this.screenReceiverPeers.get(peerUserId) !== session ||
+      !session.offerSessionId ||
+      session.iceRestartAttempts >= MAX_ICE_RESTART_ATTEMPTS ||
+      session.pc.iceConnectionState !== 'disconnected'
+    ) {
+      return;
+    }
+    session.iceRestartAttempts++;
+    session.diagnostics.iceRestartCount = (session.diagnostics.iceRestartCount ?? 0) + 1;
+    this.callbacks?.onSendIceCandidate(
+      peerUserId,
+      { candidate: '', nexusScreenSessionId: session.offerSessionId, nexusScreenAction: 'retry' } as RTCIceCandidateInit,
+      'screen'
+    );
+  }
+
+  private isDuplicateScreenCandidate(session: ScreenReceiverSession, candidate: RTCIceCandidateInit): boolean {
+    const raw = candidate.candidate?.trim();
+    if (!raw) return false;
+    const key = `${raw}|${candidate.sdpMid ?? ''}|${candidate.sdpMLineIndex ?? ''}`;
+    if (session.seenCandidates.has(key)) {
+      recordAddIceCandidateOutcome(session.diagnostics, 'duplicate');
+      return true;
+    }
+    if (session.seenCandidates.size < MAX_CANDIDATE_QUEUE_SIZE * 2) {
+      session.seenCandidates.add(key);
+    }
+    return false;
   }
 
   private enqueueScreenReceiverSignaling(
@@ -1722,6 +1810,10 @@ export class MeshRoomService {
         this.callbacks?.onSendAnswer(peerUserId, session.answerSdp, 'screen');
         return;
       }
+      if (session.diagnostics.offersApplied > 0 && session.lastOfferSdp && session.lastOfferSdp !== sdp) {
+        session.diagnostics.iceRestartCount = (session.diagnostics.iceRestartCount ?? 0) + 1;
+        session.seenCandidates.clear();
+      }
       await session.pc.setRemoteDescription({ type: 'offer', sdp });
       session.diagnostics.offersApplied++;
       session.diagnostics.offerAppliedMs = Math.max(0, Date.now() - session.startedAt);
@@ -1729,10 +1821,14 @@ export class MeshRoomService {
       while (session.pendingCandidates.length > 0) {
         const cand = session.pendingCandidates.shift();
         if (cand) {
-          if (screenCandidateSessionId(cand) && screenCandidateSessionId(cand) !== session.offerSessionId) { session.diagnostics.iceStale++; continue; }
+          if (screenCandidateSessionId(cand) && screenCandidateSessionId(cand) !== session.offerSessionId) {
+            recordAddIceCandidateOutcome(session.diagnostics, 'stale');
+            continue;
+          }
           assertScreenCandidate(cand);
-          try { await session.pc.addIceCandidate(screenCandidateInit(cand)); session.diagnostics.iceApplied++; }
-          catch { session.diagnostics.iceRejected++; console.warn('[ScreenReceiver] queued_ice_rejected'); }
+          if (this.isDuplicateScreenCandidate(session, cand)) continue;
+          const ok = await applyScreenIceCandidate(session.pc, cand, session.diagnostics);
+          if (!ok) console.warn('[ScreenReceiver] queued_ice_rejected');
           if (!alive()) return;
         }
       }
@@ -1747,6 +1843,7 @@ export class MeshRoomService {
       }
       } catch (error) {
         if (!alive()) return;
+        session.diagnostics.negotiationErrors = (session.diagnostics.negotiationErrors ?? 0) + 1;
         this.closeRemoteScreen(peerUserId, 'negotiation_error');
         throw error;
       }
@@ -1759,7 +1856,8 @@ export class MeshRoomService {
   ): Promise<void> {
     if (this.departedPeers.has(peerUserId)) return;
     const id = screenCandidateSessionId(candidate);
-    if ((candidate as RTCIceCandidateInit & { nexusScreenAction?: unknown }).nexusScreenAction === 'retry') {
+    const action = (candidate as RTCIceCandidateInit & { nexusScreenAction?: unknown }).nexusScreenAction;
+    if (action === 'retry' || action === 'ice_restart') {
       if (candidate.candidate || !id || !this.nativeScreenActive || !this.peers.has(peerUserId) ||
         id !== this.nativeScreenOfferIds.get(peerUserId)) return;
       const limit = this.nativeScreenRetryLimits.get(peerUserId);
@@ -1770,11 +1868,23 @@ export class MeshRoomService {
       return;
     }
     const outgoing = this.nativeScreenActive && this.nativeScreenOfferIds.has(peerUserId);
+    const outgoingPending = this.nativeScreenStarting || (this.nativeScreenActive && this.nativeScreenAddingPeers.has(peerUserId));
     const incoming = this.screenReceiverOfferIds.get(peerUserId);
     // Never copy a candidate between dedicated PCs, even when both users share.
     // Legacy candidates are usable only when their destination is unambiguous.
     const toSender = id ? id === this.nativeScreenOfferIds.get(peerUserId) : outgoing && !incoming;
-    const toReceiver = id ? id === incoming : !outgoing;
+    const toReceiver = id ? id === incoming : !outgoing && !outgoingPending;
+    if (!toSender && !toReceiver && outgoingPending) {
+      try { assertScreenCandidate(candidate); } catch {
+        await screenCaptureService.removeNativeScreenPeer(peerUserId).catch(() => {});
+        this.callbacks?.onError?.(SCREEN_P2P_ERROR);
+        throw new Error(SCREEN_P2P_ERROR);
+      }
+      const queue = this.nativeScreenPendingRemoteIce.get(peerUserId) ?? [];
+      if (queue.length < MAX_CANDIDATE_QUEUE_SIZE) queue.push(candidate);
+      this.nativeScreenPendingRemoteIce.set(peerUserId, queue);
+      return;
+    }
     if (!toSender && !toReceiver && (!id || incoming)) {
       console.warn('[ScreenReceiver] stale_or_ambiguous_ice_ignored'); return;
     }
@@ -1784,8 +1894,8 @@ export class MeshRoomService {
       this.callbacks?.onError?.(SCREEN_P2P_ERROR); throw new Error(SCREEN_P2P_ERROR);
     }
     if (toSender) {
-      if (candidate.candidate) await screenCaptureService.handleNativeScreenIce(peerUserId,
-        candidate.candidate, candidate.sdpMid ?? null, candidate.sdpMLineIndex ?? null, this.nativeScreenOfferIds.get(peerUserId))
+      await screenCaptureService.handleNativeScreenIce(peerUserId,
+        candidate.candidate ?? '', candidate.sdpMid ?? null, candidate.sdpMLineIndex ?? null, this.nativeScreenOfferIds.get(peerUserId))
         .catch(() => { console.warn('[ScreenSender] remote_ice_apply_failed'); });
       return;
     }
@@ -1806,24 +1916,31 @@ export class MeshRoomService {
         if (!session.pc.remoteDescription) {
           if (session.pendingCandidates.length < MAX_CANDIDATE_QUEUE_SIZE) {
             session.pendingCandidates.push(candidate);
-            session.diagnostics.iceQueued++;
+            recordAddIceCandidateOutcome(session.diagnostics, 'queued');
           }
           return;
         }
-        try { await session.pc.addIceCandidate(screenCandidateInit(candidate)); session.diagnostics.iceApplied++; }
-        catch { session.diagnostics.iceRejected++; console.warn('[ScreenReceiver] remote_ice_apply_failed'); }
+        if (this.isDuplicateScreenCandidate(session, candidate)) return;
+        const ok = await applyScreenIceCandidate(session.pc, candidate, session.diagnostics);
+        if (!ok) console.warn('[ScreenReceiver] remote_ice_apply_failed');
       });
     }
   }
 
   private cleanupScreenReceiver(session: ScreenReceiverSession, closureCode = 'requested_stop'): void {
+    if (session.iceDisconnectTimer) {
+      clearTimeout(session.iceDisconnectTimer);
+      session.iceDisconnectTimer = null;
+    }
     logScreenReceiverTermination(session.pc, closureCode, session.diagnosticContext,
       { ...session.diagnostics, attemptElapsedMs: Math.max(0, Date.now() - session.startedAt) }, 'closed');
     session.stopDiagnostics();
     session.pendingCandidates = [];
+    session.seenCandidates.clear();
     try {
       session.pc.onicecandidate = null;
       session.pc.ontrack = null;
+      session.pc.oniceconnectionstatechange = null;
       session.pc.onconnectionstatechange = null;
       session.pc.close();
     } catch {

@@ -151,3 +151,50 @@ test('synthetic room signaling is isolated before normal screen and voice handle
     syntheticPeerDiagnostics.offer=saved.so;syntheticPeerDiagnostics.answer=saved.sa;syntheticPeerDiagnostics.ice=saved.si;
   }
 });
+
+test('1:1 CallService queues early remote screen ICE during nativeScreenStarting/addNativeScreenPeer and forwards end-of-candidates', async () => {
+  const service = new CallService();
+  service.init();
+  (service as any).webRtc = {
+    fetchIceServers: async () => [],
+    detachScreenTrack: async () => null,
+    getRemoteScreenSessionId: () => null,
+    hasActiveScreenReceiver: () => false,
+    addScreenReceiverIceCandidate: async () => { throw new Error('must not route early sender ICE to receiver'); },
+  };
+  let resolveAdd!: (value: any) => void;
+  screenCaptureService.addNativeScreenPeer = () => new Promise((done) => { resolveAdd = done; });
+  const savedHandleIce = screenCaptureService.handleNativeScreenIce;
+  const applied: Array<{ peer: string; candidate: string; session?: string }> = [];
+  screenCaptureService.handleNativeScreenIce = async (peer, candidate, _mid, _idx, session) => {
+    applied.push({ peer, candidate, session });
+  };
+  try {
+    const startPromise = service.startNativeScreenShare({ source_id: 'mock', ice_servers: [] });
+    await flush();
+    // Remote ICE arrives while addNativeScreenPeer is awaiting IPC.
+    event('call.webrtc.ice_candidate', {
+      call_id: 'call',
+      sender_id: 'peer',
+      stream_kind: 'screen',
+      candidate: { candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', nexusScreenSessionId: '12345' },
+    });
+    event('call.webrtc.ice_candidate', {
+      call_id: 'call',
+      sender_id: 'peer',
+      stream_kind: 'screen',
+      candidate: { candidate: '', nexusScreenSessionId: '12345' },
+    });
+    await flush();
+    assert.equal(applied.length, 0);
+    resolveAdd(offer);
+    assert.ok(await startPromise);
+    assert.deepEqual(applied, [
+      { peer: 'peer', candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', session: '12345' },
+      { peer: 'peer', candidate: '', session: '12345' },
+    ]);
+  } finally {
+    screenCaptureService.handleNativeScreenIce = savedHandleIce;
+    await service.stopScreenShare();
+  }
+});

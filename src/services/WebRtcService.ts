@@ -10,8 +10,8 @@ import { screenIceServers, assertScreenCandidate, assertScreenSdp, assertVoiceOn
 import { audioDeviceService } from './AudioDeviceService.ts';
 import { processAnalyserFrame, type VoiceActivityDetector } from '../lib/voiceActivity.ts';
 import { screenCaptureService, applyTrackContentHint } from './ScreenCaptureService.ts';
-import { startScreenReceiveDiagnostics } from './ScreenReceiveDiagnostics.ts';
-import { releaseScreenStream, screenSessionId } from './screenReceiverLifecycle.ts';
+import { startScreenReceiveDiagnostics, createScreenReceiveCounters, recordAddIceCandidateOutcome, applyScreenIceCandidate } from './ScreenReceiveDiagnostics.ts';
+import { releaseScreenStream, screenSessionId, tagScreenCandidate } from './screenReceiverLifecycle.ts';
 import type {
   ScreenShareQualityPreset,
   WebRtcTransportDiagnostics,
@@ -578,7 +578,13 @@ export class WebRtcService {
   private stopScreenDiagnostics: (() => void) | null = null;
   private stopScreenP2P: (() => void) | null = null;
   private screenReceiverCandidateQueue: RTCIceCandidateInit[] = [];
+  private screenReceiverSeenCandidates = new Set<string>();
+  private screenReceiverDiagnostics = createScreenReceiveCounters();
+  private lastScreenOfferSdp: string | null = null;
+  private screenIceDisconnectTimer: any = null;
+  private screenIceRestartAttempts = 0;
   private onScreenReceiverIceCallback: ((candidate: RTCIceCandidateInit) => void) | null = null;
+  private onScreenIceRestartCallback: ((sessionId: string) => void) | null = null;
   private isMuted = false;
   private isDeafened = false;
   private outputVolumePercent = 85;
@@ -2170,6 +2176,32 @@ export class WebRtcService {
     this.onScreenReceiverIceCallback = cb;
   }
 
+  public setScreenIceRestartCallback(cb: ((sessionId: string) => void) | null): void {
+    this.onScreenIceRestartCallback = cb;
+  }
+
+  public getRemoteScreenSessionId(): string | null {
+    return this.remoteScreenSessionId;
+  }
+
+  public hasActiveScreenReceiver(): boolean {
+    return Boolean(this.screenReceiverPc) && !this.screenReceiverStopped;
+  }
+
+  private isDuplicateScreenCandidate(candidate: RTCIceCandidateInit): boolean {
+    const raw = candidate.candidate?.trim();
+    if (!raw) return false;
+    const key = `${raw}|${candidate.sdpMid ?? ''}|${candidate.sdpMLineIndex ?? ''}`;
+    if (this.screenReceiverSeenCandidates.has(key)) {
+      recordAddIceCandidateOutcome(this.screenReceiverDiagnostics, 'duplicate');
+      return true;
+    }
+    if (this.screenReceiverSeenCandidates.size < 512) {
+      this.screenReceiverSeenCandidates.add(key);
+    }
+    return false;
+  }
+
   private screenReceiverSignalingChain: Promise<void> = Promise.resolve();
 
   private enqueueScreenReceiverSignaling<T>(op: () => Promise<T>): Promise<T> {
@@ -2208,19 +2240,24 @@ export class WebRtcService {
         this.screenReceiverStream = stream;
         this.stopScreenDiagnostics = startScreenReceiveDiagnostics(pc, stream, () => {
           if (alive()) this.callbacks.onScreenReceiveWarning?.('A transmissão conectou, mas ainda não recebeu vídeo. Tente reiniciar o compartilhamento.');
-        });
+        }, undefined, () => ({ ...this.screenReceiverDiagnostics }));
 
         pc.onicecandidate = (event) => {
-          if (this.isDestroyed || this.screenReceiverPc !== pc || !event.candidate) return;
-          const init =
-            typeof event.candidate.toJSON === 'function'
-              ? event.candidate.toJSON()
-              : {
-                  candidate: event.candidate.candidate,
-                  sdpMid: event.candidate.sdpMid,
-                  sdpMLineIndex: event.candidate.sdpMLineIndex,
-                };
-          this.onScreenReceiverIceCallback?.(init);
+          if (this.isDestroyed || this.screenReceiverPc !== pc) return;
+          if (event.candidate) {
+            const init =
+              typeof event.candidate.toJSON === 'function'
+                ? event.candidate.toJSON()
+                : {
+                    candidate: event.candidate.candidate,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex,
+                  };
+            this.onScreenReceiverIceCallback?.(tagScreenCandidate(init, this.remoteScreenSessionId));
+          } else {
+            this.screenReceiverDiagnostics.endOfCandidatesLocal = true;
+            this.onScreenReceiverIceCallback?.(tagScreenCandidate({ candidate: '' }, this.remoteScreenSessionId));
+          }
         };
 
         let p2pReady = false;
@@ -2251,6 +2288,34 @@ export class WebRtcService {
           }
         };
 
+        pc.oniceconnectionstatechange = () => {
+          if (this.isDestroyed || this.screenReceiverPc !== pc) return;
+          const state = pc.iceConnectionState;
+          if (state === 'disconnected') {
+            if (!this.screenIceDisconnectTimer) {
+              this.screenIceDisconnectTimer = setTimeout(() => {
+                this.screenIceDisconnectTimer = null;
+                if (
+                  !this.isDestroyed &&
+                  this.screenReceiverPc === pc &&
+                  pc.iceConnectionState === 'disconnected' &&
+                  this.remoteScreenSessionId &&
+                  this.screenIceRestartAttempts < 3
+                ) {
+                  this.screenIceRestartAttempts++;
+                  this.screenReceiverDiagnostics.iceRestartCount = (this.screenReceiverDiagnostics.iceRestartCount ?? 0) + 1;
+                  this.onScreenIceRestartCallback?.(this.remoteScreenSessionId);
+                }
+              }, this.iceDisconnectTimeoutMs);
+            }
+          } else if (state === 'connected' || state === 'completed' || state === 'failed' || state === 'closed') {
+            if (this.screenIceDisconnectTimer) {
+              clearTimeout(this.screenIceDisconnectTimer);
+              this.screenIceDisconnectTimer = null;
+            }
+          }
+        };
+
         pc.onconnectionstatechange = () => {
           if (this.isDestroyed || this.screenReceiverPc !== pc) return;
           if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
@@ -2261,13 +2326,21 @@ export class WebRtcService {
 
       const pc = this.screenReceiverPc;
       try {
+      if (this.screenReceiverDiagnostics.offersApplied > 0 && this.lastScreenOfferSdp && this.lastScreenOfferSdp !== sdp) {
+        this.screenReceiverDiagnostics.iceRestartCount = (this.screenReceiverDiagnostics.iceRestartCount ?? 0) + 1;
+        this.screenReceiverSeenCandidates.clear();
+      }
       await pc.setRemoteDescription({ type: 'offer', sdp });
+      this.screenReceiverDiagnostics.offersApplied++;
+      this.lastScreenOfferSdp = sdp;
       if (!alive()) return null;
       while (this.screenReceiverCandidateQueue.length > 0) {
         const cand = this.screenReceiverCandidateQueue.shift();
         if (cand) {
           assertScreenCandidate(cand);
-          await pc.addIceCandidate(cand).catch(() => {});
+          if (!this.isDuplicateScreenCandidate(cand)) {
+            await applyScreenIceCandidate(pc, cand, this.screenReceiverDiagnostics);
+          }
           if (!alive()) return null;
         }
       }
@@ -2275,9 +2348,13 @@ export class WebRtcService {
       if (!alive()) return null;
       await pc.setLocalDescription(answer);
       if (!alive()) return null;
+      if (pc.localDescription?.sdp) {
+        this.screenReceiverDiagnostics.answersSent++;
+      }
       return pc.localDescription?.sdp ?? null;
       } catch (error) {
         if (!alive()) return null;
+        this.screenReceiverDiagnostics.negotiationErrors = (this.screenReceiverDiagnostics.negotiationErrors ?? 0) + 1;
         this.closeScreenReceiver();
         throw error;
       }
@@ -2294,18 +2371,28 @@ export class WebRtcService {
       if (!this.screenReceiverPc || !this.screenReceiverPc.remoteDescription) {
         if (this.screenReceiverCandidateQueue.length < 256) {
           this.screenReceiverCandidateQueue.push(candidate);
+          recordAddIceCandidateOutcome(this.screenReceiverDiagnostics, 'queued');
         }
         return;
       }
-      await this.screenReceiverPc.addIceCandidate(candidate).catch(() => {});
+      if (this.isDuplicateScreenCandidate(candidate)) return;
+      await applyScreenIceCandidate(this.screenReceiverPc, candidate, this.screenReceiverDiagnostics);
     });
   }
 
   public closeScreenReceiver(expectedSessionId?: string): void {
     if (expectedSessionId && expectedSessionId !== this.remoteScreenSessionId) return;
+    if (this.screenIceDisconnectTimer) {
+      clearTimeout(this.screenIceDisconnectTimer);
+      this.screenIceDisconnectTimer = null;
+    }
     this.screenReceiverGeneration++;
     this.screenReceiverStopped = true;
     this.remoteScreenSessionId = null;
+    this.lastScreenOfferSdp = null;
+    this.screenIceRestartAttempts = 0;
+    this.screenReceiverSeenCandidates.clear();
+    this.screenReceiverDiagnostics = createScreenReceiveCounters();
     this.stopScreenP2P?.(); this.stopScreenP2P = null;
     this.stopScreenDiagnostics?.();
     this.stopScreenDiagnostics = null;
@@ -2314,6 +2401,7 @@ export class WebRtcService {
       try {
         this.screenReceiverPc.onicecandidate = null;
         this.screenReceiverPc.ontrack = null;
+        this.screenReceiverPc.oniceconnectionstatechange = null;
         this.screenReceiverPc.onconnectionstatechange = null;
         this.screenReceiverPc.close();
       } catch {}

@@ -704,6 +704,24 @@ test('Phase 6 (MeshRoomService): leaveRoom cancela startRoomSession em trânsito
                     export const startScreenReceiveDiagnostics = () => () => {};
                     export const screenReceiverContext = () => ({});
                     export const logScreenReceiverTermination = () => {};
+                    export const createScreenReceiveCounters = () => ({
+                      offersApplied: 0,
+                      answersSent: 0,
+                      iceQueued: 0,
+                      iceApplied: 0,
+                      iceRejected: 0,
+                      iceStale: 0,
+                      iceDuplicate: 0,
+                      endOfCandidatesLocal: false,
+                      endOfCandidatesRemote: false,
+                      iceRestartCount: 0,
+                      negotiationErrors: 0,
+                    });
+                    export const recordAddIceCandidateOutcome = () => {};
+                    export const applyScreenIceCandidate = async (pc, candidate) => {
+                      await pc.addIceCandidate(candidate);
+                      return true;
+                    };
                   `,
                   loader: 'js',
                 };

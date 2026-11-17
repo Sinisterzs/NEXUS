@@ -31,7 +31,7 @@ class FakeStream {
 class FakePc extends EventTarget {
   connectionState = 'connected'; iceConnectionState = 'connected'; signalingState = 'stable';
   remoteDescription: any = null; localDescription: any = null;
-  onicecandidate: any = null; ontrack: any = null; onconnectionstatechange: any = null;
+  onicecandidate: any = null; ontrack: any = null; onconnectionstatechange: any = null; oniceconnectionstatechange: any = null;
   closes = 0; answers = 0; candidates: any[] = [];
   configuration: any; pairLocal: string | undefined = 'host'; pairRemote: string | undefined = 'srflx';
   constructor(configuration?: any) { super(); this.configuration = configuration; peers.push(this); }
@@ -42,6 +42,7 @@ class FakePc extends EventTarget {
   async getStats() { return new Map([['pair', {id:'pair',type:'candidate-pair',selected:true,localCandidateId:'local',remoteCandidateId:'remote'}],['local',{id:'local',type:'local-candidate',candidateType:this.pairLocal}],['remote',{id:'remote',type:'remote-candidate',candidateType:this.pairRemote}]]); }
   close() { this.closes++; this.connectionState = 'closed'; }
   state(value: string) { this.connectionState = value; this.dispatchEvent(new Event('connectionstatechange')); this.onconnectionstatechange?.(); }
+  iceState(value: string) { this.iceConnectionState = value; this.dispatchEvent(new Event('iceconnectionstatechange')); this.oniceconnectionstatechange?.(); }
 }
 
 beforeEach(() => {
@@ -526,4 +527,101 @@ test('four participants keep two senders with the same public address and offer 
     assert.equal(houseB.candidates.length, 1); assert.equal(fourth.candidates.length, 1);
     assert.equal(houseB.closes, 0); assert.equal(fourth.closes, 0);
   } finally { for (const peer of ids) service.closeRemoteScreen(peer); await flush(); }
+});
+
+test('Mesh queues remote sender ICE while addNativeScreenPeer is awaiting IPC and flushes end-of-candidates', async () => {
+  const { service } = mesh();
+  const inner = service as any;
+  inner.peers.set('remote', { videoSender: null });
+  let resolvePeer!: (value: any) => void;
+  nativeStubs(() => new Promise((done) => { resolvePeer = done; }));
+  const savedHandleIce = screenCaptureService.handleNativeScreenIce;
+  const applied: Array<{ peer: string; candidate: string; session?: string }> = [];
+  screenCaptureService.handleNativeScreenIce = async (peer, candidate, _mid, _idx, session) => {
+    applied.push({ peer, candidate, session });
+  };
+  try {
+    const startPromise = service.startNativeScreenShare({ source_id: 'mock', ice_servers: [] });
+    await flush();
+    // Remote ICE arrives while addNativeScreenPeer IPC is still pending (before nativeScreenOfferIds is set).
+    await service.handleRemoteIceCandidate('remote', { candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', nexusScreenSessionId: '3001' } as any, 'screen');
+    await service.handleRemoteIceCandidate('remote', { candidate: '', nexusScreenSessionId: '3001' } as any, 'screen');
+    assert.equal(inner.earlyScreenCandidates.size, 0, 'sender ICE must not be misrouted to receiver queue');
+    assert.equal(applied.length, 0);
+    resolvePeer({ peer_id: 'remote', sdp: sdp(3001) });
+    assert.ok(await startPromise);
+    assert.deepEqual(applied, [
+      { peer: 'remote', candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', session: '3001' },
+      { peer: 'remote', candidate: '', session: '3001' },
+    ]);
+  } finally {
+    screenCaptureService.handleNativeScreenIce = savedHandleIce;
+    await service.stopScreenShare();
+  }
+});
+
+test('Mesh receiver emits end-of-candidates, deduplicates candidates, and handles in-place ICE restart without orphan PCs', async () => {
+  const { service } = mesh();
+  const sentIce: any[] = [];
+  (service as any).callbacks.onSendIceCandidate = (_peer: string, cand: any) => { sentIce.push(cand); };
+  try {
+    await service.handleRemoteOffer('remote', sdp(4001), 'screen');
+    const pc = peers[0];
+    pc.onicecandidate({ candidate: null });
+    assert.deepEqual(sentIce.at(-1), { candidate: '', nexusScreenSessionId: '4001' });
+
+    const cand = { candidate: 'candidate:dup 1 udp 1 192.0.2.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0, nexusScreenSessionId: '4001' } as any;
+    await service.handleRemoteIceCandidate('remote', cand, 'screen');
+    await service.handleRemoteIceCandidate('remote', cand, 'screen');
+    await service.handleRemoteIceCandidate('remote', { candidate: '', nexusScreenSessionId: '4001' } as any, 'screen');
+    assert.equal(pc.candidates.length, 2, 'duplicate candidate must be skipped, end-of-candidates applied');
+    assert.equal(pc.candidates[1], null);
+
+    const session = (service as any).screenReceiverPeers.get('remote');
+    assert.equal(session.diagnostics.iceDuplicate, 1);
+    assert.equal(session.diagnostics.endOfCandidatesLocal, true);
+    assert.equal(session.diagnostics.endOfCandidatesRemote, true);
+
+    // In-place ICE restart re-offer on the same session ID must reuse the existing PC and increment iceRestartCount.
+    const restartSdp = sdp(4001) + 'a=ice-ufrag:restarted\r\n';
+    await service.handleRemoteOffer('remote', restartSdp, 'screen');
+    assert.equal(peers.length, 1, 'in-place ICE restart must not duplicate PeerConnection');
+    assert.equal(session.diagnostics.iceRestartCount, 1);
+  } finally {
+    service.closeRemoteScreen('remote');
+    await flush();
+  }
+});
+
+test('Mesh disconnect/reconnect recovery, presenter switch, and rapid join/leave leave zero orphan PCs', async () => {
+  const { service } = mesh();
+  const sentIce: any[] = [];
+  (service as any).callbacks.onSendIceCandidate = (_peer: string, cand: any) => { sentIce.push(cand); };
+  (service as any).iceDisconnectTimeoutMs = 10;
+  try {
+    await service.handleRemoteOffer('presenter-a', sdp(5001), 'screen');
+    const pcA = peers[0];
+    pcA.iceState('disconnected');
+    pcA.iceState('connected');
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(sentIce.filter((c) => c.nexusScreenAction === 'retry').length, 0, 'transient disconnect recovered before timer');
+
+    pcA.iceState('disconnected');
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(sentIce.filter((c) => c.nexusScreenAction === 'retry').length, 1, 'sustained disconnect triggers ICE restart retry');
+
+    // Presenter switch: A closes, B starts cleanly without orphan connections.
+    service.closeRemoteScreen('presenter-a');
+    assert.equal(pcA.closes, 1);
+    await service.handleRemoteOffer('presenter-b', sdp(5002), 'screen');
+    const pcB = peers[1];
+    assert.equal((service as any).screenReceiverPeers.size, 1);
+    service.removeParticipant('presenter-b');
+    assert.equal(pcB.closes, 1);
+    assert.equal((service as any).screenReceiverPeers.size, 0);
+  } finally {
+    service.closeRemoteScreen('presenter-a');
+    service.closeRemoteScreen('presenter-b');
+    await flush();
+  }
 });

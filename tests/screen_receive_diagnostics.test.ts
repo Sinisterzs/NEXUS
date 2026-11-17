@@ -203,3 +203,42 @@ test('candidate protocol and family counts reveal incompatible inventories witho
   assert.equal(result.iceGatheringState, 'complete');
   for (const address of ['192.0.2.1', 'PRIVATE', '2001:db8::1']) assert.equal(JSON.stringify(result).includes(address), false);
 });
+
+test('screen receive counters record addIceCandidate outcomes, end-of-candidates, and ICE restarts without raw data', async () => {
+  const { createScreenReceiveCounters, recordAddIceCandidateOutcome, applyScreenIceCandidate } =
+    await import('../src/services/ScreenReceiveDiagnostics.ts');
+  const counters = createScreenReceiveCounters();
+  recordAddIceCandidateOutcome(counters, 'queued');
+  recordAddIceCandidateOutcome(counters, 'stale');
+  recordAddIceCandidateOutcome(counters, 'duplicate');
+  counters.endOfCandidatesLocal = true;
+  counters.iceRestartCount = 2;
+  counters.negotiationErrors = 1;
+
+  const applied: any[] = [];
+  const pc = {
+    addIceCandidate: async (c: any) => {
+      if (c?.candidate === 'reject-me') throw new Error('SDP_SECRET_192.0.2.99');
+      applied.push(c);
+    },
+  } as unknown as RTCPeerConnection;
+
+  assert.equal(await applyScreenIceCandidate(pc, { candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0 }, counters), true);
+  assert.equal(await applyScreenIceCandidate(pc, { candidate: '' }, counters), true);
+  assert.equal(await applyScreenIceCandidate(pc, { candidate: '', sdpMid: '0', sdpMLineIndex: 0 }, counters), true);
+  assert.equal(await applyScreenIceCandidate(pc, { candidate: 'reject-me', sdpMid: '0', sdpMLineIndex: 0 }, counters), false);
+
+  assert.equal(applied[1], null);
+  assert.deepEqual(applied[2], { candidate: '', sdpMid: '0', sdpMLineIndex: 0, usernameFragment: undefined });
+  assert.equal(counters.iceQueued, 1);
+  assert.equal(counters.iceStale, 1);
+  assert.equal(counters.iceDuplicate, 1);
+  assert.equal(counters.iceApplied, 3);
+  assert.equal(counters.iceRejected, 1);
+  assert.equal(counters.endOfCandidatesLocal, true);
+  assert.equal(counters.endOfCandidatesRemote, true);
+  assert.equal(counters.iceRestartCount, 2);
+  assert.equal(counters.negotiationErrors, 1);
+  assert.equal(JSON.stringify(counters).includes('192.0.2.'), false);
+  assert.equal(JSON.stringify(counters).includes('SDP_SECRET'), false);
+});

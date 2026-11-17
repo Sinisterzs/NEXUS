@@ -1,4 +1,93 @@
 import { summarizeScreenNegotiation } from './ScreenTransportDiagnostics.ts';
+import { screenCandidateInit } from './screenReceiverLifecycle.ts';
+
+export interface ScreenReceiveCounters {
+  offersApplied: number;
+  answersSent: number;
+  iceQueued: number;
+  iceApplied: number;
+  iceRejected: number;
+  iceStale: number;
+  iceDuplicate: number;
+  endOfCandidatesLocal: boolean;
+  endOfCandidatesRemote: boolean;
+  iceRestartCount: number;
+  negotiationErrors: number;
+  [key: string]: number | boolean;
+}
+
+export type AddIceCandidateOutcome =
+  | 'queued'
+  | 'applied'
+  | 'rejected'
+  | 'stale'
+  | 'duplicate'
+  | 'end_of_candidates_remote';
+
+export function createScreenReceiveCounters(): ScreenReceiveCounters {
+  return {
+    offersApplied: 0,
+    answersSent: 0,
+    iceQueued: 0,
+    iceApplied: 0,
+    iceRejected: 0,
+    iceStale: 0,
+    iceDuplicate: 0,
+    endOfCandidatesLocal: false,
+    endOfCandidatesRemote: false,
+    iceRestartCount: 0,
+    negotiationErrors: 0,
+  };
+}
+
+export function recordAddIceCandidateOutcome(
+  counters: Record<string, number | boolean>,
+  outcome: AddIceCandidateOutcome
+): void {
+  switch (outcome) {
+    case 'queued':
+      counters.iceQueued = (typeof counters.iceQueued === 'number' ? counters.iceQueued : 0) + 1;
+      break;
+    case 'applied':
+      counters.iceApplied = (typeof counters.iceApplied === 'number' ? counters.iceApplied : 0) + 1;
+      break;
+    case 'rejected':
+      counters.iceRejected = (typeof counters.iceRejected === 'number' ? counters.iceRejected : 0) + 1;
+      break;
+    case 'stale':
+      counters.iceStale = (typeof counters.iceStale === 'number' ? counters.iceStale : 0) + 1;
+      break;
+    case 'duplicate':
+      counters.iceDuplicate = (typeof counters.iceDuplicate === 'number' ? counters.iceDuplicate : 0) + 1;
+      break;
+    case 'end_of_candidates_remote':
+      counters.endOfCandidatesRemote = true;
+      break;
+  }
+}
+
+export async function applyScreenIceCandidate(
+  pc: RTCPeerConnection,
+  candidate: RTCIceCandidateInit,
+  counters?: Record<string, number | boolean>
+): Promise<boolean> {
+  const isEndOfCandidates = !candidate.candidate?.trim();
+  if (isEndOfCandidates && counters) {
+    recordAddIceCandidateOutcome(counters, 'end_of_candidates_remote');
+  }
+  try {
+    if (isEndOfCandidates && candidate.sdpMid == null && candidate.sdpMLineIndex == null) {
+      await pc.addIceCandidate(null as unknown as RTCIceCandidateInit);
+    } else {
+      await pc.addIceCandidate(screenCandidateInit(candidate));
+    }
+    if (counters) recordAddIceCandidateOutcome(counters, 'applied');
+    return true;
+  } catch {
+    if (counters) recordAddIceCandidateOutcome(counters, 'rejected');
+    return false;
+  }
+}
 // Observe only the dedicated screen PC. Never serialize a stats report or candidate.
 let receiverSequence = 0;
 const diagnosticRun = globalThis.crypto?.randomUUID?.().replaceAll('-', '') ?? '';
@@ -111,7 +200,7 @@ export function summarizeScreenReceiver(
 
 export function startScreenReceiveDiagnostics(
   pc: RTCPeerConnection, stream: MediaStream, onNoFrames?: () => void,
-  context?: Promise<Record<string, string | number>>, counters?: () => Record<string, number>
+  context?: Promise<Record<string, string | number>>, counters?: () => Record<string, number | boolean>
 ): () => void {
   const receiverId = ++receiverSequence;
   const safeContext = context?.catch(() => ({ diagnosticRun }));
@@ -181,7 +270,7 @@ export function startScreenReceiveDiagnostics(
 export function logScreenReceiverTermination(
   pc: RTCPeerConnection | undefined, code: string,
   context: Promise<Record<string, string | number>>,
-  counters: Record<string, number> = {}, terminationKind: 'failed' | 'closed' = 'failed'
+  counters: Record<string, number | boolean> = {}, terminationKind: 'failed' | 'closed' = 'failed'
 ): void {
   const previous = pc ? lastReceiverStats.get(pc) : undefined;
   const snapshot = { ...previous?.snapshot, ...counters, terminationKind,

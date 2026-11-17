@@ -12,6 +12,7 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::offer_answer_options::RTCOfferOptions;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -38,12 +39,141 @@ use super::{
 };
 use crate::commands::IceServerConfig;
 
+#[derive(Default)]
+struct CandidateCounters {
+    host: AtomicU64,
+    srflx: AtomicU64,
+    relay: AtomicU64,
+    udp: AtomicU64,
+    tcp: AtomicU64,
+    ipv4: AtomicU64,
+    ipv6: AtomicU64,
+    mdns: AtomicU64,
+    unknown: AtomicU64,
+}
+
+impl CandidateCounters {
+    fn record_candidate_str(&self, candidate: &str) {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let normalized = trimmed.strip_prefix("a=").unwrap_or(trimmed);
+        let tokens: Vec<&str> = normalized.split_whitespace().collect();
+        let proto = tokens.get(2).map(|s| s.to_ascii_lowercase());
+        match proto.as_deref() {
+            Some("udp") => { self.udp.fetch_add(1, Ordering::Relaxed); }
+            Some("tcp") => { self.tcp.fetch_add(1, Ordering::Relaxed); }
+            _ => {}
+        }
+        if let Some(addr) = tokens.get(4) {
+            if addr.ends_with(".local") {
+                self.mdns.fetch_add(1, Ordering::Relaxed);
+            } else if addr.contains(':') {
+                self.ipv6.fetch_add(1, Ordering::Relaxed);
+            } else if addr.parse::<std::net::Ipv4Addr>().is_ok() {
+                self.ipv4.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.unknown.fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            self.unknown.fetch_add(1, Ordering::Relaxed);
+        }
+        let cand_type = tokens
+            .iter()
+            .skip_while(|t| !t.eq_ignore_ascii_case("typ"))
+            .nth(1)
+            .map(|s| s.to_ascii_lowercase());
+        match cand_type.as_deref() {
+            Some("host") => { self.host.fetch_add(1, Ordering::Relaxed); }
+            Some("srflx") => { self.srflx.fetch_add(1, Ordering::Relaxed); }
+            Some("relay") => { self.relay.fetch_add(1, Ordering::Relaxed); }
+            _ => {}
+        }
+    }
+
+    fn record_rtc_candidate(&self, cand: &RTCIceCandidate) {
+        match cand.typ.to_string().as_str() {
+            "host" => { self.host.fetch_add(1, Ordering::Relaxed); }
+            "srflx" => { self.srflx.fetch_add(1, Ordering::Relaxed); }
+            "relay" => { self.relay.fetch_add(1, Ordering::Relaxed); }
+            _ => {}
+        }
+        let proto = cand.protocol.to_string().to_ascii_lowercase();
+        if proto == "udp" {
+            self.udp.fetch_add(1, Ordering::Relaxed);
+        } else if proto == "tcp" {
+            self.tcp.fetch_add(1, Ordering::Relaxed);
+        }
+        if cand.address.ends_with(".local") {
+            self.mdns.fetch_add(1, Ordering::Relaxed);
+        } else if cand.address.contains(':') {
+            self.ipv6.fetch_add(1, Ordering::Relaxed);
+        } else if cand.address.parse::<std::net::Ipv4Addr>().is_ok() {
+            self.ipv4.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.unknown.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn insert_into(&self, map: &mut serde_json::Map<String, serde_json::Value>, prefix: &str) {
+        for (suffix, counter) in [
+            ("host", &self.host),
+            ("srflx", &self.srflx),
+            ("relay", &self.relay),
+            ("udp", &self.udp),
+            ("tcp", &self.tcp),
+            ("ipv4", &self.ipv4),
+            ("ipv6", &self.ipv6),
+            ("mdns", &self.mdns),
+            ("unknown", &self.unknown),
+        ] {
+            map.insert(
+                format!("{prefix}_{suffix}"),
+                serde_json::json!(counter.load(Ordering::Relaxed)),
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct PeerDiagnostics {
+    local: CandidateCounters,
+    remote: CandidateCounters,
+    offers_applied: AtomicU64,
+    answers_sent: AtomicU64,
+    ice_queued: AtomicU64,
+    ice_applied: AtomicU64,
+    ice_rejected: AtomicU64,
+    ice_stale: AtomicU64,
+    ice_restart_count: AtomicU64,
+    end_of_candidates_local: AtomicBool,
+    end_of_candidates_remote: AtomicBool,
+}
+
+fn extract_sdp_session_id(sdp: &str) -> Option<String> {
+    sdp.lines().find_map(|line| {
+        let mut fields = line.strip_prefix("o=")?.split_whitespace();
+        fields.next()?;
+        let id = fields.next()?;
+        (id.len() <= 64 && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| id.to_string())
+    })
+}
+
+fn setup_compatible(local_setup: Option<&str>, remote_setup: Option<&str>) -> Option<bool> {
+    let (l, r) = (local_setup?, remote_setup?);
+    Some(l == "actpass" || r == "actpass" || l != r)
+}
+
 struct PeerEntry {
     screen_session_id: Option<String>,
+    ice_session_id: Arc<Mutex<Option<String>>>,
     pc: Arc<RTCPeerConnection>,
     remote_desc_set: bool,
     pending_remote_ice: Vec<RTCIceCandidateInit>,
     diagnostics: tokio::task::JoinHandle<()>,
+    diag: Arc<PeerDiagnostics>,
     gate: Arc<super::p2p::Gate>,
     quality: Arc<Mutex<super::quality::NetworkEvidence>>,
 }
@@ -59,7 +189,10 @@ async fn screen_peer_for_session(
 ) -> Result<Option<Arc<RTCPeerConnection>>, String> {
     let peers = peers.lock().await;
     let entry = peers.get(peer_id).ok_or_else(|| "Unknown screen peer".to_string())?;
-    if expected.is_some() && &entry.screen_session_id != expected { return Ok(None); }
+    if expected.is_some() && &entry.screen_session_id != expected {
+        entry.diag.ice_stale.fetch_add(1, Ordering::Relaxed);
+        return Ok(None);
+    }
     Ok(Some(entry.pc.clone()))
 }
 
@@ -70,6 +203,7 @@ async fn commit_screen_answer(
     let entry = peers.get_mut(peer_id).filter(|entry| Arc::ptr_eq(&entry.pc, pc))
         .ok_or_else(|| "Screen peer closed or replaced while applying answer".to_string())?;
     entry.remote_desc_set = true;
+    entry.diag.answers_sent.fetch_add(1, Ordering::Relaxed);
     Ok(entry.pending_remote_ice.drain(..).collect())
 }
 
@@ -90,7 +224,7 @@ fn negotiation_flags(sdp: &str) -> serde_json::Value {
 }
 
 // This task never touches the capture thread. Dropping a peer cancels it.
-fn monitor_screen_peer(pc: &Arc<RTCPeerConnection>, app: AppHandle, peer_id: String, offer_id: Option<String>, gate: Arc<super::p2p::Gate>, quality: Arc<Mutex<super::quality::NetworkEvidence>>, experiment: Arc<AtomicU32>) -> tokio::task::JoinHandle<()> {
+fn monitor_screen_peer(pc: &Arc<RTCPeerConnection>, app: AppHandle, peer_id: String, offer_id: Option<String>, gate: Arc<super::p2p::Gate>, diag: Arc<PeerDiagnostics>, quality: Arc<Mutex<super::quality::NetworkEvidence>>, experiment: Arc<AtomicU32>) -> tokio::task::JoinHandle<()> {
     use sha2::{Digest, Sha256};
     let peer_token = format!("{:x}", Sha256::digest(format!("nexus-screen:user:{peer_id}").as_bytes()));
     let offer_token = format!("{:x}", Sha256::digest(format!("nexus-screen:offer:{}", offer_id.unwrap_or_default()).as_bytes()));
@@ -132,10 +266,23 @@ fn monitor_screen_peer(pc: &Arc<RTCPeerConnection>, app: AppHandle, peer_id: Str
                     }
                 }
                 let report = pc.get_stats().await;
-                let mut pairs = 0u64; let mut nominated = 0u64;
+                let mut pairs = 0u64;
+                let mut pairs_waiting = 0u64;
+                let mut pairs_in_progress = 0u64;
+                let mut pairs_succeeded = 0u64;
+                let mut pairs_failed = 0u64;
+                let mut nominated = 0u64;
                 for stat in report.reports.values() {
                     if let webrtc::stats::StatsReportType::CandidatePair(p) = stat {
-                        pairs += 1; nominated += u64::from(p.nominated);
+                        pairs += 1;
+                        nominated += u64::from(p.nominated);
+                        match p.state.to_string().to_ascii_lowercase().as_str() {
+                            "waiting" => pairs_waiting += 1,
+                            "in-progress" | "inprogress" => pairs_in_progress += 1,
+                            "succeeded" => pairs_succeeded += 1,
+                            "failed" => pairs_failed += 1,
+                            _ => {}
+                        }
                     }
                 }
                 let ice_ready = matches!(pc.ice_connection_state(), webrtc::ice_transport::ice_connection_state::RTCIceConnectionState::Connected | webrtc::ice_transport::ice_connection_state::RTCIceConnectionState::Completed);
@@ -144,12 +291,14 @@ fn monitor_screen_peer(pc: &Arc<RTCPeerConnection>, app: AppHandle, peer_id: Str
                 if dtls_state == "connecting" { dtls_connecting_since.get_or_insert_with(Instant::now); } else { dtls_connecting_since = None; }
                 let local_flags = negotiation_flags(&pc.local_description().await.map(|d| d.sdp).unwrap_or_default());
                 let remote_flags = negotiation_flags(&pc.remote_description().await.map(|d| d.sdp).unwrap_or_default());
+                let ice_connected_ms = ice_connected_since.map(|t| t.elapsed().as_millis() as u64);
+                let dtls_connecting_ms = dtls_connecting_since.map(|t| t.elapsed().as_millis() as u64);
                 crate::capture::log_capture_diag(Some(&app), &format!("screen_transport {}", serde_json::json!({
                     "localNegotiation": local_flags, "remoteNegotiation": remote_flags,
                     "peerToken": peer_token, "offerToken": offer_token,
                     "iceState": pc.ice_connection_state().to_string(), "dtlsState": dtls_state,
-                    "iceConnectedObservedMs": ice_connected_since.map(|t| t.elapsed().as_millis() as u64),
-                    "dtlsConnectingObservedMs": dtls_connecting_since.map(|t| t.elapsed().as_millis() as u64),
+                    "iceConnectedObservedMs": ice_connected_ms,
+                    "dtlsConnectingObservedMs": dtls_connecting_ms,
                     "icePairs": pairs, "iceNominatedPairs": nominated,
                     // webrtc-ice 0.17.3 fills only IDs/state/nominated; request counters are default zeros.
                     // Do not misrepresent unavailable measurements as no connectivity checks.
@@ -199,14 +348,49 @@ fn monitor_screen_peer(pc: &Arc<RTCPeerConnection>, app: AppHandle, peer_id: Str
                     peer_id, pc.connection_state(), pc.ice_connection_state(), pc.signaling_state(), dtls.state(),
                     pair.as_ref().map(|p| p.local.typ.to_string()).unwrap_or_else(|| "none".into()),
                     pair.as_ref().map(|p| p.remote.typ.to_string()).unwrap_or_else(|| "none".into()), packets, bytes));
-                crate::diagnostics::observe(&app,crate::diagnostics::wire::Kind::P2p,"sender",serde_json::json!({
-                    "peerToken":peer_token,"offerToken":offer_token,
-                    "connectionState":pc.connection_state().to_string(),"iceConnectionState":pc.ice_connection_state().to_string(),
-                    "dtlsState":dtls.state().to_string(),"signalingState":pc.signaling_state().to_string(),
-                    "icePairs":pairs,"iceNominatedPairs":nominated,"iceCheckCountersAvailable":false,
-                    "localCandidateType":pair.as_ref().map(|p|p.local.typ.to_string()),
-                    "remoteCandidateType":pair.as_ref().map(|p|p.remote.typ.to_string()),"traffic":gate.traffic_snapshot()
-                }));
+                let local_setup = local_flags["setup"].as_str();
+                let remote_setup = remote_flags["setup"].as_str();
+                let mut obs = serde_json::Map::new();
+                obs.insert("peerToken".into(), serde_json::json!(peer_token));
+                obs.insert("offerToken".into(), serde_json::json!(offer_token));
+                obs.insert("connectionState".into(), serde_json::json!(pc.connection_state().to_string()));
+                obs.insert("iceConnectionState".into(), serde_json::json!(pc.ice_connection_state().to_string()));
+                obs.insert("iceGatheringState".into(), serde_json::json!(pc.ice_gathering_state().to_string().to_ascii_lowercase()));
+                obs.insert("dtlsState".into(), serde_json::json!(dtls.state().to_string()));
+                obs.insert("signalingState".into(), serde_json::json!(pc.signaling_state().to_string()));
+                obs.insert("icePairs".into(), serde_json::json!(pairs));
+                obs.insert("icePairsWaiting".into(), serde_json::json!(pairs_waiting));
+                obs.insert("icePairsInProgress".into(), serde_json::json!(pairs_in_progress));
+                obs.insert("icePairsSucceeded".into(), serde_json::json!(pairs_succeeded));
+                obs.insert("icePairsFailed".into(), serde_json::json!(pairs_failed));
+                obs.insert("iceNominatedPairs".into(), serde_json::json!(nominated));
+                obs.insert("iceCheckCountersAvailable".into(), serde_json::json!(false));
+                obs.insert("localCandidateType".into(), serde_json::json!(pair.as_ref().map(|p| p.local.typ.to_string())));
+                obs.insert("remoteCandidateType".into(), serde_json::json!(pair.as_ref().map(|p| p.remote.typ.to_string())));
+                diag.local.insert_into(&mut obs, "local");
+                diag.remote.insert_into(&mut obs, "remote");
+                obs.insert("iceQueued".into(), serde_json::json!(diag.ice_queued.load(Ordering::Relaxed)));
+                obs.insert("iceApplied".into(), serde_json::json!(diag.ice_applied.load(Ordering::Relaxed)));
+                obs.insert("iceRejected".into(), serde_json::json!(diag.ice_rejected.load(Ordering::Relaxed)));
+                obs.insert("iceStale".into(), serde_json::json!(diag.ice_stale.load(Ordering::Relaxed)));
+                obs.insert("offersApplied".into(), serde_json::json!(diag.offers_applied.load(Ordering::Relaxed)));
+                obs.insert("answersSent".into(), serde_json::json!(diag.answers_sent.load(Ordering::Relaxed)));
+                obs.insert("localSdpPresent".into(), local_flags["sdpPresent"].clone());
+                obs.insert("remoteSdpPresent".into(), remote_flags["sdpPresent"].clone());
+                obs.insert("localIceCredentialsPresent".into(), local_flags["iceCredentialsPresent"].clone());
+                obs.insert("remoteIceCredentialsPresent".into(), remote_flags["iceCredentialsPresent"].clone());
+                obs.insert("localFingerprintPresent".into(), local_flags["fingerprintPresent"].clone());
+                obs.insert("remoteFingerprintPresent".into(), remote_flags["fingerprintPresent"].clone());
+                obs.insert("localSetup".into(), local_flags["setup"].clone());
+                obs.insert("remoteSetup".into(), remote_flags["setup"].clone());
+                obs.insert("setupCompatible".into(), serde_json::json!(setup_compatible(local_setup, remote_setup)));
+                obs.insert("iceConnectedObservedMs".into(), serde_json::json!(ice_connected_ms));
+                obs.insert("dtlsConnectingObservedMs".into(), serde_json::json!(dtls_connecting_ms));
+                obs.insert("endOfCandidatesLocal".into(), serde_json::json!(diag.end_of_candidates_local.load(Ordering::Relaxed)));
+                obs.insert("endOfCandidatesRemote".into(), serde_json::json!(diag.end_of_candidates_remote.load(Ordering::Relaxed)));
+                obs.insert("iceRestartCount".into(), serde_json::json!(diag.ice_restart_count.load(Ordering::Relaxed)));
+                obs.insert("traffic".into(), gate.traffic_snapshot());
+                crate::diagnostics::observe(&app, crate::diagnostics::wire::Kind::P2p, "sender", serde_json::Value::Object(obs));
             };
             if tokio::time::timeout(Duration::from_secs(1), sample).await.is_err() {
                 crate::capture::log_capture_diag(Some(&app), "screen_sender stats_timeout");
@@ -233,10 +417,21 @@ struct SessionShared {
     pli_count: Arc<AtomicU64>,
     peers: tokio::sync::Mutex<HashMap<String, PeerEntry>>,
     peer_operations: tokio::sync::Mutex<HashMap<String, u64>>,
+    peer_signaling: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     peer_count_atomic: Arc<AtomicU64>,
     default_ice_servers: Mutex<Vec<RTCIceServer>>,
     capture_thread_alive: Arc<AtomicBool>,
     capture_join: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl SessionShared {
+    async fn signaling_lock_for(&self, peer_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.peer_signaling.lock().await;
+        Arc::clone(
+            map.entry(peer_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
 }
 
 pub struct NativeScreenManager {
@@ -389,6 +584,7 @@ impl NativeScreenManager {
             pli_count: Arc::new(AtomicU64::new(0)),
             peers: tokio::sync::Mutex::new(HashMap::new()),
             peer_operations: tokio::sync::Mutex::new(HashMap::new()),
+            peer_signaling: tokio::sync::Mutex::new(HashMap::new()),
             peer_count_atomic: Arc::new(AtomicU64::new(0)),
             default_ice_servers: Mutex::new(rtc_ice_servers),
             capture_thread_alive: Arc::new(AtomicBool::new(false)),
@@ -540,6 +736,9 @@ impl NativeScreenManager {
                 .ok_or_else(|| "No active native screen share".to_string())?
         };
 
+        let op_lock = session.signaling_lock_for(&peer_id).await;
+        let _sig_guard = op_lock.lock().await;
+
         // Close previous PC for this peer_id if any
         let (operation, old_pc) = {
             let mut operations = session.peer_operations.lock().await;
@@ -635,19 +834,23 @@ impl NativeScreenManager {
             tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
         }
 
+        let diag = Arc::new(PeerDiagnostics::default());
         let ice_session_id = Arc::new(Mutex::new(None::<String>));
         let callback_session_id = ice_session_id.clone();
         let local_gate = gate.clone();
+        let local_diag = diag.clone();
         let app_ice = app.clone();
         let pid_ice = peer_id.clone();
         pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
             let session_id = callback_session_id.clone();
             let gate = local_gate.clone();
+            let diag = local_diag.clone();
             let app_c = app_ice.clone();
             let pid_c = pid_ice.clone();
             Box::pin(async move {
                 if let Some(cand) = c {
                     if !super::p2p::direct(&cand.typ.to_string()) { gate.reject(); return; }
+                    diag.local.record_rtc_candidate(&cand);
                     crate::capture::log_capture_diag(Some(&app_c), &format!("screen_sender local_candidate type={}", cand.typ));
                     if let Ok(init) = cand.to_json() {
                         let _ = app_c.emit(
@@ -661,6 +864,19 @@ impl NativeScreenManager {
                             },
                         );
                     }
+                } else {
+                    diag.end_of_candidates_local.store(true, Ordering::SeqCst);
+                    crate::capture::log_capture_diag(Some(&app_c), "screen_sender local_end_of_candidates");
+                    let _ = app_c.emit(
+                        "native-screen-ice",
+                        NativeScreenIceEvent {
+                            sdp_session_id: session_id.lock().unwrap().clone(),
+                            peer_id: pid_c,
+                            candidate: String::new(),
+                            sdp_mid: None,
+                            sdp_mline_index: None,
+                        },
+                    );
                 }
             })
         }));
@@ -694,18 +910,15 @@ impl NativeScreenManager {
             .create_offer(None)
             .await
             .map_err(|e| format!("create_offer: {e}"))?;
-        *ice_session_id.lock().unwrap() = offer.sdp.lines().find_map(|line| {
-            let mut fields = line.strip_prefix("o=")?.split_whitespace();
-            fields.next()?;
-            let id = fields.next()?;
-            (id.len() <= 64 && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then(|| id.to_string())
-        });
+        *ice_session_id.lock().unwrap() = extract_sdp_session_id(&offer.sdp);
         pc.set_local_description(offer.clone())
             .await
             .map_err(|e| format!("set_local_description: {e}"))?;
+        diag.offers_applied.fetch_add(1, Ordering::Relaxed);
 
         {
-            let diagnostics = monitor_screen_peer(&pc, app.clone(), peer_id.clone(), ice_session_id.lock().unwrap().clone(), gate.clone(), quality.clone(), session.experiment_bitrate.clone());
+            let initial_session_id = ice_session_id.lock().unwrap().clone();
+            let diagnostics = monitor_screen_peer(&pc, app.clone(), peer_id.clone(), initial_session_id.clone(), gate.clone(), diag.clone(), quality.clone(), session.experiment_bitrate.clone());
             let operations = session.peer_operations.lock().await;
             let mut peers = session.peers.lock().await;
             if session.stop_flag.load(Ordering::SeqCst) || operations.get(&peer_id) != Some(&operation) {
@@ -718,8 +931,10 @@ impl NativeScreenManager {
             peers.insert(
                 peer_id.clone(),
                 PeerEntry {
-                    screen_session_id: ice_session_id.lock().unwrap().clone(),
+                    screen_session_id: initial_session_id,
+                    ice_session_id,
                     diagnostics,
+                    diag,
                     gate,
                     quality,
                     pc,
@@ -743,6 +958,8 @@ impl NativeScreenManager {
     pub async fn remove_peer(&self, peer_id: &str) {
         let session_opt = { self.active.lock().unwrap().clone() };
         if let Some(session) = session_opt {
+            let op_lock = session.signaling_lock_for(peer_id).await;
+            let _sig_guard = op_lock.lock().await;
             let old_pc = {
                 let mut operations = session.peer_operations.lock().await;
                 *operations.entry(peer_id.to_owned()).or_default() += 1;
@@ -757,6 +974,59 @@ impl NativeScreenManager {
                 let _ = pc.close().await;
             }
         }
+    }
+
+    pub async fn ice_restart(&self, peer_id: &str) -> Result<NativeScreenOfferEvent, String> {
+        let session = {
+            self.active
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| "No active native screen share".to_string())?
+        };
+        let op_lock = session.signaling_lock_for(peer_id).await;
+        let _sig_guard = op_lock.lock().await;
+        let (pc, diag) = {
+            let peers = session.peers.lock().await;
+            let entry = peers
+                .get(peer_id)
+                .ok_or_else(|| format!("Unknown screen peer: {peer_id}"))?;
+            (Arc::clone(&entry.pc), Arc::clone(&entry.diag))
+        };
+        let offer = pc
+            .create_offer(Some(RTCOfferOptions {
+                ice_restart: true,
+                voice_activity_detection: false,
+            }))
+            .await
+            .map_err(|e| format!("ice_restart create_offer: {e}"))?;
+        let new_session_id = extract_sdp_session_id(&offer.sdp);
+        pc.set_local_description(offer.clone())
+            .await
+            .map_err(|e| format!("ice_restart set_local_description: {e}"))?;
+        {
+            let mut peers = session.peers.lock().await;
+            let entry = peers
+                .get_mut(peer_id)
+                .filter(|e| Arc::ptr_eq(&e.pc, &pc))
+                .ok_or_else(|| "Screen peer closed or replaced during ICE restart".to_string())?;
+            if let Some(ref sid) = new_session_id {
+                entry.screen_session_id = Some(sid.clone());
+                *entry.ice_session_id.lock().unwrap() = Some(sid.clone());
+            }
+            entry.remote_desc_set = false;
+            entry.pending_remote_ice.clear();
+        }
+        diag.end_of_candidates_local.store(false, Ordering::SeqCst);
+        diag.end_of_candidates_remote.store(false, Ordering::SeqCst);
+        diag.offers_applied.fetch_add(1, Ordering::Relaxed);
+        diag.ice_restart_count.fetch_add(1, Ordering::Relaxed);
+        crate::capture::log_capture_diag(None, &format!("screen_sender peer={} ice_restart_offer", peer_id));
+        Ok(NativeScreenOfferEvent {
+            peer_id: peer_id.to_string(),
+            sdp: offer.sdp,
+            sdp_type: "offer".to_string(),
+        })
     }
 
     pub async fn handle_answer(&self, peer_id: &str, sdp: String, screen_session_id: Option<String>) -> Result<(), String> {
@@ -774,6 +1044,9 @@ impl NativeScreenManager {
         }
         let ans = RTCSessionDescription::answer(sdp).map_err(|e| format!("bad answer sdp: {e}"))?;
 
+        let op_lock = session.signaling_lock_for(peer_id).await;
+        let _sig_guard = op_lock.lock().await;
+
         let Some(pc) = screen_peer_for_session(&session.peers, peer_id, &screen_session_id).await? else {
             crate::capture::log_capture_diag(None, "screen_sender stale_answer_ignored");
             return Ok(());
@@ -783,12 +1056,19 @@ impl NativeScreenManager {
             crate::capture::log_capture_diag(None, "screen_sender answer_rejected");
             return Err(format!("set_remote_description: {e}"));
         }
+        let diag = {
+            let peers = session.peers.lock().await;
+            peers.get(peer_id).filter(|e| Arc::ptr_eq(&e.pc, &pc)).map(|e| Arc::clone(&e.diag))
+        };
         let queued_ice = commit_screen_answer(&session.peers, peer_id, &pc).await?;
         crate::capture::log_capture_diag(None, &format!("screen_sender peer={} answer_applied", peer_id));
         crate::capture::log_capture_diag(None, &format!("screen_sender answer_queued_ice count={}", queued_ice.len()));
         for cand in queued_ice {
             if pc.add_ice_candidate(cand).await.is_err() {
+                if let Some(ref d) = diag { d.ice_rejected.fetch_add(1, Ordering::Relaxed); }
                 crate::capture::log_capture_diag(None, "screen_sender queued_ice_rejected");
+            } else if let Some(ref d) = diag {
+                d.ice_applied.fetch_add(1, Ordering::Relaxed);
             }
         }
         session.force_keyframe.store(true, Ordering::SeqCst);
@@ -807,10 +1087,15 @@ impl NativeScreenManager {
             self.remove_peer(peer_id).await;
             return Err(super::p2p::ERROR.into());
         }
-        let candidate_type = candidate.split_whitespace().skip_while(|token| *token != "typ").nth(1)
-            .filter(|kind| ["host", "srflx", "prflx", "relay"].contains(kind)).unwrap_or("unknown");
-        crate::capture::log_capture_diag(None, &format!("screen_sender remote_candidate type={} mdns={}",
-            candidate_type, candidate.contains(".local")));
+        let is_end_of_candidates = candidate.trim().is_empty();
+        if is_end_of_candidates {
+            crate::capture::log_capture_diag(None, "screen_sender remote_end_of_candidates");
+        } else {
+            let candidate_type = candidate.split_whitespace().skip_while(|token| *token != "typ").nth(1)
+                .filter(|kind| ["host", "srflx", "prflx", "relay"].contains(kind)).unwrap_or("unknown");
+            crate::capture::log_capture_diag(None, &format!("screen_sender remote_candidate type={} mdns={}",
+                candidate_type, candidate.contains(".local")));
+        }
         let session = {
             self.active
                 .lock()
@@ -819,39 +1104,51 @@ impl NativeScreenManager {
                 .ok_or_else(|| "No active native screen share".to_string())?
         };
         let init = RTCIceCandidateInit {
-            candidate,
+            candidate: candidate.clone(),
             sdp_mid,
             sdp_mline_index,
             username_fragment: None,
         };
 
-        let pc_opt = {
+        let op_lock = session.signaling_lock_for(peer_id).await;
+        let _sig_guard = op_lock.lock().await;
+
+        let apply_target = {
             let mut peers = session.peers.lock().await;
             let entry = peers
                 .get_mut(peer_id)
                 .ok_or_else(|| format!("Unknown screen peer: {peer_id}"))?;
             if screen_session_id.is_some() && entry.screen_session_id != screen_session_id {
+                entry.diag.ice_stale.fetch_add(1, Ordering::Relaxed);
                 crate::capture::log_capture_diag(None, "screen_sender stale_ice_ignored");
                 return Ok(());
             }
+            if is_end_of_candidates {
+                entry.diag.end_of_candidates_remote.store(true, Ordering::SeqCst);
+            } else {
+                entry.diag.remote.record_candidate_str(&candidate);
+            }
             if entry.remote_desc_set {
-                Some(Arc::clone(&entry.pc))
+                Some((Arc::clone(&entry.pc), Arc::clone(&entry.diag)))
             } else {
                 if entry.pending_remote_ice.len() >= 256 {
                     crate::capture::log_capture_diag(None, "screen_sender remote_ice_queue_full");
                     return Err("Screen ICE queue full".into());
                 }
                 entry.pending_remote_ice.push(init.clone());
+                entry.diag.ice_queued.fetch_add(1, Ordering::Relaxed);
                 crate::capture::log_capture_diag(None, &format!("screen_sender remote_ice_queued count={}", entry.pending_remote_ice.len()));
                 None
             }
         };
 
-        if let Some(pc) = pc_opt {
+        if let Some((pc, diag)) = apply_target {
             if let Err(e) = pc.add_ice_candidate(init).await {
+                diag.ice_rejected.fetch_add(1, Ordering::Relaxed);
                 crate::capture::log_capture_diag(None, "screen_sender remote_ice_rejected");
                 return Err(format!("add_ice_candidate: {e}"));
             }
+            diag.ice_applied.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -1571,9 +1868,9 @@ mod tests {
             let old = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await.unwrap());
             let new = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await.unwrap());
             let entry = |pc: Arc<RTCPeerConnection>, id: &str| PeerEntry {
-                pc, screen_session_id: Some(id.into()), remote_desc_set: false,
+                pc, screen_session_id: Some(id.into()), ice_session_id: Arc::new(Mutex::new(Some(id.into()))), remote_desc_set: false,
                 pending_remote_ice: vec![RTCIceCandidateInit::default()],
-                diagnostics: tokio::spawn(async {}), gate: super::super::p2p::Gate::new(),
+                diagnostics: tokio::spawn(async {}), diag: Arc::new(PeerDiagnostics::default()), gate: super::super::p2p::Gate::new(),
                 quality: Arc::new(Mutex::new(super::super::quality::NetworkEvidence::default())),
             };
             let peers = Arc::new(tokio::sync::Mutex::new(HashMap::from([("viewer".into(), entry(old.clone(), "1"))])));
@@ -1863,5 +2160,256 @@ mod tests {
                 RTCPeerConnectionState::Closed
             );
         });
+    }
+
+    async fn make_test_session_and_peer(
+        peer_id: &str,
+    ) -> (
+        NativeScreenManager,
+        Arc<SessionShared>,
+        Arc<RTCPeerConnection>,
+        Arc<RTCPeerConnection>,
+        String,
+        RTCSessionDescription,
+    ) {
+        let sender_gate = super::super::p2p::Gate::new();
+        let sender_api = build_screen_webrtc_api(false, Some(sender_gate.clone())).unwrap();
+        let receiver_api = build_webrtc_api(false).unwrap();
+        let sender_pc = Arc::new(
+            sender_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        sender_gate.attach(&sender_pc);
+        let receiver_pc = Arc::new(
+            receiver_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        let video_track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            "nexus-test-video".to_owned(),
+            "nexus-test-stream".to_owned(),
+        ));
+        sender_pc
+            .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .unwrap();
+        let offer = sender_pc.create_offer(None).await.unwrap();
+        let sid = extract_sdp_session_id(&offer.sdp).unwrap_or_else(|| "1001".to_string());
+        sender_pc.set_local_description(offer.clone()).await.unwrap();
+        receiver_pc.set_remote_description(offer).await.unwrap();
+        let answer = receiver_pc.create_answer(None).await.unwrap();
+        receiver_pc.set_local_description(answer.clone()).await.unwrap();
+
+        let session = Arc::new(SessionShared {
+            preview: super::super::preview::PreviewSlot::new(),
+            video_track,
+            audio_track: None,
+            include_app_audio: false,
+            force_software: false,
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            force_keyframe: Arc::new(AtomicBool::new(false)),
+            cursor_flag: Arc::new(AtomicBool::new(false)),
+            bitrate_target: Arc::new(AtomicU32::new(1_000_000)),
+            experiment_bitrate: Arc::new(AtomicU32::new(0)),
+            pending_preset: Mutex::new(None),
+            pli_count: Arc::new(AtomicU64::new(0)),
+            peers: tokio::sync::Mutex::new(HashMap::new()),
+            peer_operations: tokio::sync::Mutex::new(HashMap::new()),
+            peer_signaling: tokio::sync::Mutex::new(HashMap::new()),
+            peer_count_atomic: Arc::new(AtomicU64::new(1)),
+            default_ice_servers: Mutex::new(Vec::new()),
+            capture_thread_alive: Arc::new(AtomicBool::new(false)),
+            capture_join: Mutex::new(None),
+        });
+        let diag = Arc::new(PeerDiagnostics::default());
+        diag.offers_applied.fetch_add(1, Ordering::Relaxed);
+        session.peers.lock().await.insert(
+            peer_id.to_string(),
+            PeerEntry {
+                screen_session_id: Some(sid.clone()),
+                ice_session_id: Arc::new(Mutex::new(Some(sid.clone()))),
+                pc: Arc::clone(&sender_pc),
+                remote_desc_set: false,
+                pending_remote_ice: Vec::new(),
+                diagnostics: tokio::spawn(async {}),
+                diag,
+                gate: sender_gate,
+                quality: Arc::new(Mutex::new(super::super::quality::NetworkEvidence::default())),
+            },
+        );
+        let mgr = NativeScreenManager {
+            active: Arc::new(Mutex::new(Some(Arc::clone(&session)))),
+        };
+        (mgr, session, sender_pc, receiver_pc, sid, answer)
+    }
+
+    #[tokio::test]
+    async fn test_queued_early_candidates_and_concurrent_answer_drain_order() {
+        let (mgr, session, sender_pc, receiver_pc, sid, answer) =
+            make_test_session_and_peer("viewer").await;
+        let c1 = "candidate:1 1 udp 2122260223 127.0.0.1 50001 typ host".to_string();
+        let c2 = "candidate:2 1 udp 2122260223 127.0.0.1 50002 typ host".to_string();
+        let c3 = "candidate:3 1 udp 2122260223 127.0.0.1 50003 typ host".to_string();
+
+        mgr.handle_ice("viewer", c1, Some("0".into()), Some(0), Some(sid.clone()))
+            .await
+            .unwrap();
+        mgr.handle_ice("viewer", c2, Some("0".into()), Some(0), Some(sid.clone()))
+            .await
+            .unwrap();
+
+        let diag = {
+            let peers = session.peers.lock().await;
+            assert_eq!(peers["viewer"].pending_remote_ice.len(), 2);
+            Arc::clone(&peers["viewer"].diag)
+        };
+        assert_eq!(diag.ice_queued.load(Ordering::Relaxed), 2);
+        assert_eq!(diag.ice_applied.load(Ordering::Relaxed), 0);
+
+        let (ans_res, ice_res) = tokio::join!(
+            mgr.handle_answer("viewer", answer.sdp, Some(sid.clone())),
+            mgr.handle_ice("viewer", c3, Some("0".into()), Some(0), Some(sid.clone())),
+        );
+        ans_res.unwrap();
+        ice_res.unwrap();
+
+        {
+            let peers = session.peers.lock().await;
+            assert!(peers["viewer"].remote_desc_set);
+            assert!(peers["viewer"].pending_remote_ice.is_empty());
+        }
+        assert_eq!(diag.answers_sent.load(Ordering::Relaxed), 1);
+        assert_eq!(diag.ice_applied.load(Ordering::Relaxed), 3);
+        assert_eq!(diag.ice_rejected.load(Ordering::Relaxed), 0);
+
+        sender_pc.close().await.unwrap();
+        receiver_pc.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_and_late_candidates() {
+        let (mgr, session, sender_pc, receiver_pc, sid, answer) =
+            make_test_session_and_peer("viewer").await;
+        mgr.handle_answer("viewer", answer.sdp, Some(sid.clone()))
+            .await
+            .unwrap();
+
+        let cand = "candidate:1 1 udp 2122260223 127.0.0.1 50011 typ host".to_string();
+        mgr.handle_ice("viewer", cand.clone(), Some("0".into()), Some(0), Some(sid.clone()))
+            .await
+            .unwrap();
+        mgr.handle_ice("viewer", cand, Some("0".into()), Some(0), Some(sid.clone()))
+            .await
+            .unwrap();
+        let late = "candidate:2 1 udp 1686052607 203.0.113.10 50012 typ srflx raddr 127.0.0.1 rport 50012".to_string();
+        mgr.handle_ice("viewer", late, Some("0".into()), Some(0), Some(sid))
+            .await
+            .unwrap();
+
+        let diag = Arc::clone(&session.peers.lock().await["viewer"].diag);
+        assert_eq!(diag.ice_applied.load(Ordering::Relaxed), 3);
+        assert_eq!(diag.remote.host.load(Ordering::Relaxed), 2);
+        assert_eq!(diag.remote.srflx.load(Ordering::Relaxed), 1);
+
+        sender_pc.close().await.unwrap();
+        receiver_pc.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_stale_session_rejection() {
+        let (mgr, session, sender_pc, receiver_pc, _sid, answer) =
+            make_test_session_and_peer("viewer").await;
+
+        mgr.handle_answer("viewer", answer.sdp, Some("999999".into()))
+            .await
+            .unwrap();
+        mgr.handle_ice(
+            "viewer",
+            "candidate:1 1 udp 2122260223 127.0.0.1 50021 typ host".into(),
+            Some("0".into()),
+            Some(0),
+            Some("999999".into()),
+        )
+        .await
+        .unwrap();
+
+        let peers = session.peers.lock().await;
+        assert!(!peers["viewer"].remote_desc_set);
+        assert!(peers["viewer"].pending_remote_ice.is_empty());
+        assert_eq!(peers["viewer"].diag.ice_stale.load(Ordering::Relaxed), 2);
+        drop(peers);
+
+        sender_pc.close().await.unwrap();
+        receiver_pc.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_end_of_candidates_and_candidate_counters() {
+        let (mgr, session, sender_pc, receiver_pc, sid, answer) =
+            make_test_session_and_peer("viewer").await;
+        mgr.handle_answer("viewer", answer.sdp, Some(sid.clone()))
+            .await
+            .unwrap();
+        mgr.handle_ice("viewer", String::new(), None, None, Some(sid))
+            .await
+            .unwrap();
+
+        let diag = Arc::clone(&session.peers.lock().await["viewer"].diag);
+        assert!(diag.end_of_candidates_remote.load(Ordering::Relaxed));
+        assert_eq!(diag.remote.unknown.load(Ordering::Relaxed), 0);
+        assert_eq!(diag.ice_rejected.load(Ordering::Relaxed), 0);
+        assert_eq!(diag.ice_applied.load(Ordering::Relaxed), 1);
+
+        let counters = CandidateCounters::default();
+        counters.record_candidate_str("");
+        counters.record_candidate_str("candidate:1 1 udp 2122260223 abc.local 50031 typ host");
+        assert_eq!(counters.unknown.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.mdns.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.host.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.udp.load(Ordering::Relaxed), 1);
+
+        sender_pc.close().await.unwrap();
+        receiver_pc.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ice_restart_and_clean_teardown_no_orphaned_pcs() {
+        let (mgr, session, sender_pc, receiver_pc, sid, answer) =
+            make_test_session_and_peer("viewer").await;
+        mgr.handle_answer("viewer", answer.sdp, Some(sid))
+            .await
+            .unwrap();
+
+        let restart_offer = mgr.ice_restart("viewer").await.unwrap();
+        assert_eq!(restart_offer.sdp_type, "offer");
+        assert!(restart_offer.sdp.contains("a=ice-ufrag:"));
+
+        {
+            let peers = session.peers.lock().await;
+            let entry = &peers["viewer"];
+            assert!(!entry.remote_desc_set);
+            assert!(entry.pending_remote_ice.is_empty());
+            assert_eq!(entry.diag.ice_restart_count.load(Ordering::Relaxed), 1);
+            assert_eq!(entry.diag.offers_applied.load(Ordering::Relaxed), 2);
+            assert!(!entry.diag.end_of_candidates_local.load(Ordering::Relaxed));
+            assert!(!entry.diag.end_of_candidates_remote.load(Ordering::Relaxed));
+        }
+
+        mgr.remove_peer("viewer").await;
+        assert_eq!(session.peer_count_atomic.load(Ordering::SeqCst), 0);
+        assert!(session.peers.lock().await.is_empty());
+        assert_eq!(sender_pc.connection_state(), RTCPeerConnectionState::Closed);
+
+        receiver_pc.close().await.unwrap();
     }
 }

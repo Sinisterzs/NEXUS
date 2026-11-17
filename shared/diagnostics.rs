@@ -74,6 +74,9 @@ pub const NUMBERS: &[&str] = &[
     "iceApplied",
     "iceRejected",
     "iceStale",
+    "iceDuplicate",
+    "iceRestartCount",
+    "negotiationErrors",
     "icePairs",
     "icePairsWaiting",
     "icePairsInProgress",
@@ -175,6 +178,8 @@ pub const BOOLEANS: &[&str] = &[
     "fullRange",
     "syntheticOnly",
     "physicalDisplayMeasured",
+    "endOfCandidatesLocal",
+    "endOfCandidatesRemote",
 ];
 pub fn enums(key: &str) -> Option<&'static [&'static str]> {
     Some(match key {
@@ -529,5 +534,35 @@ mod tests {
         assert!(!color.contains_key("bytesReceived"));
         assert!(!color.contains_key("icePairs"));
         assert!(safe_for_kind(Kind::P2p, &serde_json::json!({"gpu":"amd","matrix":1})).is_empty());
+    }
+    #[test]
+    fn p2p_end_of_candidates_and_ice_restart_allowlisted() {
+        let p2p = safe_for_kind(
+            Kind::P2p,
+            &serde_json::json!({
+                "endOfCandidatesLocal": true,
+                "endOfCandidatesRemote": false,
+                "iceRestartCount": 2,
+                "iceDuplicate": 3,
+                "negotiationErrors": 1,
+                "sdp": "PRIVATE"
+            }),
+        );
+        assert_eq!(p2p.len(), 5);
+        assert_eq!(p2p["endOfCandidatesLocal"], true);
+        assert_eq!(p2p["endOfCandidatesRemote"], false);
+        assert_eq!(p2p["iceRestartCount"], 2);
+        assert_eq!(p2p["iceDuplicate"], 3);
+        assert_eq!(p2p["negotiationErrors"], 1);
+        assert!(safe_for_kind(
+            Kind::Color,
+            &serde_json::json!({
+                "iceRestartCount": 1,
+                "iceDuplicate": 1,
+                "negotiationErrors": 1,
+                "endOfCandidatesLocal": true
+            })
+        )
+        .is_empty());
     }
 }
