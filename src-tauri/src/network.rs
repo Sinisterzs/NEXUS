@@ -639,6 +639,16 @@ pub async fn verify_channel_bound_server_identity(
 
 #[tauri::command]
 pub async fn network_get_status(include_tailscale: Option<bool>) -> Result<NetworkStatus, String> {
+    network_get_status_with_tailscale(include_tailscale, find_tailscale_cli, query_tailscale_status_raw).await
+}
+
+// Keep the command's real host operations unchanged while allowing unit tests
+// to supply local dependencies without global overrides or environment flags.
+async fn network_get_status_with_tailscale(
+    include_tailscale: Option<bool>,
+    detect_cli: impl Fn() -> Option<PathBuf>,
+    query_status: impl Fn() -> Result<serde_json::Value, String>,
+) -> Result<NetworkStatus, String> {
     // Determine current target server URL first
     let current_base = crate::auth::get_api_base();
     let mut active_url = current_base.clone();
@@ -652,7 +662,7 @@ pub async fn network_get_status(include_tailscale: Option<bool>) -> Result<Netwo
         None => !is_public_https,
     };
 
-    let cli_opt = find_tailscale_cli();
+    let cli_opt = detect_cli();
     let installed = cli_opt.is_some();
 
     let mut service_running = false;
@@ -672,7 +682,7 @@ pub async fn network_get_status(include_tailscale: Option<bool>) -> Result<Netwo
     let mut detected_peers: Vec<TailscalePeerSummary> = Vec::new();
 
     if !crate::lab::enabled() && installed && should_query_tailscale {
-        match query_tailscale_status_raw() {
+        match query_status() {
             Ok(json) => {
                 service_running = true;
                 let backend_state = json
@@ -1203,6 +1213,39 @@ pub(crate) mod tests {
 
     pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    async fn public_https_status_without_daemon(
+        detect_cli: impl Fn() -> Option<PathBuf>,
+    ) -> NetworkStatus {
+        use std::cell::Cell;
+
+        let detections = Cell::new(0);
+        let queries = Cell::new(0);
+        let status = network_get_status_with_tailscale(
+            None,
+            || {
+                detections.set(detections.get() + 1);
+                detect_cli()
+            },
+            || {
+                queries.set(queries.get() + 1);
+                panic!("Public HTTPS must not query the Tailscale daemon")
+            },
+        )
+        .await
+        .expect("HTTPS status must succeed independently of Tailscale");
+        assert_eq!(detections.get(), 1);
+        assert_eq!(queries.get(), 0);
+        assert!(status.server_url.starts_with("https://"));
+        assert_eq!(status.server_reachability, "needs_approval");
+        assert!(status.server_latency_ms.is_some());
+        assert!(status.pending_server_identity.is_some());
+        assert!(status.detected_peers.is_empty(), "Public HTTPS must not discover private peers");
+        assert!(status.tailscale_ips.is_empty());
+        assert!(!status.tailscale_service_running);
+        assert!(!status.tailscale_authenticated);
+        status
+    }
+
     #[test]
     fn test_augment_csp_for_server_injects_tailscale_ip_origins() {
         let base_csp = "default-src 'self'; connect-src 'self' ws://nexus-server:* ws://*.ts.net:*;";
@@ -1435,7 +1478,8 @@ pub(crate) mod tests {
         clear_persisted_server_url_for_tests();
 
         // When no server is approved yet:
-        let status = network_get_status(None).await.expect("network_get_status must succeed");
+        let status = network_get_status_with_tailscale(None, || None, || panic!("No daemon expected"))
+            .await.expect("network_get_status must succeed");
         println!(
             "[Test] Live status reachability: {}, server_url: {}, pending_id: {:?}",
             status.server_reachability,
@@ -1458,7 +1502,7 @@ pub(crate) mod tests {
         assert_eq!(approved.server_id, pending.server_id);
 
         // After approval, network_get_status must report connected:
-        let status_after = network_get_status(None)
+        let status_after = network_get_status_with_tailscale(None, || None, || panic!("No daemon expected"))
             .await
             .expect("network_get_status after approval must succeed");
         assert_eq!(status_after.server_reachability, "connected");
@@ -1478,12 +1522,74 @@ pub(crate) mod tests {
         clear_dynamic_api_base_for_tests();
         clear_persisted_server_url_for_tests();
 
-        // Default endpoint is https://nexus-api.dynv6.net
-        let status = network_get_status(None).await.expect("network_get_status must succeed");
-        assert!(status.server_url.starts_with("https://"));
-        // Tailscale state is idle because it was never queried or started
-        assert_eq!(status.tailscale_state, "idle");
-        assert!(status.detected_peers.is_empty(), "Private peers must not be queried for public HTTPS");
+        // The installed state comes only from these test dependencies, never
+        // from the runner's PATH, installation directories, or daemon.
+        for installed in [true, false] {
+            let status = public_https_status_without_daemon(|| {
+                installed.then(|| PathBuf::from("test-only-tailscale.exe"))
+            }).await;
+            assert_eq!(status.tailscale_installed, installed);
+            assert_eq!(status.tailscale_state, if installed { "idle" } else { "not_installed" });
+        }
+
+        clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+    }
+
+    #[tokio::test]
+    async fn test_public_https_survives_tailscale_detection_failure() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::auth::clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+
+        // Detection's existing Option contract treats an inaccessible CLI as
+        // unavailable. A failed host lookup must not block a public backend.
+        let detection: Result<PathBuf, std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied, "simulated inaccessible CLI",
+        ));
+        let status = public_https_status_without_daemon(|| detection.as_ref().ok().cloned()).await;
+        assert!(!status.tailscale_installed);
+        assert_eq!(status.tailscale_state, "not_installed");
+
+        crate::auth::clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+    }
+
+    #[tokio::test]
+    async fn test_public_https_explicit_tailscale_refresh_queries_injected_daemon() {
+        use std::cell::Cell;
+
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::auth::clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
+        let queries = Cell::new(0);
+        let status = network_get_status_with_tailscale(
+            Some(true),
+            || Some(PathBuf::from("test-only-tailscale.exe")),
+            || {
+                queries.set(queries.get() + 1);
+                Ok(serde_json::json!({
+                    "BackendState": "Running",
+                    "Self": {"HostName": "test-client", "TailscaleIPs": ["100.64.0.10"]},
+                    "Peer": {"synthetic": {"HostName": "test-peer", "Online": true,
+                        "TailscaleIPs": ["100.64.0.11"]}}
+                }))
+            },
+        ).await.expect("Explicit diagnostic refresh must succeed");
+        assert_eq!(queries.get(), 1);
+        assert_eq!(status.tailscale_state, "running");
+        assert!(status.tailscale_service_running);
+        assert!(status.tailscale_authenticated);
+        assert_eq!(status.detected_peers.len(), 1);
+        assert_eq!(status.server_reachability, "needs_approval");
+
+        crate::auth::clear_authenticated_server_origin();
+        clear_dynamic_api_base_for_tests();
+        clear_persisted_server_url_for_tests();
     }
 
     #[test]
@@ -1541,14 +1647,23 @@ pub(crate) mod tests {
         clear_persisted_server_url_for_tests();
 
         // 1. HTTPS default init: Tailscale is never queried or waited on (idle)
-        let status = network_get_status(None).await.expect("HTTPS status must succeed");
-        assert!(status.server_url.starts_with("https://"));
+        let status = public_https_status_without_daemon(|| Some(PathBuf::from("test-only-tailscale.exe"))).await;
         assert_eq!(status.tailscale_state, "idle");
         assert!(status.detected_peers.is_empty());
 
         // 2. Private endpoint when Tailscale is inactive: reports disconnected/unreachable
         crate::network::set_dynamic_api_base("http://100.100.100.100:3001".to_string());
-        let private_status = network_get_status(None).await.expect("Private status must resolve");
+        let queries = std::cell::Cell::new(0);
+        let private_status = network_get_status_with_tailscale(
+            None,
+            || Some(PathBuf::from("test-only-tailscale.exe")),
+            || {
+                queries.set(queries.get() + 1);
+                Err("simulated inactive daemon".to_string())
+            },
+        ).await.expect("Private status must resolve");
+        assert_eq!(queries.get(), 1);
+        assert_eq!(private_status.tailscale_state, "service_stopped");
         assert_ne!(private_status.server_reachability, "connected");
 
         clear_authenticated_server_origin();
