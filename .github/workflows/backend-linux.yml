@@ -45,6 +45,15 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure CRLF & Verify SHA-384 for 20261111000001 Migration
+        run: |
+          python3 -c '
+          p = "nexus-server/migrations/20261111000001_password_reset_tokens.sql"
+          data = open(p, "rb").read().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+          open(p, "wb").write(data)
+          '
+          echo "d19d4a7d3830cda13b9201e0724cba6b836507e2716b5c195bb0dc003afb7c6b393466ae06818ab25c5dbecf83066f5c  nexus-server/migrations/20261111000001_password_reset_tokens.sql" | sha384sum -c -
+
       - name: Apply Migrations to Disposable PostgreSQL
         run: |
           for f in nexus-server/migrations/*.sql; do
