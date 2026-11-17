@@ -219,13 +219,14 @@ test('PasswordRecoveryView renders all required copy and never logs', () => {
 test('AuthView and AuthModal integrate recovery + "Esqueceu sua senha?" entry points', () => {
   for (const f of ['src/features/auth/AuthView.tsx', 'src/features/auth/AuthModal.tsx']) {
     const src = read(f);
-    assert.ok(src.includes('PasswordRecoveryView'), `${f}: recovery view not used`);
-    assert.ok(src.includes('Esqueceu sua senha?'), `${f}: missing forgot link`);
-    assert.ok(src.includes('isAccountRecoveryCandidateError'), `${f}: conflict shortcut missing`);
-    assert.ok(src.includes('offerRecovery'), `${f}: error action missing`);
-    assert.ok(src.includes('takePendingResetToken'), `${f}: missing startup deep-link consumption`);
-    assert.ok(src.includes('onDeepLinkResetToken'), `${f}: missing live deep-link listener`);
+    assert.ok(src.includes('<AuthPanel'), `${f}: shared authentication panel not used`);
   }
+  const panel = read('src/features/auth/AuthPanel.tsx');
+  for (const contract of ['PasswordRecoveryView', 'Esqueceu sua senha?', 'isAccountRecoveryCandidateError', 'offerRecovery', 'takePendingResetToken', 'onDeepLinkResetToken']) {
+    assert.ok(panel.includes(contract), `shared panel: missing ${contract}`);
+  }
+  assert.ok(panel.includes('if (!enabled) return;'), 'inactive modal must not subscribe to deep links');
+  assert.ok(panel.includes('if (!enabled) return null;'), 'closing modal must unmount recovery fields');
 });
 
 test('HTTPS bridge URL (#token= and ?token=) and desktop nexus:// deep-link integration', () => {
