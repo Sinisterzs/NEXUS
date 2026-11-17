@@ -65,6 +65,10 @@ jobs:
         run: |
           cargo test --manifest-path nexus-server/Cargo.toml --test avatar_storage_tests --test legal_api_tests --test social_policy_tests --test dm_requests_tests -- --test-threads=1
 
+      - name: Run Compatibility Contract Unit Tests
+        run: |
+          cargo test --manifest-path nexus-server/Cargo.toml --lib handlers::health::tests::validates_stable_and_nightly_min_versions -- --exact --test-threads=1
+
       - name: Build nexus-server Release
         run: |
           cargo build --release --manifest-path nexus-server/Cargo.toml
