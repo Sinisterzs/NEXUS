@@ -66,6 +66,7 @@ pub fn create_router_with_identity(
         .route("/health", get(handlers::health::health_check))
         .route("/reset-password", get(handlers::auth::password_reset_bridge))
         .route("/v1/system/challenge", post(handlers::health::challenge_check))
+        .route("/v1/system/compatibility", get(handlers::health::system_compatibility))
         .route("/system/challenge", post(handlers::health::challenge_check))
         .with_state(system_state);
     let rate_limiter = RateLimiter::with_options(

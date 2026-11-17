@@ -141,3 +141,73 @@ pub async fn challenge_check(
         bound_endpoint: target,
     }))
 }
+
+#[derive(serde::Serialize)]
+pub struct SystemCompatibilityResponse {
+    pub min_client_version_stable: Option<String>,
+    pub min_client_version_nightly: Option<String>,
+}
+
+fn validate_min_version(raw: Option<String>, allow_nightly: bool) -> Option<String> {
+    let val = raw?.trim().to_string();
+    if val.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = val.split('-').collect();
+    let core: Vec<&str> = parts[0].split('.').collect();
+    if core.len() != 3 || core.iter().any(|p| p.parse::<u64>().is_err()) {
+        tracing::warn!("Invalid min client version format ignored: {}", val);
+        return None;
+    }
+    if parts.len() > 1 {
+        if !allow_nightly {
+            tracing::warn!("Prerelease version ignored for stable channel: {}", val);
+            return None;
+        }
+        if !parts[1].starts_with("nightly.") {
+            tracing::warn!("Unsupported prerelease tag ignored: {}", val);
+            return None;
+        }
+    }
+    Some(val)
+}
+
+pub async fn system_compatibility() -> impl axum::response::IntoResponse {
+    let min_stable = validate_min_version(std::env::var("NEXUS_MIN_CLIENT_VERSION_STABLE").ok(), false);
+    let min_nightly = validate_min_version(std::env::var("NEXUS_MIN_CLIENT_VERSION_NIGHTLY").ok(), true);
+
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::Json(SystemCompatibilityResponse {
+            min_client_version_stable: min_stable,
+            min_client_version_nightly: min_nightly,
+        }),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_min_version;
+
+    #[test]
+    fn validates_stable_and_nightly_min_versions() {
+        assert_eq!(validate_min_version(None, false), None);
+        assert_eq!(validate_min_version(Some("".to_string()), false), None);
+        assert_eq!(
+            validate_min_version(Some("0.4.0".to_string()), false),
+            Some("0.4.0".to_string())
+        );
+        assert_eq!(
+            validate_min_version(Some("0.4.0-nightly.8".to_string()), true),
+            Some("0.4.0-nightly.8".to_string())
+        );
+        assert_eq!(
+            validate_min_version(Some("0.4.0-nightly.8".to_string()), false),
+            None
+        );
+        assert_eq!(
+            validate_min_version(Some("invalid-ver".to_string()), true),
+            None
+        );
+    }
+}
