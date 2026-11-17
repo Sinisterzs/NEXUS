@@ -32,6 +32,9 @@ pub fn is_test_environment() -> bool {
     if cfg!(test) {
         return true;
     }
+    // Test-harness detection and environment overrides are development-only.
+    #[cfg(debug_assertions)]
+    {
     // 2. Cargo test binaries located in target/debug/deps or target/release/deps
     if let Ok(exe) = std::env::current_exe() {
         let exe_str = exe.to_string_lossy().to_lowercase();
@@ -48,8 +51,6 @@ pub fn is_test_environment() -> bool {
         return true;
     }
     // 4. Overrides exclusively allowed in debug/development environments (never in production release)
-    #[cfg(debug_assertions)]
-    {
         if TEST_ENVIRONMENT_OVERRIDE.load(Ordering::SeqCst) {
             return true;
         }
@@ -237,6 +238,10 @@ pub fn run() {
             auth::auth_logout,
             auth::auth_restore_session,
             auth::auth_get_me,
+            auth::auth_get_session_token,
+            auth::auth_upload_avatar,
+            auth::auth_delete_avatar,
+            auth::updater_get_compatibility,
             auth::auth_update_profile,
             auth::auth_has_stored_session,
             auth::auth_check_backend,

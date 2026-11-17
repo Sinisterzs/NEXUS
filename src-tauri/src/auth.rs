@@ -762,6 +762,92 @@ pub async fn auth_unlink_google() -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn auth_get_session_token() -> Result<Option<String>, String> {
+    Ok(get_secure_token())
+}
+
+#[tauri::command]
+pub async fn auth_upload_avatar(bytes: Vec<u8>, content_type: String) -> Result<String, String> {
+    const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+    if bytes.is_empty() || bytes.len() > MAX_AVATAR_BYTES {
+        return Err("A imagem deve ter no máximo 2 MB.".to_string());
+    }
+    let normalized_ct = content_type.trim().to_ascii_lowercase();
+    if !matches!(normalized_ct.as_str(), "image/png" | "image/jpeg" | "image/webp") {
+        return Err("Formato inválido. Selecione uma imagem PNG, JPEG ou WebP.".to_string());
+    }
+    let session_token = get_secure_token()
+        .ok_or_else(|| "Sessão inválida ou expirada. Faça login novamente.".to_string())?;
+    let api_base = get_api_base();
+    let url = format!("{}/v1/users/me/avatar", api_base.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Falha ao inicializar cliente HTTP.".to_string())?;
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", session_token))
+        .header("Content-Type", normalized_ct)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| format!("Falha de conexão ao enviar avatar: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let msg = resp
+            .json::<ApiErrorResponse>()
+            .await
+            .map(|e| e.error.message)
+            .unwrap_or_else(|_| format!("Erro HTTP {} ao enviar avatar.", status.as_u16()));
+        return Err(msg);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct AvatarUploadResp {
+        avatar_url: String,
+    }
+    let parsed = resp
+        .json::<AvatarUploadResp>()
+        .await
+        .map_err(|_| "Resposta inválida do servidor ao salvar avatar.".to_string())?;
+    if parsed.avatar_url.starts_with("http://") || parsed.avatar_url.starts_with("https://") {
+        Ok(parsed.avatar_url)
+    } else {
+        let path = if parsed.avatar_url.starts_with('/') {
+            parsed.avatar_url
+        } else {
+            format!("/{}", parsed.avatar_url)
+        };
+        Ok(format!("{}{}", api_base.trim_end_matches('/'), path))
+    }
+}
+
+#[tauri::command]
+pub async fn auth_delete_avatar() -> Result<(), String> {
+    let session_token = get_secure_token()
+        .ok_or_else(|| "Sessão inválida ou expirada. Faça login novamente.".to_string())?;
+    let url = format!("{}/v1/users/me/avatar", get_api_base().trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Falha ao inicializar cliente HTTP.".to_string())?;
+
+    let resp = client
+        .delete(&url)
+        .header("Authorization", format!("Bearer {}", session_token))
+        .send()
+        .await
+        .map_err(|e| format!("Falha de conexão ao remover avatar: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err("Não foi possível remover a foto de perfil.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn auth_get_me() -> Result<Option<AuthUserProfile>, String> {
     auth_restore_session().await
 }
@@ -1217,5 +1303,49 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.starts_with("RESET_PASSWORD_WEAK"));
+    }
+
+    #[tokio::test]
+    async fn test_avatar_commands_reject_invalid_input_and_missing_session() {
+        // Library tests use an isolated in-memory keyring, never user credentials.
+        delete_secure_token();
+        assert!(auth_upload_avatar(Vec::new(), "image/png".into()).await.is_err());
+        assert!(auth_upload_avatar(vec![0; 2 * 1024 * 1024 + 1], "image/png".into()).await.is_err());
+        assert!(auth_upload_avatar(vec![1], "text/html".into()).await.is_err());
+        let error = auth_upload_avatar(vec![1], "image/png".into()).await.unwrap_err();
+        assert!(error.contains("Sessão inválida"));
+        assert!(auth_delete_avatar().await.is_err());
+    }
+
+    #[test]
+    fn test_compatibility_defaults_do_not_require_an_update() {
+        let value = serde_json::to_value(super::CompatibilityContract::default()).unwrap();
+        assert!(value["min_client_version_stable"].is_null());
+        assert!(value["min_client_version_nightly"].is_null());
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct CompatibilityContract {
+    pub min_client_version_stable: Option<String>,
+    pub min_client_version_nightly: Option<String>,
+}
+
+#[tauri::command]
+pub async fn updater_get_compatibility() -> Result<CompatibilityContract, String> {
+    let url = format!("{}/v1/system/compatibility", get_api_base().trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Ok(CompatibilityContract::default()),
+    };
+
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            Ok(resp.json::<CompatibilityContract>().await.unwrap_or_default())
+        }
+        _ => Ok(CompatibilityContract::default()),
     }
 }
