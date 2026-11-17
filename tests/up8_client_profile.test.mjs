@@ -1,28 +1,67 @@
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
-
-test('UP.8 authenticated profile: onboarding and authoritative avatar survive account transitions', async () => {
-  const directory = fs.mkdtempSync(path.resolve('node_modules/.cache/up8-profile-'));
-  const contents = `
-import test, {beforeEach, afterEach} from 'node:test';
-import assert from 'node:assert/strict';
-import {useAppStore} from './src/stores/useAppStore';
-import {authRepository} from './src/repositories/AuthRepository';
-import {settingsRepository} from './src/repositories/SettingsRepository';
-import {profileOnboardingService} from './src/services/ProfileOnboardingService';
+import { pathToFileURL } from 'node:url';
 import React from 'react';
-import {renderToStaticMarkup} from 'react-dom/server';
-import {Avatar} from './src/components/Avatar';
+import { renderToStaticMarkup } from 'react-dom/server';
+
+// Bundle TypeScript once, then register every case in this process's node:test
+// runner. A build/import error or any failed assertion fails the test file.
+async function loadFixture(contents, plugins = []) {
+  const cache = path.resolve('node_modules/.cache');
+  fs.mkdirSync(cache, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(cache, 'up8-profile-'));
+  try {
+    const outfile = path.join(directory, 'profile.mjs');
+    await build({
+      stdin: { contents, resolveDir: process.cwd(), loader: 'ts' },
+      bundle: true, platform: 'node', format: 'esm', packages: 'external',
+      define: { 'import.meta.env': '{"DEV":false}' }, outfile, plugins,
+    });
+    return await import(pathToFileURL(outfile).href);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+const { useAppStore, authRepository, settingsRepository, profileOnboardingService, resolveAvatarUrl } =
+  await loadFixture(`
+    export { useAppStore } from './src/stores/useAppStore';
+    export { authRepository } from './src/repositories/AuthRepository';
+    export { settingsRepository } from './src/repositories/SettingsRepository';
+    export { profileOnboardingService } from './src/services/ProfileOnboardingService';
+    export { resolveAvatarUrl } from './src/lib/avatarUrl';
+  `);
+
+// SSR reads Zustand's getInitialState(), not a later setState(). Supply a real
+// isolated Zustand store whose initial snapshot has the backend for this case.
+// Only the store dependency is replaced; Avatar and its URL helper are real.
+const { Avatar } = await loadFixture(`export { Avatar } from './src/components/Avatar';`, [{
+  name: 'profile-avatar-ssr-store',
+  setup(builder) {
+    builder.onResolve({ filter: /stores\/useAppStore(?:\.ts)?$/ }, () => ({
+      path: 'configured-store', namespace: 'profile-avatar-test',
+    }));
+    builder.onLoad({ filter: /.*/, namespace: 'profile-avatar-test' }, () => ({
+      contents: `import { create } from 'zustand';
+        export const useAppStore = create(() => ({
+          networkStatus: { server_url: 'https://backend.example.invalid' }
+        }));`,
+      loader: 'js', resolveDir: process.cwd(),
+    }));
+  },
+}]);
+
 const originalState=useAppStore.getState();
 const saved=[];
+let originalStorage;
 const mock=(object,key,value)=>{saved.push([object,key,object[key]]);object[key]=value;};
 const user=(avatarUrl=undefined)=>({id:'up8-test',username:'up8',displayName:'UP8',email:'up8@example.invalid',avatarUrl,status:'online',createdAt:'2026-11-17'});
 let memory;
 beforeEach(()=>{
+ originalStorage=Object.getOwnPropertyDescriptor(globalThis,'localStorage');
  memory=new Map();
  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:k=>memory.get(k)??null,setItem:(k,v)=>memory.set(k,v),removeItem:k=>memory.delete(k)}});
  mock(settingsRepository,'setAccountId',()=>{});
@@ -36,7 +75,7 @@ beforeEach(()=>{
  const empty=async()=>{};
  useAppStore.setState({loadFriends:empty,loadFriendRequests:empty,loadConversations:empty,loadCommunities:empty,initWebSocket:()=>{}});
 });
-afterEach(()=>{for(const [object,key,value] of saved.splice(0).reverse())object[key]=value;useAppStore.setState(originalState,true);delete globalThis.localStorage;});
+afterEach(()=>{for(const [object,key,value] of saved.splice(0).reverse())object[key]=value;useAppStore.setState(originalState,true);if(originalStorage)Object.defineProperty(globalThis,'localStorage',originalStorage);else delete globalThis.localStorage;});
 test('new registration opens onboarding immediately and completion stays completed on login',async()=>{
  await useAppStore.getState().registerOnline('up8','up8@example.invalid','test-only');
  assert.equal(useAppStore.getState().pendingProfileOnboarding,true);
@@ -64,16 +103,16 @@ test('saving onboarding fields reaches the backend repository',async()=>{
  assert.equal(sent.displayName,'Saved name');
  assert.equal(useAppStore.getState().currentUser.displayName,'Saved name');
 });
-test('persistent relative avatar URLs render against the active backend origin',()=>{
- useAppStore.setState({networkStatus:{...originalState.networkStatus,server_url:'https://backend.example.invalid'}});
- const html=renderToStaticMarkup(React.createElement(Avatar,{name:'UP8',avatarUrl:'/v1/avatars/persisted.png'}));
- assert.ok(html.includes('https://backend.example.invalid/v1/avatars/persisted.png'));
+test('persistent relative avatar URLs resolve against the configured backend origin', () => {
+  assert.equal(
+    resolveAvatarUrl('/v1/avatars/persisted.png', 'https://backend.example.invalid'),
+    'https://backend.example.invalid/v1/avatars/persisted.png',
+  );
 });
-`;
-  try {
-    const outfile = path.join(directory, 'profile.mjs');
-    await build({ stdin: {contents, resolveDir:process.cwd(), loader:'ts'}, bundle:true, platform:'node', format:'esm', packages:'external', define:{'import.meta.env':'{"DEV":false}'}, outfile });
-    const result = spawnSync(process.execPath,['--test','--test-concurrency=1',outfile],{encoding:'utf8',windowsHide:true});
-    assert.equal(result.status,0,result.stdout+'\n'+result.stderr);
-  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+
+test('persistent relative avatar URLs render against the active backend origin', () => {
+  const html = renderToStaticMarkup(React.createElement(Avatar, {
+    name: 'UP8', avatarUrl: '/v1/avatars/persisted.png',
+  }));
+  assert.ok(html.includes('https://backend.example.invalid/v1/avatars/persisted.png'));
 });
