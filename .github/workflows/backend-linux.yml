@@ -1,0 +1,78 @@
+name: NEXUS Backend Linux Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or commit SHA to build'
+        required: false
+        default: 'feat/v0.4.0-phase-a-foundation'
+
+jobs:
+  build-linux-backend:
+    name: Build & Verify nexus-server (Linux x86_64)
+    runs-on: ubuntu-22.04
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: nexus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/nexus_test
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config postgresql-client
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Apply Migrations to Disposable PostgreSQL
+        run: |
+          for f in nexus-server/migrations/*.sql; do
+            echo "Applying $f"
+            PGPASSWORD=password psql -h 127.0.0.1 -U postgres -d nexus_test -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Run Backend Integration Tests
+        run: |
+          cargo test --manifest-path nexus-server/Cargo.toml --test avatar_storage_tests --test legal_api_tests --test social_policy_tests --test dm_requests_tests -- --test-threads=1
+
+      - name: Build nexus-server Release
+        run: |
+          cargo build --release --manifest-path nexus-server/Cargo.toml
+
+      - name: Verify Binary Architecture, Dependencies and SHA-256
+        run: |
+          mkdir -p dist-linux
+          cp nexus-server/target/release/nexus-server dist-linux/nexus-server
+          file dist-linux/nexus-server
+          ldd dist-linux/nexus-server
+          ls -lh dist-linux/nexus-server
+          (cd dist-linux && sha256sum nexus-server > nexus-server.sha256)
+          cat dist-linux/nexus-server.sha256
+
+      - name: Upload Linux Backend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-server-linux-x64
+          path: dist-linux/
+          retention-days: 14
