@@ -149,27 +149,36 @@ pub struct SystemCompatibilityResponse {
 }
 
 fn validate_min_version(raw: Option<String>, allow_nightly: bool) -> Option<String> {
-    let val = raw?.trim().to_string();
-    if val.is_empty() {
-        return None;
+    // TypeScript compares these components as Number: larger integers lose
+    // precision. Require canonical decimal spelling on both channels.
+    fn valid_component(part: &str) -> bool {
+        !part.is_empty()
+            && (part.len() == 1 || !part.starts_with('0'))
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && part.parse::<u64>().is_ok_and(|value| value <= 9_007_199_254_740_991)
     }
-    let parts: Vec<&str> = val.split('-').collect();
-    let core: Vec<&str> = parts[0].split('.').collect();
-    if core.len() != 3 || core.iter().any(|p| p.parse::<u64>().is_err()) {
-        tracing::warn!("Invalid min client version format ignored: {}", val);
-        return None;
-    }
-    if parts.len() > 1 {
-        if !allow_nightly {
-            tracing::warn!("Prerelease version ignored for stable channel: {}", val);
+
+    let raw = raw?;
+    // Configuration may have outer ASCII whitespace; return a canonical value.
+    let val = raw.trim_matches(|c: char| c.is_ascii_whitespace());
+    let core = if let Some((core, suffix)) = val.split_once('-') {
+        if !allow_nightly || !valid_component(suffix.strip_prefix("nightly.")?) {
             return None;
         }
-        if !parts[1].starts_with("nightly.") {
-            tracing::warn!("Unsupported prerelease tag ignored: {}", val);
+        core
+    } else {
+        val
+    };
+    let mut parts = core.split('.');
+    for _ in 0..3 {
+        if !valid_component(parts.next()?) {
             return None;
         }
     }
-    Some(val)
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(val.to_owned())
 }
 
 pub async fn system_compatibility() -> impl axum::response::IntoResponse {
@@ -191,6 +200,25 @@ mod tests {
 
     #[test]
     fn validates_stable_and_nightly_min_versions() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            raw: Option<String>,
+            stable: Option<String>,
+            nightly: Option<String>,
+        }
+        let cases: Vec<Case> = serde_json::from_str(include_str!(
+            "../../../shared/minimum-version-cases.json"
+        )).expect("valid shared version contract fixtures");
+        for case in cases {
+            assert_eq!(
+                validate_min_version(case.raw.clone(), false), case.stable,
+                "stable input: {:?}", case.raw
+            );
+            assert_eq!(
+                validate_min_version(case.raw.clone(), true), case.nightly,
+                "nightly input: {:?}", case.raw
+            );
+        }
         assert_eq!(validate_min_version(None, false), None);
         assert_eq!(validate_min_version(Some("".to_string()), false), None);
         assert_eq!(

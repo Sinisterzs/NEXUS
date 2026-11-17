@@ -1,0 +1,352 @@
+[
+  {
+    "raw": "0.0.0",
+    "stable": "0.0.0",
+    "nightly": "0.0.0"
+  },
+  {
+    "raw": "0.4.0",
+    "stable": "0.4.0",
+    "nightly": "0.4.0"
+  },
+  {
+    "raw": "1.2.3",
+    "stable": "1.2.3",
+    "nightly": "1.2.3"
+  },
+  {
+    "raw": "9007199254740991.0.0",
+    "stable": "9007199254740991.0.0",
+    "nightly": "9007199254740991.0.0"
+  },
+  {
+    "raw": "0.9007199254740991.0",
+    "stable": "0.9007199254740991.0",
+    "nightly": "0.9007199254740991.0"
+  },
+  {
+    "raw": "0.0.9007199254740991",
+    "stable": "0.0.9007199254740991",
+    "nightly": "0.0.9007199254740991"
+  },
+  {
+    "raw": "9007199254740991.9007199254740991.9007199254740991",
+    "stable": "9007199254740991.9007199254740991.9007199254740991",
+    "nightly": "9007199254740991.9007199254740991.9007199254740991"
+  },
+  {
+    "raw": "0.4.0-nightly.0",
+    "stable": null,
+    "nightly": "0.4.0-nightly.0"
+  },
+  {
+    "raw": "0.4.0-nightly.8",
+    "stable": null,
+    "nightly": "0.4.0-nightly.8"
+  },
+  {
+    "raw": "0.4.0-nightly.9007199254740991",
+    "stable": null,
+    "nightly": "0.4.0-nightly.9007199254740991"
+  },
+  {
+    "raw": "9007199254740991.9007199254740991.9007199254740991-nightly.9007199254740991",
+    "stable": null,
+    "nightly": "9007199254740991.9007199254740991.9007199254740991-nightly.9007199254740991"
+  },
+  {
+    "raw": " \t0.4.0\r\n",
+    "stable": "0.4.0",
+    "nightly": "0.4.0"
+  },
+  {
+    "raw": "\t0.4.0-nightly.8 ",
+    "stable": null,
+    "nightly": "0.4.0-nightly.8"
+  },
+  {
+    "raw": null,
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": " ",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "\t\r\n",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "invalid",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0.1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": ".4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0..0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "00.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.04.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.00",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "+0.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "-1.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "1e2.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "1_0.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "v0.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "V0.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0+build.1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-stable",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.invalid",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.01",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.+1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.-1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.1.2",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.1-extra",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.1+build",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-NIGHTLY.1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-beta.1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-alpha.1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0--nightly.1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.1-nightly.2",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0. 4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0 nightly.1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly. 1",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "9007199254740992.0.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.9007199254740992.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.0.9007199254740992",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.9007199254740992",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "18446744073709551615.0.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "18446744073709551616.0.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.18446744073709551616",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999.0.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "\u00a00.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0\u00a0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "\u20030.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "\u0660.4.0",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0-nightly.\uff11",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0\u0000",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0\nextra",
+    "stable": null,
+    "nightly": null
+  },
+  {
+    "raw": "0.4.0\u200b",
+    "stable": null,
+    "nightly": null
+  }
+]
