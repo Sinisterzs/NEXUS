@@ -625,3 +625,62 @@ test('Mesh disconnect/reconnect recovery, presenter switch, and rapid join/leave
     await flush();
   }
 });
+
+test('Mesh ICE checking timeout recovers stuck checking, bounds retries, and cancels on stop/leave', async () => {
+  const { service } = mesh();
+  service.configure({ iceCheckingTimeoutMs: 50, iceDisconnectTimeoutMs: 50 });
+  const sentIce: any[] = [];
+  const receiverStates: Array<{ peer: string; state: string }> = [];
+  (service as any).callbacks.onSendIceCandidate = (_to: string, c: any) => sentIce.push(c);
+  (service as any).callbacks.onScreenReceiverState = (peer: string, state: string) => receiverStates.push({ peer, state });
+
+  try {
+    // 1. checking -> connected before timeout: no ICE restart
+    await service.handleRemoteOffer('peer-fast', sdp(6001), 'screen');
+    const pcFast = peers[0];
+    pcFast.iceState('checking');
+    pcFast.iceState('connected');
+    await new Promise((r) => setTimeout(r, 70));
+    assert.equal(sentIce.filter((c) => c.nexusScreenAction === 'retry').length, 0);
+
+    // 2. persistent checking -> ICE restart -> connected
+    await service.handleRemoteOffer('peer-recover', sdp(6002), 'screen');
+    const pcRecover = peers[1];
+    pcRecover.iceState('checking');
+    await new Promise((r) => setTimeout(r, 70));
+    const retries = sentIce.filter((c) => c.nexusScreenAction === 'retry');
+    assert.equal(retries.length, 1);
+    assert.equal(retries[0].candidate, '');
+    assert.ok(typeof retries[0].nexusScreenSessionId === 'string' && retries[0].nexusScreenSessionId.length > 0);
+    pcRecover.iceState('connected');
+    await new Promise((r) => setTimeout(r, 70));
+    const retriesAfterConnect = sentIce.filter((c) => c.nexusScreenAction === 'retry');
+    assert.equal(retriesAfterConnect.length, 1);
+
+    // 3. persistent checking exceeding MAX_ICE_RESTART_ATTEMPTS (3) -> explicit failed state
+    sentIce.length = 0;
+    await service.handleRemoteOffer('peer-fail', sdp(6003), 'screen');
+    const pcFail = peers[2];
+    pcFail.iceState('checking');
+    await new Promise((r) => setTimeout(r, 260));
+    assert.equal(sentIce.filter((c) => c.nexusScreenAction === 'retry').length, 3);
+    assert.ok(receiverStates.some((s) => s.peer === 'peer-fail' && s.state === 'failed'));
+    assert.equal(pcFail.closes, 1);
+
+    // 4. voluntary stop / participant leave cancels timer without firing retry
+    sentIce.length = 0;
+    await service.handleRemoteOffer('peer-leave', sdp(6004), 'screen');
+    const pcLeave = peers[3];
+    pcLeave.iceState('checking');
+    service.removeParticipant('peer-leave');
+    await new Promise((r) => setTimeout(r, 70));
+    assert.equal(sentIce.filter((c) => c.nexusScreenAction === 'retry').length, 0);
+    assert.equal(pcLeave.closes, 1);
+  } finally {
+    service.closeRemoteScreen('peer-fast');
+    service.closeRemoteScreen('peer-recover');
+    service.closeRemoteScreen('peer-fail');
+    service.closeRemoteScreen('peer-leave');
+    await flush();
+  }
+});

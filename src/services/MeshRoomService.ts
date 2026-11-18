@@ -112,6 +112,7 @@ interface ScreenReceiverSession {
   pendingCandidates: RTCIceCandidateInit[];
   seenCandidates: Set<string>;
   iceDisconnectTimer: ReturnType<typeof setTimeout> | null;
+  iceCheckingTimer: ReturnType<typeof setTimeout> | null;
   iceRestartAttempts: number;
   signalingChain: Promise<void>;
 }
@@ -143,6 +144,7 @@ interface PeerSession {
   volumePercent: number;
   status: VoiceRoomPeerStatus;
   iceDisconnectTimer: ReturnType<typeof setTimeout> | null;
+  iceCheckingTimer: ReturnType<typeof setTimeout> | null;
   iceRestartAttempts: number;
   statsPrev: PeerStatsPrev | null;
 }
@@ -198,6 +200,7 @@ export class MeshRoomService {
   private maxParticipants = DEFAULT_MAX_PARTICIPANTS;
   private iceTransportPolicy: RTCIceTransportPolicy = 'all';
   private iceDisconnectTimeoutMs = DEFAULT_ICE_DISCONNECT_TIMEOUT_MS;
+  private iceCheckingTimeoutMs = 10_000;
 
   private peers = new Map<string, PeerSession>();
   private screenReceiverPeers = new Map<string, ScreenReceiverSession>();
@@ -258,6 +261,7 @@ export class MeshRoomService {
   public configure(options: {
     iceTransportPolicy?: RTCIceTransportPolicy;
     iceDisconnectTimeoutMs?: number;
+    iceCheckingTimeoutMs?: number;
     maxParticipants?: number;
   }): void {
     if (options.iceTransportPolicy) {
@@ -265,6 +269,9 @@ export class MeshRoomService {
     }
     if (typeof options.iceDisconnectTimeoutMs === 'number') {
       this.iceDisconnectTimeoutMs = Math.max(200, options.iceDisconnectTimeoutMs);
+    }
+    if (typeof options.iceCheckingTimeoutMs === 'number') {
+      this.iceCheckingTimeoutMs = Math.max(50, options.iceCheckingTimeoutMs);
     }
     if (typeof options.maxParticipants === 'number') {
       this.maxParticipants = Math.max(2, options.maxParticipants);
@@ -1009,6 +1016,7 @@ export class MeshRoomService {
       volumePercent: Math.max(0, Math.min(200, Math.round(initialVol))),
       status: 'new',
       iceDisconnectTimer: null,
+      iceCheckingTimer: null,
       iceRestartAttempts: 0,
       statsPrev: null,
     };
@@ -1651,6 +1659,7 @@ export class MeshRoomService {
       pendingCandidates: this.earlyScreenCandidates.get(peerUserId) ?? [],
       seenCandidates: new Set(),
       iceDisconnectTimer: null,
+      iceCheckingTimer: null,
       iceRestartAttempts: 0,
       signalingChain: Promise.resolve(),
     };
@@ -1714,7 +1723,10 @@ export class MeshRoomService {
     pc.oniceconnectionstatechange = () => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
       const state = pc.iceConnectionState;
-      if (state === 'disconnected') {
+      if (state === 'new' || state === 'checking') {
+        this.scheduleScreenIceCheckingTimeout(peerUserId, session);
+      } else if (state === 'disconnected') {
+        this.clearScreenIceCheckingTimer(session);
         if (!session.iceDisconnectTimer) {
           session.iceDisconnectTimer = setTimeout(() => {
             session.iceDisconnectTimer = null;
@@ -1722,12 +1734,18 @@ export class MeshRoomService {
           }, this.iceDisconnectTimeoutMs);
         }
       } else if (state === 'connected' || state === 'completed' || state === 'failed' || state === 'closed') {
+        this.clearScreenIceCheckingTimer(session);
+        if (state === 'connected' || state === 'completed') {
+          session.diagnostics.directReadyMs ??= Math.max(0, Date.now() - session.startedAt);
+        }
         if (session.iceDisconnectTimer) {
           clearTimeout(session.iceDisconnectTimer);
           session.iceDisconnectTimer = null;
         }
       }
     };
+
+    this.scheduleScreenIceCheckingTimeout(peerUserId, session);
 
     pc.onconnectionstatechange = () => {
       if (!this.isActive || this.screenReceiverPeers.get(peerUserId) !== session) return;
@@ -1744,14 +1762,77 @@ export class MeshRoomService {
     }
   }
 
-  private requestScreenIceRestart(peerUserId: string, session: ScreenReceiverSession): void {
+  private clearScreenIceCheckingTimer(session: ScreenReceiverSession): void {
+    if (session.iceCheckingTimer) {
+      clearTimeout(session.iceCheckingTimer);
+      session.iceCheckingTimer = null;
+    }
+  }
+
+  private scheduleScreenIceCheckingTimeout(peerUserId: string, session: ScreenReceiverSession): void {
+    if (
+      session.iceCheckingTimer ||
+      !this.isActive ||
+      this.departedPeers.has(peerUserId) ||
+      this.screenReceiverPeers.get(peerUserId) !== session
+    ) {
+      return;
+    }
+    const state = session.pc.iceConnectionState;
+    if (state !== 'new' && state !== 'checking') return;
+    session.iceCheckingTimer = setTimeout(() => {
+      session.iceCheckingTimer = null;
+      if (
+        !this.isActive ||
+        this.departedPeers.has(peerUserId) ||
+        this.screenReceiverPeers.get(peerUserId) !== session
+      ) {
+        return;
+      }
+      const currentIceState = session.pc.iceConnectionState;
+      if (currentIceState !== 'new' && currentIceState !== 'checking') return;
+      const dtlsState = (session.pc as unknown as { sctp?: { transport?: { state?: string } } })?.sctp?.transport?.state ?? null;
+      console.warn('[ScreenReceiver] ice_checking_timeout', {
+        iceConnectionState: currentIceState,
+        dtlsState,
+        icePairsSucceeded: session.diagnostics.icePairsSucceeded ?? null,
+        icePairsFailed: session.diagnostics.icePairsFailed ?? null,
+        iceRestartCount: session.diagnostics.iceRestartCount ?? 0,
+        endOfCandidatesLocal: session.diagnostics.endOfCandidatesLocal ?? false,
+        endOfCandidatesRemote: session.diagnostics.endOfCandidatesRemote ?? false,
+        elapsedMs: Math.max(0, Date.now() - session.startedAt),
+        reason: 'ice_checking_timeout',
+      });
+      if (session.offerSessionId && session.iceRestartAttempts < MAX_ICE_RESTART_ATTEMPTS) {
+        this.requestScreenIceRestart(peerUserId, session, 'checking_timeout');
+        this.scheduleScreenIceCheckingTimeout(peerUserId, session);
+        return;
+      }
+      this.failRemoteScreen(
+        peerUserId,
+        'Não foi possível estabelecer a conexão direta para esta tela. Tente novamente.',
+        'ice_checking_timeout'
+      );
+    }, this.iceCheckingTimeoutMs);
+  }
+
+  private requestScreenIceRestart(
+    peerUserId: string,
+    session: ScreenReceiverSession,
+    reason: 'disconnected' | 'checking_timeout' = 'disconnected'
+  ): void {
+    const iceState = session.pc.iceConnectionState;
+    const stateMatches =
+      reason === 'checking_timeout'
+        ? iceState === 'checking' || iceState === 'new'
+        : iceState === 'disconnected';
     if (
       !this.isActive ||
       this.departedPeers.has(peerUserId) ||
       this.screenReceiverPeers.get(peerUserId) !== session ||
       !session.offerSessionId ||
       session.iceRestartAttempts >= MAX_ICE_RESTART_ATTEMPTS ||
-      session.pc.iceConnectionState !== 'disconnected'
+      !stateMatches
     ) {
       return;
     }
@@ -1928,6 +2009,7 @@ export class MeshRoomService {
   }
 
   private cleanupScreenReceiver(session: ScreenReceiverSession, closureCode = 'requested_stop'): void {
+    this.clearScreenIceCheckingTimer(session);
     if (session.iceDisconnectTimer) {
       clearTimeout(session.iceDisconnectTimer);
       session.iceDisconnectTimer = null;
