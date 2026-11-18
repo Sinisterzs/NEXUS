@@ -71,12 +71,12 @@ export const SettingsView: React.FC = () => {
   const networkStatus = useAppStore((state) => state.networkStatus);
   const checkNetwork = useAppStore((state) => state.checkNetwork);
   const openTailscale = useAppStore((state) => state.openTailscale);
-  const setServerAddress = useAppStore((state) => state.setServerAddress);
+
   const updateChannel = useAppStore((state) => state.updateChannel);
   const setUpdateChannel = useAppStore((state) => state.setUpdateChannel);
 
   // Network form state
-  const [serverAddressInput, setServerAddressInput] = useState(networkStatus.server_url);
+
   const [isTestingServer, setIsTestingServer] = useState(false);
   const [networkTestFeedback, setNetworkTestFeedback] = useState<{ text: string; isError: boolean } | null>(null);
   const [copiedServerId, setCopiedServerId] = useState(false);
@@ -90,7 +90,7 @@ export const SettingsView: React.FC = () => {
   };
 
   useEffect(() => {
-    setServerAddressInput(networkStatus.server_url);
+
   }, [networkStatus.server_url]);
 
   // Installed version & update channel state
@@ -1714,76 +1714,51 @@ export const SettingsView: React.FC = () => {
                 </div>
               )}
 
-              {/* Server address configuration form */}
+              {/* Centralized connection status & simple connectivity test */}
               <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-nexus-text mb-1">
-                    Endereço do Servidor (HTTPS Público, MagicDNS ou IP Tailscale)
-                  </label>
-                  <p className="text-[11px] text-nexus-muted mb-2">
-                    Por padrão, o NEXUS conecta ao backend público seguro (<code className="text-nexus-accent">https://nexus-api.dynv6.net</code>) pela internet, sem exigir Tailscale.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={serverAddressInput}
-                      onChange={(e) => {
-                        setServerAddressInput(e.target.value);
-                        setNetworkTestFeedback(null);
-                      }}
-                      placeholder="https://nexus-api.dynv6.net"
-                      className="flex-1 bg-nexus-bg text-nexus-text text-xs px-3 py-2 rounded-lg border border-nexus-border focus:border-nexus-accent focus:outline-none font-mono"
-                    />
-                    <button
-                      type="button"
-                      disabled={isTestingServer}
-                      onClick={async () => {
-                        setIsTestingServer(true);
-                        setNetworkTestFeedback(null);
-                        try {
-                          const res = await networkManager.probeServer(serverAddressInput);
-                          if (res.status === 'connected') {
-                            setNetworkTestFeedback({
-                              text: `Conexão bem-sucedida! Latência: ${res.latency_ms}ms`,
-                              isError: false,
-                            });
-                          } else {
-                            setNetworkTestFeedback({
-                              text: `Servidor não respondeu: ${res.error || 'Timeout'}`,
-                              isError: true,
-                            });
-                          }
-                        } catch (err: any) {
-                          setNetworkTestFeedback({
-                            text: err?.message || 'Falha ao testar conexão.',
-                            isError: true,
-                          });
-                        } finally {
-                          setIsTestingServer(false);
-                        }
-                      }}
-                      className="px-3 py-2 rounded-lg bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {isTestingServer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Testar Conexão'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await setServerAddress(serverAddressInput);
-                          showSaveSuccess();
-                        } catch (err: any) {
-                          setNetworkTestFeedback({
-                            text: err?.message || 'Falha ao salvar endereço.',
-                            isError: true,
-                          });
-                        }
-                      }}
-                      className="px-3.5 py-2 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover text-xs font-semibold text-white transition-colors cursor-pointer"
-                    >
-                      Salvar Endereço
-                    </button>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-nexus-text">
+                      Conexão Oficial NEXUS
+                    </p>
+                    <p className="text-[11px] text-nexus-muted">
+                      {networkStatus.server_reachability === 'connected'
+                        ? `Conectado${networkStatus.server_latency_ms != null ? ` (${networkStatus.server_latency_ms} ms)` : ''}`
+                        : 'Desconectado'}
+                    </p>
                   </div>
+                  <button
+                    type="button"
+                    disabled={isTestingServer}
+                    onClick={async () => {
+                      setIsTestingServer(true);
+                      setNetworkTestFeedback(null);
+                      try {
+                        const res = await networkManager.probeServer('https://nexus-api.dynv6.net');
+                        if (res.status === 'connected') {
+                          setNetworkTestFeedback({
+                            text: `Conexão bem-sucedida! Latência: ${res.latency_ms}ms`,
+                            isError: false,
+                          });
+                        } else {
+                          setNetworkTestFeedback({
+                            text: 'Não foi possível conectar ao NEXUS.',
+                            isError: true,
+                          });
+                        }
+                      } catch {
+                        setNetworkTestFeedback({
+                          text: 'Não foi possível conectar ao NEXUS.',
+                          isError: true,
+                        });
+                      } finally {
+                        setIsTestingServer(false);
+                      }
+                    }}
+                    className="px-3 py-2 rounded-lg bg-nexus-panel hover:bg-nexus-surface border border-nexus-border text-xs font-semibold text-nexus-text transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {isTestingServer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Testar Conexão'}
+                  </button>
                 </div>
 
                 {networkTestFeedback && (

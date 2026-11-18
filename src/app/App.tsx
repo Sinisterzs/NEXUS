@@ -16,7 +16,6 @@ import { SettingsView } from '../features/settings/SettingsView';
 import { AuthView } from '../features/auth/AuthView';
 import { ProfileOnboardingView } from '../features/auth/ProfileOnboardingView';
 import { MinimalSplashView } from '../features/startup/MinimalSplashView';
-import { ServerApprovalView } from '../features/auth/ServerApprovalView';
 import { preloginUpdaterService } from '../services/PreloginUpdaterService';
 import { useAppStore } from '../stores/useAppStore';
 import { callService } from '../services/CallService';
@@ -280,9 +279,16 @@ export const App: React.FC = () => {
       return <MinimalSplashView />;
     }
 
-    // 2. Servidor pendente de aprovação criptográfica de identidade (TOFU)
+    // 2. Identidade inesperada ou falha de verificação do servidor oficial: bloqueia conexão
     if (networkStatus.server_reachability === 'needs_approval') {
-      return <ServerApprovalView />;
+      return (
+        <MinimalSplashView
+          isConnectionPending
+          statusText="Não foi possível conectar ao NEXUS."
+          onRetry={() => window.location.reload()}
+          retryLabel="Tentar novamente"
+        />
+      );
     }
 
     // 3. Servidor offline / rede desconectada sem sessão ativa em memória
@@ -294,7 +300,7 @@ export const App: React.FC = () => {
       return (
         <MinimalSplashView
           isConnectionPending
-          statusText="Servidor indisponível no momento."
+          statusText="Não foi possível conectar ao NEXUS."
           onRetry={() => window.location.reload()}
           retryLabel="Tentar novamente"
         />

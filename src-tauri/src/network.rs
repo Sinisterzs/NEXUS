@@ -637,6 +637,18 @@ pub async fn verify_channel_bound_server_identity(
     })
 }
 
+pub const OFFICIAL_NEXUS_SERVER_ID: &str =
+    "nexus-id-6a2d70e5c08d48566d6e1d7749359de11eba6dc8fa3743c01d59411b4d7e7092";
+
+fn is_dev_or_lab_mode() -> bool {
+    cfg!(debug_assertions) || crate::lab::enabled()
+}
+
+fn is_official_nexus_server(url: &str) -> bool {
+    let normalized = url.trim().trim_end_matches('/').to_lowercase();
+    normalized == crate::auth::DEFAULT_API_BASE
+}
+
 #[tauri::command]
 pub async fn network_get_status(include_tailscale: Option<bool>) -> Result<NetworkStatus, String> {
     network_get_status_with_tailscale(include_tailscale, find_tailscale_cli, query_tailscale_status_raw).await
@@ -795,6 +807,11 @@ async fn network_get_status_with_tailscale(
     let approved_server_id = persisted_cfg.as_ref().and_then(|c| c.approved_server_id.clone());
     let approved_pub_key = persisted_cfg.as_ref().and_then(|c| c.approved_public_key.clone());
 
+    if !is_dev_or_lab_mode() && !is_official_nexus_server(&active_url) {
+        active_url = crate::auth::get_default_api_base();
+        set_dynamic_api_base(active_url.clone());
+    }
+
     // 1. Probe the current/configured server URL first
     if let Ok(probe) = probe_server_health(&active_url).await {
         server_latency = Some(probe.latency_ms);
@@ -808,14 +825,24 @@ async fn network_get_status_with_tailscale(
         .await
         {
             Ok(ver) => {
-                if ver.is_approved {
+                let official_identity_ok =
+                    is_official_nexus_server(&active_url) && ver.server_id == OFFICIAL_NEXUS_SERVER_ID;
+                let allow_approved = if !is_dev_or_lab_mode() {
+                    ver.is_approved && official_identity_ok
+                } else {
+                    ver.is_approved
+                };
+
+                if allow_approved {
                     reachability = "connected".to_string();
                     crate::auth::record_authenticated_server_identity(&active_url, &ver.server_id);
                     verified_server_identity = Some(ver);
                 } else if approved_server_id.is_none()
-                    && (active_url.contains("127.0.0.1") || active_url.contains("localhost"))
+                    && ((is_dev_or_lab_mode()
+                        && (active_url.contains("127.0.0.1") || active_url.contains("localhost")))
+                        || official_identity_ok)
                 {
-                    // Auto-approve loopback on cold start for local development
+                    // Auto-approve loopback (dev/lab only) or official NEXUS server pinned to OFFICIAL_NEXUS_SERVER_ID
                     let _ = save_persisted_network_config(
                         &active_url,
                         Some(&ver.server_id),
@@ -1084,6 +1111,9 @@ pub fn network_get_server_address() -> String {
 #[tauri::command]
 pub fn network_set_server_address(url: String) -> Result<String, String> {
     let valid_url = validate_server_url(&url)?;
+    if !is_dev_or_lab_mode() && !is_official_nexus_server(&valid_url) {
+        return Err("A alteração de servidor está desabilitada em builds oficiais.".to_string());
+    }
     let old_base = crate::auth::get_api_base();
     set_dynamic_api_base(valid_url.clone());
     let _ = save_persisted_server_url(&valid_url);
@@ -1100,7 +1130,13 @@ pub fn network_set_server_address(url: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn network_approve_server(url: String) -> Result<VerifiedServerIdentity, String> {
     let valid_url = validate_server_url(&url)?;
+    if !is_dev_or_lab_mode() && !is_official_nexus_server(&valid_url) {
+        return Err("A aprovação de servidores personalizados está desabilitada em builds oficiais.".to_string());
+    }
     let ver = verify_channel_bound_server_identity(&valid_url, None, None).await?;
+    if is_official_nexus_server(&valid_url) && ver.server_id != OFFICIAL_NEXUS_SERVER_ID {
+        return Err("A identidade do servidor oficial não corresponde à âncora de confiança esperada.".to_string());
+    }
     let old_cfg = load_persisted_network_config();
     let is_different_server = old_cfg
         .as_ref()
@@ -1236,9 +1272,9 @@ pub(crate) mod tests {
         assert_eq!(detections.get(), 1);
         assert_eq!(queries.get(), 0);
         assert!(status.server_url.starts_with("https://"));
-        assert_eq!(status.server_reachability, "needs_approval");
+        assert_eq!(status.server_reachability, "connected");
         assert!(status.server_latency_ms.is_some());
-        assert!(status.pending_server_identity.is_some());
+        assert!(status.pending_server_identity.is_none());
         assert!(status.detected_peers.is_empty(), "Public HTTPS must not discover private peers");
         assert!(status.tailscale_ips.is_empty());
         assert!(!status.tailscale_service_running);
@@ -1487,9 +1523,9 @@ pub(crate) mod tests {
             status.pending_server_identity.as_ref().map(|p| &p.server_id)
         );
 
-        assert_eq!(status.server_reachability, "needs_approval");
-        assert!(status.pending_server_identity.is_some());
-        let pending = status.pending_server_identity.unwrap();
+        assert_eq!(status.server_reachability, "connected");
+        assert!(status.pending_server_identity.is_none());
+        let pending = status.verified_server_identity.unwrap();
         assert_eq!(
             pending.server_id,
             "nexus-id-6a2d70e5c08d48566d6e1d7749359de11eba6dc8fa3743c01d59411b4d7e7092"
@@ -1585,7 +1621,7 @@ pub(crate) mod tests {
         assert!(status.tailscale_service_running);
         assert!(status.tailscale_authenticated);
         assert_eq!(status.detected_peers.len(), 1);
-        assert_eq!(status.server_reachability, "needs_approval");
+        assert_eq!(status.server_reachability, "connected");
 
         crate::auth::clear_authenticated_server_origin();
         clear_dynamic_api_base_for_tests();
@@ -1664,10 +1700,23 @@ pub(crate) mod tests {
         ).await.expect("Private status must resolve");
         assert_eq!(queries.get(), 1);
         assert_eq!(private_status.tailscale_state, "service_stopped");
-        assert_ne!(private_status.server_reachability, "connected");
+        assert_ne!(private_status.server_url, "http://100.100.100.100:3001");
 
         clear_authenticated_server_origin();
         clear_dynamic_api_base_for_tests();
         clear_persisted_server_url_for_tests();
+    }
+
+    #[test]
+    fn test_is_official_nexus_server() {
+        assert!(is_official_nexus_server("https://nexus-api.dynv6.net"));
+        assert!(is_official_nexus_server("https://nexus-api.dynv6.net/"));
+        assert!(is_official_nexus_server("  HTTPS://NEXUS-API.DYNV6.NET/  "));
+
+        assert!(!is_official_nexus_server("http://nexus-api.dynv6.net"));
+        assert!(!is_official_nexus_server("https://evil-nexus-api.dynv6.net"));
+        assert!(!is_official_nexus_server("https://nexus-api.dynv6.net:8443"));
+        assert!(!is_official_nexus_server("https://custom.example.com"));
+        assert!(!is_official_nexus_server("http://100.64.0.5:3001"));
     }
 }
