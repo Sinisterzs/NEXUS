@@ -111,6 +111,77 @@ async function fetchGitHubReleases({
   return all;
 }
 
+async function fetchGitHubReleasesWithRetry({
+  owner = 'Sinisterzs',
+  repo = 'NEXUS',
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 10000,
+  maxPages = 5,
+  targetTag = null,
+  retries = 3,
+  retryDelayMs = 5000,
+} = {}) {
+  if (!targetTag) {
+    return fetchGitHubReleases({ owner, repo, fetchImpl, timeoutMs, maxPages });
+  }
+
+  const parsed = parseSemver(targetTag);
+  if (!parsed) {
+    console.log(`[sync-readme] Skip: tag "${targetTag}" is not a valid SemVer release tag.`);
+    return null;
+  }
+
+  const isStable = parsed.pre.length === 0;
+  const isNightly = parsed.pre[0] === 'nightly';
+  if (!isStable && !isNightly) {
+    console.log(`[sync-readme] Skip: tag "${targetTag}" belongs to unsupported channel "${parsed.pre.join('.')}".`);
+    return null;
+  }
+
+  const installer = `nexus_${parsed.raw}_x64-setup.exe`;
+  const manifest = isStable ? 'latest.json' : 'latest-nightly.json';
+  let lastReason = `release "${targetTag}" not found in GitHub Releases API`;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const releases = await fetchGitHubReleases({ owner, repo, fetchImpl, timeoutMs, maxPages });
+    const target = releases.find((r) => r && r.tag_name === targetTag);
+
+    if (target) {
+      if (target.draft) {
+        console.log(`[sync-readme] Skip: release "${targetTag}" is a draft.`);
+        return null;
+      }
+      if (isStable && target.prerelease) {
+        console.log(`[sync-readme] Skip: stable tag "${targetTag}" is marked as prerelease.`);
+        return null;
+      }
+      if (isNightly && !target.prerelease) {
+        console.log(`[sync-readme] Skip: nightly tag "${targetTag}" is not marked as prerelease.`);
+        return null;
+      }
+
+      const hasInstaller = hasAsset(target, installer, owner, repo);
+      const hasManifest = hasAsset(target, manifest, owner, repo);
+      if (hasInstaller && hasManifest) {
+        return releases;
+      }
+
+      const missing = [];
+      if (!hasInstaller) missing.push(installer);
+      if (!hasManifest) missing.push(manifest);
+      lastReason = `missing required asset(s): ${missing.join(', ')}`;
+    } else {
+      lastReason = `release "${targetTag}" not found in GitHub Releases API`;
+    }
+
+    if (attempt < retries && retryDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, retryDelayMs));
+    }
+  }
+
+  throw new Error(`Incomplete or missing release "${targetTag}" after ${retries} attempt(s): ${lastReason}`);
+}
+
 function syncReadmeFromReleases({ readmeContent, releases }) {
   const currentStable = readmeContent.match(/<!-- NEXUS:STABLE_ROW:START -->[\s\S]*?<code>v([\d.]+)<\/code>/)?.[1] || null;
   const currentNightly = readmeContent.match(/<!-- NEXUS:BETA_ROW:START -->[\s\S]*?<code>v([^<]+)<\/code>/)?.[1] || null;
@@ -145,5 +216,6 @@ module.exports = {
   compareSemver,
   selectLatestOfficialReleases,
   fetchGitHubReleases,
+  fetchGitHubReleasesWithRetry,
   syncReadmeFromReleases,
 };
