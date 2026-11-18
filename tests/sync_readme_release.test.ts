@@ -184,3 +184,18 @@ test('Automação README: validação contra o README.md real do repositório', 
 
   assert.equal(simulated.trim(), actualReadme.trim(), 'README.md atual deve coincidir com o cálculo do sincronizador');
 });
+
+test('Automação README: cabeçalho Stable e tabela Stable devem apresentar exatamente a mesma versão e links consistentes', () => {
+  const readmePath = path.resolve(import.meta.dirname, '..', 'README.md');
+  const actualReadme = fs.readFileSync(readmePath, 'utf8');
+
+  const badgeVer = actualReadme.match(/<!-- NEXUS:STABLE_HEADER_BADGE:START -->[\s\S]*?Versão-v([\d.]+)%20Stable/)?.[1];
+  const headerLinkVer = actualReadme.match(/<!-- NEXUS:STABLE_HEADER_LINKS:START -->[\s\S]*?Baixar v([\d.]+) Stable/)?.[1];
+  const releaseNotesVer = actualReadme.match(/<!-- NEXUS:STABLE_HEADER_LINKS:START -->[\s\S]*?release-notes-v([\d.]+)\.md/)?.[1];
+  const tableVer = actualReadme.match(/<!-- NEXUS:STABLE_ROW:START -->[\s\S]*?<code>v([\d.]+)<\/code>/)?.[1];
+
+  assert.ok(badgeVer && headerLinkVer && releaseNotesVer && tableVer, 'Todas as referências Stable devem existir');
+  assert.equal(badgeVer, tableVer, 'Badge Stable deve coincidir com a tabela Stable');
+  assert.equal(headerLinkVer, tableVer, 'Link de download Stable deve coincidir com a tabela Stable');
+  assert.equal(releaseNotesVer, tableVer, 'Notas de lançamento Stable devem coincidir com a tabela Stable');
+});
