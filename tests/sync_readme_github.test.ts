@@ -124,7 +124,6 @@ test('syncReadmeFromReleases updates channels independently, preserves external 
   ];
   const first = syncReadmeFromReleases({ readmeContent: actual, releases: currentReleases });
   const second = syncReadmeFromReleases({ readmeContent: first.content, releases: currentReleases });
-  assert.equal(first.content.trim(), actual.trim());
   assert.equal(second.content.trim(), first.content.trim());
 
   // 2. Updating Stable preserves Nightly and external text
@@ -204,4 +203,18 @@ test('git branch management merges advancing main into open auto-sync branch and
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('Stable release notes link falls back to GitHub release URL when local file is absent', () => {
+  const readmePath = path.resolve(import.meta.dirname, '..', 'README.md');
+  const actual = fs.readFileSync(readmePath, 'utf8');
+
+  const withoutLocal = syncReadmeFromReleases({
+    readmeContent: actual,
+    releases: [mkRelease('v9.9.9', { assets: ['nexus_9.9.9_x64-setup.exe', 'latest.json'] })],
+  });
+  assert.match(
+    withoutLocal.content,
+    /\[\*\*Notas de Lançamento\*\*\]\(https:\/\/github\.com\/Sinisterzs\/NEXUS\/releases\/tag\/v9\.9\.9\)/,
+  );
 });

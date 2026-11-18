@@ -102,7 +102,7 @@ test('Automação README: canal Stable atualiza Header Badges, Links e Linha HTM
   assert.match(result, /v0\.3\.0%20Stable/);
   assert.match(result, /Baixar v0\.3\.0 Stable/);
   assert.match(result, /nexus_0\.3\.0_x64-setup\.exe/);
-  assert.match(result, /scripts\/release-notes-v0\.3\.0\.md/);
+  assert.match(result, /https:\/\/github\.com\/Sinisterzs\/NEXUS\/releases\/tag\/v0\.3\.0/);
 
   // Linha HTML Stable deve apontar para v0.3.0
   assert.match(result, /<strong><code>v0\.3\.0<\/code><\/strong>/);
