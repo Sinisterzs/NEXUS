@@ -1348,6 +1348,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await settingsRepository.flushSave();
       const user = await authRepository.loginGoogle();
+      ui30ReauthService.markCompleted();
       const accPrefs = await settingsRepository.loadPreferences(user.id);
       set((state) => ({
         ...createAuthenticatedState(state, user, accPrefs.avatarUrl, accPrefs),

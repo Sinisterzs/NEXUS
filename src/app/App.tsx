@@ -17,6 +17,8 @@ import { AuthView } from '../features/auth/AuthView';
 import { ProfileOnboardingView } from '../features/auth/ProfileOnboardingView';
 import { MinimalSplashView } from '../features/startup/MinimalSplashView';
 import { preloginUpdaterService } from '../services/PreloginUpdaterService';
+import { updatePolicyService } from '../services/UpdatePolicyService';
+import { APP_VERSION } from '../version';
 import { useAppStore } from '../stores/useAppStore';
 import { callService } from '../services/CallService';
 import { gatewayClient } from '../services/GatewayClient';
@@ -42,6 +44,7 @@ export const App: React.FC = () => {
   const [rustBackendReady, setRustBackendReady] = useState(false);
   const [startupTimedOut, setStartupTimedOut] = useState(false);
   const [preloginCompleted, setPreloginCompleted] = useState(false);
+  const [preloginNoticeDismissed, setPreloginNoticeDismissed] = useState(false);
   const [preloginState, setPreloginState] = useState(preloginUpdaterService.getState());
   const pendingProfileOnboarding = useAppStore((s) => s.pendingProfileOnboarding);
 
@@ -276,7 +279,20 @@ export const App: React.FC = () => {
         );
       }
 
-      return <MinimalSplashView />;
+      const isCheckingUpdate = preloginState.status === 'checking';
+      const isConnectingServer =
+        !isInitialized &&
+        networkStatus.server_reachability !== 'connected' &&
+        networkStatus.server_reachability !== 'server_unreachable' &&
+        networkStatus.server_reachability !== 'network_disconnected' &&
+        networkStatus.server_reachability !== 'needs_approval';
+
+      return (
+        <MinimalSplashView
+          isCheckingUpdate={isCheckingUpdate}
+          isConnectingServer={isConnectingServer}
+        />
+      );
     }
 
     // 2. Identidade inesperada ou falha de verificação do servidor oficial: bloqueia conexão
@@ -355,14 +371,34 @@ export const App: React.FC = () => {
         <IncomingCallToast />
 
         {/* Notificação Flutuante de Atualização Automática (GitHub Releases) */}
-        <UpdateNotificationToast />
+        {preloginState.status !== 'update_found' && <UpdateNotificationToast />}
       </div>
     );
   };
 
+  const preloginVer = preloginState.updateInfo?.version;
+  const showUnifiedPreloginNotice =
+    preloginCompleted &&
+    !preloginNoticeDismissed &&
+    preloginState.status === 'update_found' &&
+    Boolean(preloginVer) &&
+    updatePolicyService.shouldShowNightlyNotification(APP_VERSION, preloginVer!, false);
+
   return (
     <>
-      {renderScreen()}
+      {showUnifiedPreloginNotice && preloginVer ? (
+        <MinimalSplashView
+          optionalUpdateVersion={preloginVer}
+          optionalUpdateChannel={preloginState.updateInfo?.channel}
+          onUpdateNow={() => void preloginUpdaterService.confirmUpdate()}
+          onDismissOptionalUpdate={() => {
+            updatePolicyService.dismissNightlyVersion(preloginVer);
+            setPreloginNoticeDismissed(true);
+          }}
+        />
+      ) : (
+        renderScreen()
+      )}
 
       {/* Confirmação de fechamento quando há chamada, sala de voz ou transmissão ativa */}
       {closeConfirmSummary && (

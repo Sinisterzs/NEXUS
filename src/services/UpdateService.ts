@@ -4,7 +4,7 @@
  * com suporte a canais dinâmicos (Stable e Beta / Nightly).
  */
 
-import { isPrereleaseVersion } from '../version.ts';
+import { APP_VERSION, isPrereleaseVersion } from '../version.ts';
 
 export type UpdateChannel = 'stable' | 'beta';
 
@@ -180,7 +180,7 @@ class UpdateService {
   private listeners: UpdateListener[] = [];
   private state: UpdateState = {
     status: 'idle',
-    channel: 'stable',
+    channel: isPrereleaseVersion(APP_VERSION) ? 'beta' : 'stable',
     updateInfo: null,
     downloadProgress: 0,
     downloadedBytes: 0,

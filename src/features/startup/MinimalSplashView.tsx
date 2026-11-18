@@ -23,9 +23,14 @@ export interface MinimalSplashViewProps {
   onRetry?: () => void;
   retryLabel?: string;
   isConnectionPending?: boolean;
+  isCheckingUpdate?: boolean;
+  isConnectingServer?: boolean;
   demoMode?: boolean;
   updateRequired?: boolean;
+  optionalUpdateVersion?: string;
+  optionalUpdateChannel?: 'stable' | 'beta';
   onUpdateNow?: () => void;
+  onDismissOptionalUpdate?: () => void;
   onCloseApp?: () => void;
 }
 
@@ -34,9 +39,14 @@ export function MinimalSplashView({
   onRetry,
   retryLabel = 'Tentar novamente',
   isConnectionPending = false,
+  isCheckingUpdate = false,
+  isConnectingServer = false,
   demoMode = false,
   updateRequired = false,
+  optionalUpdateVersion,
+  optionalUpdateChannel,
   onUpdateNow,
+  onDismissOptionalUpdate,
   onCloseApp,
 }: MinimalSplashViewProps = {}) {
   const isDevDemo = Boolean((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV && demoMode);
@@ -131,6 +141,43 @@ export function MinimalSplashView({
                 </button>
               )}
             </div>
+          </div>
+        ) : optionalUpdateVersion ? (
+          <div className="flex flex-col items-center gap-3 max-w-xs text-center px-4">
+            <p className="text-xs text-zinc-200 tracking-wide" role="status" aria-live="polite">
+              {optionalUpdateChannel === 'beta' || optionalUpdateVersion.includes('-nightly.')
+                ? 'Nova Nightly disponível'
+                : 'Nova atualização disponível'}
+            </p>
+            <div className="flex items-center gap-2 mt-1">
+              {onUpdateNow && (
+                <button
+                  type="button"
+                  onClick={onUpdateNow}
+                  className="px-4 py-1.5 rounded-lg bg-nexus-accent hover:bg-nexus-accent-hover text-xs font-semibold text-white transition-colors cursor-pointer"
+                >
+                  Atualizar agora
+                </button>
+              )}
+              {onDismissOptionalUpdate && (
+                <button
+                  type="button"
+                  onClick={onDismissOptionalUpdate}
+                  className="px-4 py-1.5 rounded-lg border border-zinc-800 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
+                >
+                  Agora não
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (isCheckingUpdate || isConnectingServer) ? (
+          <div className="flex flex-col items-center gap-1 text-center px-4" role="status" aria-live="polite">
+            {isCheckingUpdate && (
+              <p className="text-xs text-zinc-400 tracking-wide">Procurando atualização</p>
+            )}
+            {isConnectingServer && (
+              <p className="text-xs text-zinc-400 tracking-wide">Conectando</p>
+            )}
           </div>
         ) : resolvedText && (
           <p className="text-xs text-zinc-400 tracking-wide text-center px-4" role="status" aria-live="polite">

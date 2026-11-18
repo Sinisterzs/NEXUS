@@ -299,3 +299,33 @@ test('SQL Diagnostic Simulation: Identifies multiple accounts colliding on norma
   assert.equal(diag.anyMatchedAccountIsPasswordless, true);
   assert.equal(diag.hasRegisteredGoogleLink, false);
 });
+
+test('Ui30ReauthService: Google login marks reauth completed and prevents startup logout loop', async () => {
+  const { Ui30ReauthService, UI30_REAUTH_KEY } = await import('../src/services/Ui30ReauthService.ts');
+  const prevStorage = (globalThis as any).localStorage;
+  const store = new Map<string, string>();
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => { store.set(k, v); },
+    removeItem: (k: string) => { store.delete(k); },
+  };
+  try {
+    const svc = new Ui30ReauthService();
+    // 1. Before Google login: needsReauth() is true
+    assert.equal(svc.needsReauth(), true);
+
+    // 2. Failed/cancelled Google login: markCompleted() is not called -> needsReauth() stays true
+    assert.equal(svc.needsReauth(), true);
+
+    // 3. Successful Google login calls markCompleted() -> needsReauth() becomes false
+    svc.markCompleted();
+    assert.equal(store.get(UI30_REAUTH_KEY), 'true');
+    assert.equal(svc.needsReauth(), false);
+
+    // 4. Simulated restart with persisted localStorage: needsReauth() remains false
+    const restartedSvc = new Ui30ReauthService();
+    assert.equal(restartedSvc.needsReauth(), false);
+  } finally {
+    (globalThis as any).localStorage = prevStorage;
+  }
+});
