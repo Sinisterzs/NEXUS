@@ -2,6 +2,8 @@ name: Sync README with Official Releases
 
 on:
   workflow_dispatch:
+  release:
+    types: [published]
 
 concurrency:
   group: sync-readme-release
@@ -19,6 +21,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Setup Node.js 22
@@ -57,12 +60,14 @@ jobs:
       - name: Sync README from GitHub Releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_TAG: ${{ github.event.release.tag_name }}
         run: |
           node -e '
             const fs = require("fs");
-            const { fetchGitHubReleases, syncReadmeFromReleases } = require("./scripts/sync-readme-github.cjs");
+            const { fetchGitHubReleasesWithRetry, syncReadmeFromReleases } = require("./scripts/sync-readme-github.cjs");
             (async () => {
-              const releases = await fetchGitHubReleases({ owner: "Sinisterzs", repo: "NEXUS" });
+              const targetTag = process.env.TARGET_TAG || null;
+              const releases = await fetchGitHubReleasesWithRetry({ owner: "Sinisterzs", repo: "NEXUS", targetTag });
               const current = fs.readFileSync("README.md", "utf8");
               const { content } = syncReadmeFromReleases({ readmeContent: current, releases });
               if (content !== current) {

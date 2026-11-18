@@ -11,6 +11,7 @@ const {
   compareSemver,
   selectLatestOfficialReleases,
   fetchGitHubReleases,
+  fetchGitHubReleasesWithRetry,
   syncReadmeFromReleases,
 } = require('../scripts/sync-readme-github.cjs');
 
@@ -217,4 +218,28 @@ test('Stable release notes link falls back to GitHub release URL when local file
     withoutLocal.content,
     /\[\*\*Notas de Lançamento\*\*\]\(https:\/\/github\.com\/Sinisterzs\/NEXUS\/releases\/tag\/v9\.9\.9\)/,
   );
+});
+
+test('fetchGitHubReleasesWithRetry retries when release assets are delayed and succeeds once ready', async () => {
+  let attempt = 0;
+  const releases = await fetchGitHubReleasesWithRetry({
+    targetTag: 'v0.4.0-nightly.12',
+    retries: 3,
+    retryDelayMs: 5,
+    fetchImpl: async () => {
+      attempt++;
+      const payload =
+        attempt === 1
+          ? [mkRelease('v0.4.0-nightly.12', { prerelease: true, assets: [] })]
+          : [
+              mkRelease('v0.4.0-nightly.12', {
+                prerelease: true,
+                assets: ['nexus_0.4.0-nightly.12_x64-setup.exe', 'latest-nightly.json'],
+              }),
+            ];
+      return { ok: true, status: 200, json: async () => payload } as any;
+    },
+  });
+  assert.equal(attempt, 2);
+  assert.equal(releases[0].assets.length, 2);
 });

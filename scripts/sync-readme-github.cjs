@@ -111,6 +111,36 @@ async function fetchGitHubReleases({
   return all;
 }
 
+async function fetchGitHubReleasesWithRetry({
+  owner = 'Sinisterzs',
+  repo = 'NEXUS',
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 10000,
+  maxPages = 5,
+  targetTag = null,
+  retries = 3,
+  retryDelayMs = 5000,
+} = {}) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const releases = await fetchGitHubReleases({ owner, repo, fetchImpl, timeoutMs, maxPages });
+    if (!targetTag) return releases;
+
+    const target = releases.find((r) => r && r.tag_name === targetTag);
+    const parsed = target ? parseSemver(target.tag_name) : null;
+    if (target && !target.draft && parsed) {
+      const installer = `nexus_${parsed.raw}_x64-setup.exe`;
+      const manifest = !target.prerelease && parsed.pre.length === 0 ? 'latest.json' : 'latest-nightly.json';
+      if (hasAsset(target, installer, owner, repo) && hasAsset(target, manifest, owner, repo)) {
+        return releases;
+      }
+    }
+    if (attempt < retries && retryDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, retryDelayMs));
+    }
+  }
+  return fetchGitHubReleases({ owner, repo, fetchImpl, timeoutMs, maxPages });
+}
+
 function syncReadmeFromReleases({ readmeContent, releases }) {
   const currentStable = readmeContent.match(/<!-- NEXUS:STABLE_ROW:START -->[\s\S]*?<code>v([\d.]+)<\/code>/)?.[1] || null;
   const currentNightly = readmeContent.match(/<!-- NEXUS:BETA_ROW:START -->[\s\S]*?<code>v([^<]+)<\/code>/)?.[1] || null;
@@ -145,5 +175,6 @@ module.exports = {
   compareSemver,
   selectLatestOfficialReleases,
   fetchGitHubReleases,
+  fetchGitHubReleasesWithRetry,
   syncReadmeFromReleases,
 };
