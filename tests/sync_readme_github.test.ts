@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -149,4 +151,57 @@ test('syncReadmeFromReleases updates channels independently, preserves external 
       releases: currentReleases,
     }),
   );
+});
+
+test('git branch management merges advancing main into open auto-sync branch and supports post-merge cycle', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-doc443-'));
+  const remoteDir = path.join(tmp, 'remote.git');
+  const workDir = path.join(tmp, 'work');
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+  try {
+    fs.mkdirSync(remoteDir);
+    git(remoteDir, 'init', '--bare');
+    git(tmp, 'clone', remoteDir, 'work');
+    git(workDir, 'config', 'user.name', 'github-actions[bot]');
+    git(workDir, 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com');
+    git(workDir, 'checkout', '-b', 'main');
+    fs.writeFileSync(path.join(workDir, 'README.md'), 'base\n');
+    git(workDir, 'add', 'README.md');
+    git(workDir, 'commit', '-m', 'init');
+    git(workDir, 'push', '-u', 'origin', 'main');
+
+    // Create docs/auto-sync-readme with a commit
+    git(workDir, 'checkout', '-b', 'docs/auto-sync-readme', 'origin/main');
+    fs.writeFileSync(path.join(workDir, 'README.md'), 'auto-sync\n');
+    git(workDir, 'add', 'README.md');
+    git(workDir, 'commit', '-m', 'auto-sync');
+    git(workDir, 'push', '-u', 'origin', 'docs/auto-sync-readme');
+
+    // Advance main with a non-conflicting file
+    git(workDir, 'checkout', 'main');
+    fs.writeFileSync(path.join(workDir, 'OTHER.md'), 'other\n');
+    git(workDir, 'add', 'OTHER.md');
+    git(workDir, 'commit', '-m', 'advance main');
+    git(workDir, 'push', 'origin', 'main');
+
+    // Simulate open PR workflow: merge origin/main into docs/auto-sync-readme and push without force
+    git(workDir, 'checkout', 'docs/auto-sync-readme');
+    git(workDir, 'fetch', 'origin', 'main');
+    git(workDir, 'merge', '--no-edit', 'origin/main');
+    git(workDir, 'push', 'origin', 'docs/auto-sync-readme');
+    assert.equal(fs.existsSync(path.join(workDir, 'OTHER.md')), true);
+
+    // Simulate PR merged into main -> new cycle starts cleanly from origin/main
+    git(workDir, 'checkout', 'main');
+    git(workDir, 'merge', '--no-edit', 'docs/auto-sync-readme');
+    git(workDir, 'push', 'origin', 'main');
+    git(workDir, 'fetch', 'origin', 'main');
+    git(workDir, 'fetch', 'origin', 'docs/auto-sync-readme');
+    // is-ancestor exits 0 when docs/auto-sync-readme is merged into origin/main
+    git(workDir, 'merge-base', '--is-ancestor', 'origin/docs/auto-sync-readme', 'origin/main');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
