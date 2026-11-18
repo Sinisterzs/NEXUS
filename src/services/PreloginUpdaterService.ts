@@ -266,8 +266,11 @@ export class PreloginUpdaterService {
     errorMessage: null,
   };
 
-  constructor(backend?: PreloginUpdaterBackend) {
+  private readonly appVersion: string;
+
+  constructor(backend?: PreloginUpdaterBackend & { currentVersion?: string }) {
     this.backend = backend || new TauriPreloginUpdaterBackend();
+    this.appVersion = backend?.currentVersion || APP_VERSION;
   }
 
   setBackend(backend: PreloginUpdaterBackend) {
@@ -349,7 +352,7 @@ export class PreloginUpdaterService {
       });
 
       const compat = await fetchBackendCompatibility();
-      compatible = isVersionCompatible(APP_VERSION, channel, compat);
+      compatible = isVersionCompatible(this.appVersion, channel, compat);
 
       let checkResult: PreloginCheckResult;
       try {

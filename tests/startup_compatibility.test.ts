@@ -14,6 +14,7 @@ async function scenario(contract: unknown, available: boolean, ipcFailure = fals
   }};
   try {
     const service = new PreloginUpdaterService({
+      currentVersion: '0.4.0-nightly.8',
       checkPrelogin: async () => {
         if (checkFailure) throw new Error('temporary update server failure');
         return {channel:'beta',currentVersion:'0.4.0-nightly.8',version:available?'0.4.0-nightly.9':undefined,updateAvailable:available};
