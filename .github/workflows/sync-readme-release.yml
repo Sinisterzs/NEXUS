@@ -1,0 +1,71 @@
+name: Sync README with Official Releases
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: sync-readme-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-readme:
+    name: Sync README Downloads Table
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run README sync tests
+        run: |
+          node --experimental-strip-types tests/sync_readme_release.test.ts
+          node --experimental-strip-types tests/sync_readme_github.test.ts
+
+      - name: Sync README from GitHub Releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const { fetchGitHubReleases, syncReadmeFromReleases } = require("./scripts/sync-readme-github.cjs");
+            (async () => {
+              const releases = await fetchGitHubReleases({ owner: "Sinisterzs", repo: "NEXUS" });
+              const current = fs.readFileSync("README.md", "utf8");
+              const { content } = syncReadmeFromReleases({ readmeContent: current, releases });
+              if (content !== current) {
+                fs.writeFileSync("README.md", content, "utf8");
+              }
+            })().catch((err) => { console.error(err); process.exit(1); });
+          '
+
+      - name: Check for README changes
+        id: diff
+        run: |
+          if git diff --quiet README.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update Pull Request
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B docs/auto-sync-readme
+          git add README.md
+          git commit -m "docs(readme): sync official release downloads"
+          git push origin docs/auto-sync-readme --force-with-lease
+          if ! gh pr view docs/auto-sync-readme --json number >/dev/null 2>&1; then
+            gh pr create --base main --head docs/auto-sync-readme --title "docs: sync official NEXUS downloads" --body "Atualiza automaticamente a seção de downloads do README com as versões oficiais mais recentes."
+          fi
