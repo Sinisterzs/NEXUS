@@ -120,7 +120,10 @@ function updateReadmeContent(params) {
     );
 
     // 2. Header Links
-    const releaseNotesPath = `scripts/release-notes-${tag}.md`;
+    const localNotesFile = path.resolve(__dirname, `release-notes-${tag}.md`);
+    const releaseNotesPath = fs.existsSync(localNotesFile)
+      ? `scripts/release-notes-${tag}.md`
+      : `https://github.com/${repo}/releases/tag/${tag}`;
     const headerLinksBlock = `[**Baixar ${tag} Stable**](https://github.com/${repo}/releases/download/${tag}/${resolvedArtifact}) • [**Notas de Lançamento**](${releaseNotesPath}) • [**Releases no GitHub**](https://github.com/${repo}/releases) • [**Histórico de Mudanças**](CHANGELOG.md)`;
     updated = replaceBetweenMarkers(
       updated,
