@@ -32,13 +32,20 @@ jobs:
           node --experimental-strip-types tests/sync_readme_github.test.ts
 
       - name: Prepare automation branch safely
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git fetch origin main
+          OPEN_PR=$(gh pr list --head docs/auto-sync-readme --state open --json number --jq '.[0].number // ""')
           if git ls-remote --exit-code --heads origin docs/auto-sync-readme >/dev/null 2>&1; then
             git fetch origin docs/auto-sync-readme
-            git checkout -b docs/auto-sync-readme origin/docs/auto-sync-readme
-            if ! git merge-base --is-ancestor origin/main HEAD; then
-              echo "::error::Branch docs/auto-sync-readme diverged from origin/main. Manual resolution required."
+            if [ -n "$OPEN_PR" ]; then
+              git checkout -b docs/auto-sync-readme origin/docs/auto-sync-readme
+              git merge --no-edit origin/main
+            elif git merge-base --is-ancestor origin/docs/auto-sync-readme origin/main; then
+              git checkout -b docs/auto-sync-readme origin/main
+            else
+              echo "::error::Branch docs/auto-sync-readme has unmerged commits without an open PR. Manual inspection required."
               exit 1
             fi
           else
@@ -83,6 +90,7 @@ jobs:
           git add README.md
           git commit -m "docs(readme): sync official release downloads"
           git push origin docs/auto-sync-readme
-          if ! gh pr view docs/auto-sync-readme --json number >/dev/null 2>&1; then
+          OPEN_PR=$(gh pr list --head docs/auto-sync-readme --state open --json number --jq '.[0].number // ""')
+          if [ -z "$OPEN_PR" ]; then
             gh pr create --base main --head docs/auto-sync-readme --title "docs: sync official NEXUS downloads" --body "Atualiza automaticamente a seção de downloads do README com as versões oficiais mais recentes."
           fi
