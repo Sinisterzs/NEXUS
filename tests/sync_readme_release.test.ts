@@ -185,17 +185,42 @@ test('Automação README: validação contra o README.md real do repositório', 
   assert.equal(simulated.trim(), actualReadme.trim(), 'README.md atual deve coincidir com o cálculo do sincronizador');
 });
 
+function assertStableConsistency(readmeContent: string) {
+  const badgeVer = readmeContent.match(/<!-- NEXUS:STABLE_HEADER_BADGE:START -->[\s\S]*?Versão-v([\d.]+)%20Stable/)?.[1];
+  const headerDownloadMatch = readmeContent.match(
+    /<!-- NEXUS:STABLE_HEADER_LINKS:START -->[\s\S]*?\[\*\*Baixar v([\d.]+) Stable\*\*\]\((https:\/\/github\.com\/Sinisterzs\/NEXUS\/releases\/download\/v([\d.]+)\/nexus_([\d.]+)_x64-setup\.exe)\)/,
+  );
+  const notesMatch = readmeContent.match(
+    /<!-- NEXUS:STABLE_HEADER_LINKS:START -->[\s\S]*?\[\*\*Notas de Lançamento\*\*\]\(([^)]+)\)/,
+  );
+  const tableVer = readmeContent.match(/<!-- NEXUS:STABLE_ROW:START -->[\s\S]*?<code>v([\d.]+)<\/code>/)?.[1];
+
+  assert.ok(badgeVer && headerDownloadMatch && notesMatch && tableVer, 'Todas as referências Stable devem existir');
+  assert.equal(badgeVer, tableVer, 'Badge Stable deve coincidir com a tabela Stable');
+  assert.equal(headerDownloadMatch[1], tableVer, 'Texto do botão Stable deve coincidir com a tabela Stable');
+  assert.equal(headerDownloadMatch[3], tableVer, 'Tag do instalador Stable deve coincidir com a tabela Stable');
+  assert.equal(headerDownloadMatch[4], tableVer, 'Arquivo do instalador Stable deve coincidir com a tabela Stable');
+
+  const notesTarget = notesMatch[1];
+  const expectedLocal = `scripts/release-notes-v${tableVer}.md`;
+  const expectedRemote = `https://github.com/Sinisterzs/NEXUS/releases/tag/v${tableVer}`;
+  assert.ok(
+    notesTarget === expectedLocal || notesTarget === expectedRemote,
+    `Notas de lançamento devem ser '${expectedLocal}' ou '${expectedRemote}', recebido '${notesTarget}'`,
+  );
+}
+
 test('Automação README: cabeçalho Stable e tabela Stable devem apresentar exatamente a mesma versão e links consistentes', () => {
   const readmePath = path.resolve(import.meta.dirname, '..', 'README.md');
   const actualReadme = fs.readFileSync(readmePath, 'utf8');
+  assertStableConsistency(actualReadme);
 
-  const badgeVer = actualReadme.match(/<!-- NEXUS:STABLE_HEADER_BADGE:START -->[\s\S]*?Versão-v([\d.]+)%20Stable/)?.[1];
-  const headerLinkVer = actualReadme.match(/<!-- NEXUS:STABLE_HEADER_LINKS:START -->[\s\S]*?Baixar v([\d.]+) Stable/)?.[1];
-  const releaseNotesVer = actualReadme.match(/<!-- NEXUS:STABLE_HEADER_LINKS:START -->[\s\S]*?release-notes-v([\d.]+)\.md/)?.[1];
-  const tableVer = actualReadme.match(/<!-- NEXUS:STABLE_ROW:START -->[\s\S]*?<code>v([\d.]+)<\/code>/)?.[1];
-
-  assert.ok(badgeVer && headerLinkVer && releaseNotesVer && tableVer, 'Todas as referências Stable devem existir');
-  assert.equal(badgeVer, tableVer, 'Badge Stable deve coincidir com a tabela Stable');
-  assert.equal(headerLinkVer, tableVer, 'Link de download Stable deve coincidir com a tabela Stable');
-  assert.equal(releaseNotesVer, tableVer, 'Notas de lançamento Stable devem coincidir com a tabela Stable');
+  const simulatedV999 = updateReadmeContent({
+    content: actualReadme,
+    channel: 'stable',
+    version: '9.9.9',
+    artifact: 'nexus_9.9.9_x64-setup.exe',
+    status: 'Homologada',
+  });
+  assertStableConsistency(simulatedV999);
 });
