@@ -243,3 +243,151 @@ test('fetchGitHubReleasesWithRetry retries when release assets are delayed and s
   assert.equal(attempt, 2);
   assert.equal(releases[0].assets.length, 2);
 });
+
+test('fetchGitHubReleasesWithRetry succeeds on first attempt for complete Stable release', async () => {
+  let attempt = 0;
+  const releases = await fetchGitHubReleasesWithRetry({
+    targetTag: 'v0.2.6',
+    retries: 3,
+    retryDelayMs: 5,
+    fetchImpl: async () => {
+      attempt++;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [mkRelease('v0.2.6', { assets: ['nexus_0.2.6_x64-setup.exe', 'latest.json'] })],
+      } as any;
+    },
+  });
+  assert.equal(attempt, 1);
+  assert.equal(releases.length, 1);
+});
+
+test('fetchGitHubReleasesWithRetry fails when installer is permanently missing', async () => {
+  let attempt = 0;
+  await assert.rejects(
+    () =>
+      fetchGitHubReleasesWithRetry({
+        targetTag: 'v0.2.6',
+        retries: 2,
+        retryDelayMs: 1,
+        fetchImpl: async () => {
+          attempt++;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [mkRelease('v0.2.6', { assets: ['latest.json'] })],
+          } as any;
+        },
+      }),
+    /v0\.2\.6.*nexus_0\.2\.6_x64-setup\.exe/,
+  );
+  assert.equal(attempt, 2);
+});
+
+test('fetchGitHubReleasesWithRetry fails when manifest is permanently missing', async () => {
+  let attempt = 0;
+  await assert.rejects(
+    () =>
+      fetchGitHubReleasesWithRetry({
+        targetTag: 'v0.4.0-nightly.13',
+        retries: 2,
+        retryDelayMs: 1,
+        fetchImpl: async () => {
+          attempt++;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [
+              mkRelease('v0.4.0-nightly.13', {
+                prerelease: true,
+                assets: ['nexus_0.4.0-nightly.13_x64-setup.exe'],
+              }),
+            ],
+          } as any;
+        },
+      }),
+    /v0\.4\.0-nightly\.13.*latest-nightly\.json/,
+  );
+  assert.equal(attempt, 2);
+});
+
+test('fetchGitHubReleasesWithRetry fails when targetTag is not found after exhausting retries', async () => {
+  let attempt = 0;
+  await assert.rejects(
+    () =>
+      fetchGitHubReleasesWithRetry({
+        targetTag: 'v0.2.9',
+        retries: 2,
+        retryDelayMs: 1,
+        fetchImpl: async () => {
+          attempt++;
+          return { ok: true, status: 200, json: async () => [] } as any;
+        },
+      }),
+    /v0\.2\.9.*not found/,
+  );
+  assert.equal(attempt, 2);
+});
+
+test('fetchGitHubReleasesWithRetry skips draft release without modifying README', async () => {
+  const result = await fetchGitHubReleasesWithRetry({
+    targetTag: 'v0.2.6',
+    retries: 2,
+    retryDelayMs: 1,
+    fetchImpl: async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => [mkRelease('v0.2.6', { draft: true, assets: [] })],
+      }) as any,
+  });
+  assert.equal(result, null);
+});
+
+test('fetchGitHubReleasesWithRetry skips unknown prerelease channel like -rc.1', async () => {
+  let called = false;
+  const result = await fetchGitHubReleasesWithRetry({
+    targetTag: 'v0.3.0-rc.1',
+    retries: 2,
+    retryDelayMs: 1,
+    fetchImpl: async () => {
+      called = true;
+      return { ok: true, status: 200, json: async () => [] } as any;
+    },
+  });
+  assert.equal(result, null);
+  assert.equal(called, false);
+});
+
+test('fetchGitHubReleasesWithRetry propagates HTTP API errors', async () => {
+  await assert.rejects(
+    () =>
+      fetchGitHubReleasesWithRetry({
+        targetTag: 'v0.2.6',
+        retries: 2,
+        retryDelayMs: 1,
+        fetchImpl: async () => ({ ok: false, status: 503, statusText: 'Service Unavailable' }) as any,
+      }),
+    /GitHub API error: HTTP 503/,
+  );
+});
+
+test('fetchGitHubReleasesWithRetry preserves manual execution without targetTag', async () => {
+  let attempt = 0;
+  const releases = await fetchGitHubReleasesWithRetry({
+    targetTag: null,
+    retries: 3,
+    retryDelayMs: 5,
+    fetchImpl: async () => {
+      attempt++;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [mkRelease('v0.2.5', { assets: ['nexus_0.2.5_x64-setup.exe', 'latest.json'] })],
+      } as any;
+    },
+  });
+  assert.equal(attempt, 1);
+  assert.equal(releases.length, 1);
+});

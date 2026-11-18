@@ -68,6 +68,10 @@ jobs:
             (async () => {
               const targetTag = process.env.TARGET_TAG || null;
               const releases = await fetchGitHubReleasesWithRetry({ owner: "Sinisterzs", repo: "NEXUS", targetTag });
+              if (!releases) {
+                console.log("README sync skipped for release:", targetTag);
+                return;
+              }
               const current = fs.readFileSync("README.md", "utf8");
               const { content } = syncReadmeFromReleases({ readmeContent: current, releases });
               if (content !== current) {

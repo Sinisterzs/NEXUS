@@ -121,24 +121,65 @@ async function fetchGitHubReleasesWithRetry({
   retries = 3,
   retryDelayMs = 5000,
 } = {}) {
+  if (!targetTag) {
+    return fetchGitHubReleases({ owner, repo, fetchImpl, timeoutMs, maxPages });
+  }
+
+  const parsed = parseSemver(targetTag);
+  if (!parsed) {
+    console.log(`[sync-readme] Skip: tag "${targetTag}" is not a valid SemVer release tag.`);
+    return null;
+  }
+
+  const isStable = parsed.pre.length === 0;
+  const isNightly = parsed.pre[0] === 'nightly';
+  if (!isStable && !isNightly) {
+    console.log(`[sync-readme] Skip: tag "${targetTag}" belongs to unsupported channel "${parsed.pre.join('.')}".`);
+    return null;
+  }
+
+  const installer = `nexus_${parsed.raw}_x64-setup.exe`;
+  const manifest = isStable ? 'latest.json' : 'latest-nightly.json';
+  let lastReason = `release "${targetTag}" not found in GitHub Releases API`;
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     const releases = await fetchGitHubReleases({ owner, repo, fetchImpl, timeoutMs, maxPages });
-    if (!targetTag) return releases;
-
     const target = releases.find((r) => r && r.tag_name === targetTag);
-    const parsed = target ? parseSemver(target.tag_name) : null;
-    if (target && !target.draft && parsed) {
-      const installer = `nexus_${parsed.raw}_x64-setup.exe`;
-      const manifest = !target.prerelease && parsed.pre.length === 0 ? 'latest.json' : 'latest-nightly.json';
-      if (hasAsset(target, installer, owner, repo) && hasAsset(target, manifest, owner, repo)) {
+
+    if (target) {
+      if (target.draft) {
+        console.log(`[sync-readme] Skip: release "${targetTag}" is a draft.`);
+        return null;
+      }
+      if (isStable && target.prerelease) {
+        console.log(`[sync-readme] Skip: stable tag "${targetTag}" is marked as prerelease.`);
+        return null;
+      }
+      if (isNightly && !target.prerelease) {
+        console.log(`[sync-readme] Skip: nightly tag "${targetTag}" is not marked as prerelease.`);
+        return null;
+      }
+
+      const hasInstaller = hasAsset(target, installer, owner, repo);
+      const hasManifest = hasAsset(target, manifest, owner, repo);
+      if (hasInstaller && hasManifest) {
         return releases;
       }
+
+      const missing = [];
+      if (!hasInstaller) missing.push(installer);
+      if (!hasManifest) missing.push(manifest);
+      lastReason = `missing required asset(s): ${missing.join(', ')}`;
+    } else {
+      lastReason = `release "${targetTag}" not found in GitHub Releases API`;
     }
+
     if (attempt < retries && retryDelayMs > 0) {
       await new Promise((r) => setTimeout(r, retryDelayMs));
     }
   }
-  return fetchGitHubReleases({ owner, repo, fetchImpl, timeoutMs, maxPages });
+
+  throw new Error(`Incomplete or missing release "${targetTag}" after ${retries} attempt(s): ${lastReason}`);
 }
 
 function syncReadmeFromReleases({ readmeContent, releases }) {
