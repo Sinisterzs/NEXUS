@@ -45,7 +45,7 @@ Essa abordagem entrega um consumo reduzido de memória RAM e processamento, mant
 
 ## 3. Downloads Oficiais e Canais de Atualização
 
-O NEXUS disponibiliza instaladores assinados digitalmente para Windows de 64 bits:
+O NEXUS disponibiliza instaladores para Windows de 64 bits. Os pacotes aplicados pelo atualizador são autenticados obrigatoriamente por **assinatura criptográfica Minisign** antes da instalação (os instaladores não possuem atualmente assinatura Authenticode do Windows).
 
 <table>
   <thead>
@@ -70,19 +70,19 @@ O NEXUS disponibiliza instaladores assinados digitalmente para Windows de 64 bit
 <!-- NEXUS:BETA_ROW:START -->
     <tr>
       <td align="left"><strong>Pré-lançamento (Beta)</strong></td>
-      <td align="center"><code>v0.4.0-nightly.3</code></td>
+      <td align="center"><code>v0.4.0-nightly.11</code></td>
       <td align="center">Homologação Ativa</td>
-      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.4.0-nightly.3/nexus_0.4.0-nightly.3_x64-setup.exe">nexus_0.4.0-nightly.3_x64-setup.exe</a></td>
-      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.4.0-nightly.3/latest-nightly.json"><code>latest-nightly.json</code></a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.4.0-nightly.11/nexus_0.4.0-nightly.11_x64-setup.exe">nexus_0.4.0-nightly.11_x64-setup.exe</a></td>
+      <td align="left"><a href="https://github.com/Sinisterzs/NEXUS/releases/download/v0.4.0-nightly.11/latest-nightly.json"><code>latest-nightly.json</code></a></td>
     </tr>
 <!-- NEXUS:BETA_ROW:END -->
   </tbody>
 </table>
 
 ### Como Instalar e Atualizar
-1. Baixe o instalador oficial `nexus_0.2.0_x64-setup.exe`.
-2. Execute o instalador para configurar o aplicativo no seu computador.
-3. Para receber novas versões automaticamente, acesse **Configurações → Sobre & Atualizações**. O aplicativo verificará o canal configurado e aplicará as atualizações assinadas com segurança.
+1. Para uso diário, recomendamos o canal **Estável** (`nexus_0.2.5_x64-setup.exe`), que recebe atualizações automáticas assinadas com Minisign.
+2. O canal **Experimental (Nightly)** destina-se a testes antecipados e oferece atualizações opcionais na inicialização ou em **Configurações → Sobre & Atualizações**.
+3. As atualizações preservam seus dados e configurações locais — não é necessário desinstalar o aplicativo para atualizar, e os canais Stable e Nightly permanecem separados.
 
 ---
 
