@@ -139,6 +139,40 @@ pub fn is_downgrade(current: &str, remote: &str) -> Result<bool, String> {
     Ok(curr >= rem)
 }
 
+fn select_latest_nightly_release(releases: Vec<GitHubRelease>) -> Option<(String, String)> {
+    let mut best: Option<(semver::Version, String, String)> = None;
+    for release in releases {
+        if !release.prerelease && !release.tag_name.contains("-nightly.") {
+            continue;
+        }
+        let ver_str = release.tag_name.trim().trim_start_matches('v');
+        let Ok(ver) = semver::Version::parse(ver_str) else {
+            continue;
+        };
+        if !ver.pre.as_str().starts_with("nightly.") {
+            continue;
+        }
+        let Some(asset) = release
+            .assets
+            .into_iter()
+            .find(|a| {
+                a.name == "latest-nightly.json"
+                    && a.browser_download_url.contains(&release.tag_name)
+            })
+        else {
+            continue;
+        };
+        let is_newer = match &best {
+            None => true,
+            Some((best_ver, _, _)) => ver > *best_ver,
+        };
+        if is_newer {
+            best = Some((ver, asset.browser_download_url, release.tag_name));
+        }
+    }
+    best.map(|(_, url, tag)| (url, tag))
+}
+
 /// Resolve o endpoint do manifesto para o canal especificado
 pub async fn resolve_channel_endpoint(channel: &str) -> (String, Option<String>) {
     if channel.eq_ignore_ascii_case("beta") || channel.eq_ignore_ascii_case("nightly") {
@@ -150,22 +184,14 @@ pub async fn resolve_channel_endpoint(channel: &str) -> (String, Option<String>)
 
         if let Ok(client) = client {
             let api_url = format!(
-                "https://api.github.com/repos/{}/{}/releases?per_page=10",
+                "https://api.github.com/repos/{}/{}/releases?per_page=30",
                 GITHUB_REPO_OWNER, GITHUB_REPO_NAME
             );
             if let Ok(resp) = client.get(&api_url).send().await {
                 if resp.status().is_success() {
                     if let Ok(releases) = resp.json::<Vec<GitHubRelease>>().await {
-                        for release in releases {
-                            if release.prerelease || release.tag_name.contains("nightly") {
-                                if let Some(asset) = release
-                                    .assets
-                                    .into_iter()
-                                    .find(|a| a.name == "latest-nightly.json")
-                                {
-                                    return (asset.browser_download_url, Some(release.tag_name));
-                                }
-                            }
+                        if let Some((url, tag)) = select_latest_nightly_release(releases) {
+                            return (url, Some(tag));
                         }
                     }
                 }
@@ -721,5 +747,38 @@ mod tests {
         assert!(!is_downgrade("0.3.0-nightly.2", "0.3.0").unwrap(), "Stable final 0.3.0 é upgrade válido sobre 0.3.0-nightly.2");
         assert!(!is_downgrade("0.3.0-homolog.1", "0.3.0").unwrap(), "Stable final 0.3.0 é upgrade válido sobre 0.3.0-homolog.1");
         assert!(is_downgrade("0.3.0", "0.3.0-nightly.2").unwrap(), "0.3.0-nightly.2 é downgrade em relação a 0.3.0 final");
+    }
+
+    #[test]
+    fn test_select_latest_nightly_release_hardened() {
+        let mk_release = |tag: &str, prerelease: bool, asset_name: &str, url: &str| GitHubRelease {
+            tag_name: tag.to_string(),
+            prerelease,
+            assets: vec![GitHubAsset {
+                name: asset_name.to_string(),
+                browser_download_url: url.to_string(),
+            }],
+        };
+
+        // 1. Nightly.9 listed before Nightly.10 -> selects Nightly.10
+        let releases = vec![
+            mk_release("v0.4.0-nightly.9", true, "latest-nightly.json", "https://example.com/v0.4.0-nightly.9/latest-nightly.json"),
+            mk_release("v0.4.0-nightly.10", true, "latest-nightly.json", "https://example.com/v0.4.0-nightly.10/latest-nightly.json"),
+        ];
+        let (_, tag) = select_latest_nightly_release(releases).unwrap();
+        assert_eq!(tag, "v0.4.0-nightly.10");
+
+        // 2. Rejects non-nightly prereleases (e.g. rc.1, alpha.99), stable, missing manifest, invalid semver, mismatched URL
+        let mixed = vec![
+            mk_release("v0.5.0-rc.1", true, "latest-nightly.json", "https://example.com/v0.5.0-rc.1/latest-nightly.json"),
+            mk_release("v0.5.0", false, "latest-nightly.json", "https://example.com/v0.5.0/latest-nightly.json"),
+            mk_release("v0.4.0-nightly.11", true, "other.json", "https://example.com/v0.4.0-nightly.11/other.json"),
+            mk_release("v0.4.0-nightly.12", true, "latest-nightly.json", "https://evil.com/wrong-tag/latest-nightly.json"),
+            mk_release("invalid-tag", true, "latest-nightly.json", "https://example.com/invalid-tag/latest-nightly.json"),
+            mk_release("v0.4.0-nightly.10", true, "latest-nightly.json", "https://example.com/v0.4.0-nightly.10/latest-nightly.json"),
+        ];
+        let (url, tag) = select_latest_nightly_release(mixed).unwrap();
+        assert_eq!(tag, "v0.4.0-nightly.10");
+        assert!(url.contains("v0.4.0-nightly.10"));
     }
 }
