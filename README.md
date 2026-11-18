@@ -16,7 +16,7 @@ Uma plataforma de mensagens e chamadas em tempo real construída com arquitetura
 [![Licença](https://img.shields.io/badge/Licença-MIT-0f1117?style=flat-square)](LICENSE)
 
 <!-- NEXUS:STABLE_HEADER_LINKS:START -->
-[**Baixar v0.2.5 Stable**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.5/nexus_0.2.5_x64-setup.exe) • [**Notas de Lançamento**](scripts/release-notes-v0.2.5.md) • [**Releases no GitHub**](https://github.com/Sinisterzs/NEXUS/releases) • [**Histórico de Mudanças**](CHANGELOG.md)
+[**Baixar v0.2.5 Stable**](https://github.com/Sinisterzs/NEXUS/releases/download/v0.2.5/nexus_0.2.5_x64-setup.exe) • [**Notas de Lançamento**](https://github.com/Sinisterzs/NEXUS/releases/tag/v0.2.5) • [**Releases no GitHub**](https://github.com/Sinisterzs/NEXUS/releases) • [**Histórico de Mudanças**](CHANGELOG.md)
 <!-- NEXUS:STABLE_HEADER_LINKS:END -->
 
 </div>
