@@ -12,23 +12,30 @@ const {
   syncReadmeFromReleases,
 } = require('../scripts/sync-readme-github.cjs');
 
-function mkRelease(tag: string, opts: { draft?: boolean; prerelease?: boolean; assets?: string[] } = {}) {
+function mkRelease(
+  tag: string,
+  opts: { draft?: boolean; prerelease?: boolean; assets?: Array<string | { name: string; browser_download_url?: string }> } = {},
+) {
   return {
     tag_name: tag,
     draft: opts.draft ?? false,
     prerelease: opts.prerelease ?? tag.includes('-nightly.'),
-    assets: (opts.assets ?? []).map((name) => ({ name })),
+    assets: (opts.assets ?? []).map((a) =>
+      typeof a === 'string'
+        ? { name: a, browser_download_url: `https://github.com/Sinisterzs/NEXUS/releases/download/${tag}/${a}` }
+        : a,
+    ),
   };
 }
 
-test('compareSemver orders Stable and Nightly prereleases accurately', () => {
+test('compareSemver orders Stable and Nightly prereleases numerically', () => {
   assert.equal(compareSemver('0.4.0-nightly.11', '0.4.0-nightly.9'), 1);
   assert.equal(compareSemver('0.4.0-nightly.10', '0.4.0-nightly.11'), -1);
   assert.equal(compareSemver('0.4.0', '0.4.0-nightly.11'), 1);
   assert.equal(compareSemver('0.2.5', '0.2.1'), 1);
 });
 
-test('selectLatestOfficialReleases ignores drafts, unknown prereleases, missing assets and downgrades', () => {
+test('selectLatestOfficialReleases enforces channel rules, assets, URLs, and anti-downgrade', () => {
   const releases = [
     mkRelease('v0.2.1', { assets: ['nexus_0.2.1_x64-setup.exe', 'latest.json'] }),
     mkRelease('v0.2.5', { assets: ['nexus_0.2.5_x64-setup.exe', 'latest.json'] }),
@@ -38,13 +45,19 @@ test('selectLatestOfficialReleases ignores drafts, unknown prereleases, missing 
     mkRelease('v0.4.0-nightly.9', { prerelease: true, assets: ['nexus_0.4.0-nightly.9_x64-setup.exe', 'latest-nightly.json'] }),
     mkRelease('v0.4.0-nightly.11', { prerelease: true, assets: ['nexus_0.4.0-nightly.11_x64-setup.exe', 'latest-nightly.json'] }),
     mkRelease('v0.4.0-nightly.12', { prerelease: true, assets: ['latest-nightly.json'] }), // missing installer
+    mkRelease('v0.4.0-nightly.13', {
+      prerelease: true,
+      assets: [
+        { name: 'nexus_0.4.0-nightly.13_x64-setup.exe', browser_download_url: 'https://github.com/other/repo/releases/download/v0.4.0-nightly.13/nexus_0.4.0-nightly.13_x64-setup.exe' },
+        { name: 'latest-nightly.json', browser_download_url: 'https://github.com/Sinisterzs/NEXUS/releases/download/v0.4.0-nightly.13/latest-nightly.json' },
+      ],
+    }),
   ];
 
   const selected = selectLatestOfficialReleases(releases, '0.2.5', '0.4.0-nightly.11');
   assert.equal(selected.stable?.version, '0.2.5');
   assert.equal(selected.nightly?.version, '0.4.0-nightly.11');
 
-  // Never downgrades below current README version
   const olderOnly = [
     mkRelease('v0.2.1', { assets: ['nexus_0.2.1_x64-setup.exe', 'latest.json'] }),
     mkRelease('v0.4.0-nightly.9', { prerelease: true, assets: ['nexus_0.4.0-nightly.9_x64-setup.exe', 'latest-nightly.json'] }),
@@ -54,7 +67,7 @@ test('selectLatestOfficialReleases ignores drafts, unknown prereleases, missing 
   assert.equal(noDowngrade.nightly, null);
 });
 
-test('fetchGitHubReleases handles pagination and rejects API errors safely', async () => {
+test('fetchGitHubReleases handles pagination, HTTP errors, timeouts, and invalid JSON', async () => {
   const page1 = Array.from({ length: 30 }, (_, i) => mkRelease(`v0.4.0-nightly.${i + 1}`));
   const page2 = [mkRelease('v0.4.0-nightly.31')];
   let calls = 0;
@@ -73,24 +86,67 @@ test('fetchGitHubReleases handles pagination and rejects API errors safely', asy
   assert.equal(releases.length, 31);
 
   await assert.rejects(
+    () => fetchGitHubReleases({ fetchImpl: async () => ({ ok: false, status: 503 } as any) }),
+    /HTTP 503/,
+  );
+
+  await assert.rejects(
     () =>
       fetchGitHubReleases({
-        fetchImpl: async () => ({ ok: false, status: 503 } as any),
+        timeoutMs: 10,
+        fetchImpl: async (_url: string, init: any) =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(new Error('Request aborted')));
+          }),
       }),
-    /HTTP 503/,
+    /aborted/,
+  );
+
+  await assert.rejects(
+    () =>
+      fetchGitHubReleases({
+        fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token'); } } as any),
+      }),
+    /Unexpected token/,
   );
 });
 
-test('syncReadmeFromReleases is idempotent on actual README with v0.2.5 and v0.4.0-nightly.11', () => {
+test('syncReadmeFromReleases updates channels independently, preserves external text, and fails on malformed markers', () => {
   const readmePath = path.resolve(import.meta.dirname, '..', 'README.md');
   const actual = fs.readFileSync(readmePath, 'utf8');
-  const releases = [
+
+  // 1. Idempotency with current official versions
+  const currentReleases = [
     mkRelease('v0.2.5', { assets: ['nexus_0.2.5_x64-setup.exe', 'latest.json'] }),
     mkRelease('v0.4.0-nightly.11', { prerelease: true, assets: ['nexus_0.4.0-nightly.11_x64-setup.exe', 'latest-nightly.json'] }),
   ];
-
-  const first = syncReadmeFromReleases({ readmeContent: actual, releases });
-  const second = syncReadmeFromReleases({ readmeContent: first.content, releases });
+  const first = syncReadmeFromReleases({ readmeContent: actual, releases: currentReleases });
+  const second = syncReadmeFromReleases({ readmeContent: first.content, releases: currentReleases });
   assert.equal(first.content.trim(), actual.trim());
   assert.equal(second.content.trim(), first.content.trim());
+
+  // 2. Updating Stable preserves Nightly and external text
+  const stableUpgrade = syncReadmeFromReleases({
+    readmeContent: actual,
+    releases: [mkRelease('v0.2.6', { assets: ['nexus_0.2.6_x64-setup.exe', 'latest.json'] })],
+  });
+  assert.match(stableUpgrade.content, /v0\.2\.6/);
+  assert.match(stableUpgrade.content, /v0\.4\.0-nightly\.11/);
+  assert.match(stableUpgrade.content, /assinatura criptográfica Minisign/);
+
+  // 3. Updating Nightly preserves Stable
+  const nightlyUpgrade = syncReadmeFromReleases({
+    readmeContent: actual,
+    releases: [mkRelease('v0.4.0-nightly.12', { prerelease: true, assets: ['nexus_0.4.0-nightly.12_x64-setup.exe', 'latest-nightly.json'] })],
+  });
+  assert.match(nightlyUpgrade.content, /v0\.4\.0-nightly\.12/);
+  assert.match(nightlyUpgrade.content, /v0\.2\.5/);
+
+  // 4. Missing markers fail safely
+  assert.throws(() =>
+    syncReadmeFromReleases({
+      readmeContent: '# Invalid README without markers',
+      releases: currentReleases,
+    }),
+  );
 });

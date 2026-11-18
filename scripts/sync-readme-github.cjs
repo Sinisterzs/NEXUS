@@ -46,8 +46,16 @@ function compareSemver(aStr, bStr) {
   return 0;
 }
 
-function hasAsset(release, name) {
-  return Array.isArray(release.assets) && release.assets.some((a) => a && a.name === name);
+function hasAsset(release, name, owner = 'Sinisterzs', repo = 'NEXUS') {
+  if (!Array.isArray(release.assets)) return false;
+  const expectedPrefix = `https://github.com/${owner}/${repo}/releases/download/${release.tag_name}/`;
+  return release.assets.some((a) => {
+    if (!a || a.name !== name) return false;
+    if (typeof a.browser_download_url === 'string' && a.browser_download_url.length > 0) {
+      return a.browser_download_url.startsWith(expectedPrefix);
+    }
+    return true;
+  });
 }
 
 function selectLatestOfficialReleases(releases, currentStableVer = null, currentNightlyVer = null) {
